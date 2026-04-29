@@ -1,0 +1,30 @@
+# Local sensitive source material
+*.doc
+*.docx
+
+# Dependencies and build outputs
+node_modules/
+dist/
+out/
+release/
+.vite/
+.turbo/
+
+# Runtime data
+*.log
+logs/
+artifacts/
+reports/
+browser-profiles/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
