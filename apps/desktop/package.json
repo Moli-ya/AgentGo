@@ -1,6 +1,8 @@
 {
   "name": "@agentgo/desktop",
   "version": "0.1.0",
+  "description": "AgentGo authorized Multi-Agent web vulnerability validation desktop application",
+  "author": "AgentGo Project Team",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -8,14 +10,23 @@
     "dev": "electron-vite dev",
     "dev:renderer": "vite --config vite.preview.config.ts",
     "build": "electron-vite build",
+    "pack:win": "pnpm build && electron-builder --win --dir",
+    "dist:win": "pnpm build && electron-builder --win nsis",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@agentgo/agent-runtime": "workspace:*",
+    "@agentgo/application": "workspace:*",
+    "@agentgo/browser-runner": "workspace:*",
     "@agentgo/contracts": "workspace:*",
+    "@agentgo/db": "workspace:*",
+    "@agentgo/http-runner": "workspace:*",
     "@agentgo/knowledge-base": "workspace:*",
+    "@agentgo/model-gateway": "workspace:*",
     "@agentgo/security-policy": "workspace:*",
+    "lucide-react": "^1.24.0",
+    "playwright-core": "1.61.1",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },
@@ -25,8 +36,48 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "43.1.0",
+    "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "typescript": "7.0.2",
     "vite": "7.3.6"
+  },
+  "build": {
+    "appId": "edu.xatu.agentgo",
+    "productName": "AgentGo",
+    "executableName": "AgentGo",
+    "artifactName": "${productName}-${version}-${arch}-setup.${ext}",
+    "directories": {
+      "output": "../../release"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/playwright-core/**/*"
+    ],
+    "files": [
+      "out/**/*",
+      "package.json",
+      "node_modules/playwright-core/**/*",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
   }
 }

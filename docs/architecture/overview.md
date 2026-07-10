@@ -16,8 +16,8 @@ AgentGo 采用“桌面外壳 + 本地编排引擎 + 确定性安全执行层 + 
 Electron Renderer
   | typed preload API
 Electron Main
-  | lifecycle / IPC / permission routing
-Agent Runtime (utility process or worker)
+  | lifecycle / typed IPC / application services
+Scan Coordinator + Agent Runtime
   | plan / state machine / budgets / checkpoints
   +--> ModelGateway --------> external model providers
   +--> KnowledgeBase -------> local index / curated sources
@@ -27,7 +27,7 @@ Agent Runtime (utility process or worker)
   +--> EvidenceStore -------> SQLite metadata + immutable files
 ```
 
-Renderer 只展示数据和发起用户意图；Main 负责生命周期和可信 IPC；重任务运行在 Utility Process、Worker Thread 或独立受控进程中。
+Renderer 只展示数据和发起用户意图；Main 负责生命周期、双向 Schema 校验的可信 IPC 和应用服务。V1 的异步扫描编排运行在 Main 中，网络、模型和浏览器操作均可取消且受预算约束。若后续 profiling 证明 Main 中的同步存储操作影响响应性，再把协调器迁移到 Utility Process 或受控 Worker；这不是当前实现状态。
 
 ## 3. 信任边界
 
@@ -83,13 +83,13 @@ domain -> no Electron / no provider SDK / no Playwright
 
 ## 7. 模型配置
 
-桌面设置页必须为全局和每个 Agent 提供图形化配置：
+桌面设置页为每个 Agent 提供图形化 Profile 配置：
 
 - Provider；
 - Base URL；
 - 模型名称；
 - API Key 凭据引用；
-- 超时、重试、RPM/TPM；
+- 超时、RPM/TPM；
 - Token 和费用预算；
 - 连接测试；
 - 推理、抽取、验证等模型 Profile。
@@ -99,9 +99,9 @@ domain -> no Electron / no provider SDK / no Playwright
 ## 8. 数据存储
 
 - SQLite：结构化业务状态、索引、审计摘要。
-- Files：HAR、Trace、截图、大型响应、报告附件。
+- Files：请求响应、DOM、截图、Agent 结构化输出和报告内容。
 - Credential Store：API Key 和其他长期凭据。
-- Browser Profile：按工作区隔离，设置保存期限和一键清除。
+- Browser Context：每次隔离渲染临时创建，阻断全部页面网络请求，结束后关闭，不保存持久 Profile。
 
 证据文件使用内容哈希寻址或至少保存 SHA-256，数据库只保存元数据、路径、哈希和脱敏状态。
 
@@ -111,13 +111,17 @@ MCP Hub 是可替换的工具协议扩展层。核心 Runner 和 ToolBroker 先�
 
 Kali 工具服务器、SSH 维护和高自由度工具编排属于 Stretch Goal。即使未来接入，也必须经过同一 SecurityPolicy、目标范围、人工审批和证据映射，不得获得绕过策略的特殊通道。
 
-## 10. M0 技术验证
+## 10. 技术验证状态
 
-M0 必须实际验证而不是只写文档：
+截至 2026-07-10，以下验证已经由自动测试或打包冒烟测试覆盖：
 
 - Electron Main/Preload/Renderer 可构建并启动；
 - workspace 包能被桌面端导入；
-- IPC schema 和安全窗口设置生效；
+- IPC 输入/输出 Schema 和安全窗口设置生效；
 - SecurityPolicy 能允许安全主动动作并拒绝破坏性动作；
 - Vitest、TypeScript 和生产构建可在 Windows 环境通过；
-- 后续单独验证 Playwright 打包、SQLite 驱动 ABI 和 Windows 凭据存储。
+- Playwright Core 随 ASAR 解包后可被打包主进程加载；
+- SQLite 数据层、迁移和内容寻址证据存储通过测试；
+- Electron safeStorage 边界已接入，凭据文件只保存加密字节。
+
+仍需在正式发布前完成代码签名、自定义图标、不同 Windows 版本的真实安装/升级/卸载矩阵和长期运行压测。

@@ -5,6 +5,9 @@ export default defineConfig({
   main: {
     build: {
       externalizeDeps: false,
+      rollupOptions: {
+        external: ['playwright-core']
+      },
       sourcemap: true
     }
   },

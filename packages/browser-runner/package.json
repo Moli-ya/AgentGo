@@ -8,5 +8,11 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "playwright-core": "1.61.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1"
   }
 }

@@ -2,95 +2,112 @@
 
 基于 Multi-Agent 协作的授权 Web 漏洞挖掘与验证 Windows 桌面系统。
 
-> 当前状态：M0 架构骨架期。仓库已建立 Electron + React + TypeScript monorepo、确定性安全策略和核心 Agent/知识库契约。
+> 当前状态：V1 可运行原型。SQL 注入、XSS、SSRF、越权/IDOR 已接入 `Signal -> Validation -> Verdict -> Evidence -> Report` 完整闭环，并具备本地持久化、异常恢复、评测靶场和 Windows 打包能力。
 
-## 项目目标
+## 使用边界
 
-AgentGo 面向教学靶场、自有系统和有明确授权的测试环境，通过多个职责清晰的 Agent 对 Web 应用的页面、接口、参数、身份、请求、响应和状态流转进行持续分析，形成“规划—知识检索—主动验证—独立复核—证据报告”的完整闭环。
+AgentGo 只允许用于教学靶场、自有系统和有明确书面授权的目标。所有主动请求必须同时满足不可变 Scope、身份范围、网络边界、速率/并发预算和 `SecurityPolicy` 决策。
 
-项目强调两件事：
+V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、云元数据访问、持久化、横向移动、凭据喷洒和高强度 DoS。证据充分后立即停止验证，不扩大影响。
 
-1. 必须保留低影响主动探测能力，否则无法确认真实漏洞。
-2. 主动探测必须受确定性安全策略约束，不能破坏真实业务或越出授权范围。
+## 已实现功能
 
-## V1 范围
-
-- SQL 注入
-- XSS
-- SSRF
-- 越权访问 / IDOR
-
-V1 只执行非破坏、可审计的验证动作。数据库 DROP/TRUNCATE 和生产数据增删改、真实账户接管、持久化、横向移动、高强度 DoS 等动作永久禁止。
-
-## 核心流程
-
-```text
-Scope Intake
-  -> Passive Recon
-  -> Safe Active Enumeration
-  -> Hypothesis + KnowledgePack
-  -> Policy-approved Validation
-  -> Independent Verification
-  -> Evidence-backed Report
-```
-
-最终结论统一为：
-
-- Confirmed：满足版本化确认规则且证据完整。
-- Not Confirmed：已完成验证但未达到确认标准。
-- Inconclusive：条件不足、环境不稳定或继续验证风险过高。
+- 五 Agent：Planner、Knowledge、Strategy、Analysis、Verifier；所有模型调用统一经过 `ModelGateway`。
+- 四类漏洞：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 受控回调、IDOR 双授权身份只读对照。
+- 确定性执行边界：HTTP DNS/重定向逐跳复检，浏览器断网渲染，L3 动作永久拒绝。
+- 本地数据层：SQLite、迁移、不可变 Scope 快照、Checkpoint、审计和扫描事件。
+- 凭据与证据：Electron `safeStorage`、内容寻址证据、SHA-256 完整性校验、脱敏派生。
+- 扫描控制：启动、暂停、恢复、取消；异常退出后的未完成任务在下次启动时安全恢复为暂停。
+- 结论与报告：Confirmed、Not Confirmed、Inconclusive；Markdown、JSON、HTML 脱敏报告。
+- 知识库：四类内置知识、来源/许可证元数据、SQLite FTS5 与中文子串回退检索。
+- 桌面边界：Renderer 通过双向 Zod 校验的 IPC 使用应用服务，不能直接访问数据库、文件、凭据或执行器。
+- 评测：固定版本本地靶场、40 个正负 Case、指标计算和六项安全硬门禁。
 
 ## 技术架构
 
-- 桌面端：Electron + React + TypeScript + Vite
-- 包管理：pnpm workspace
-- 浏览器执行：Playwright
-- HTTP 执行：undici
-- 本地数据：SQLite + Drizzle ORM + Files
-- 模型接入：Provider-neutral ModelGateway
-- Schema：Zod
-- 测试：Vitest
+- Electron + React + TypeScript + Vite
+- pnpm workspace
+- Node SQLite + Drizzle ORM
+- undici HTTP Runner
+- Playwright Core 隔离浏览器 Runner
+- Zod 契约与 Vitest 测试
+- electron-builder + NSIS Windows 交付
 
-模型型 Agent 负责 Planner、Knowledge、Strategy、Analysis、Verifier；SecurityPolicy、执行器、证据存储和报告生成保持确定性。
+## 开发运行
 
-## 开始开发
-
-要求：
-
-- Windows 10/11
-- Node.js 24+
-- pnpm 10+
+要求 Windows 10/11、Node.js 24+、pnpm 10+。XSS 隔离验证需要系统已安装 Microsoft Edge 或 Google Chrome；Windows 10/11 通常已包含 Edge。
 
 ```powershell
 pnpm install
 pnpm dev
 ```
 
-质量检查：
+首次使用时按以下顺序操作：
+
+1. 在“工作台”创建或选择工作区，并运行安全门禁自检。
+2. 在“目标与身份”填写授权依据、Base URL 和最小允许 Scope。
+3. IDOR 测试需配置两个明确授权的测试身份及各自已知资源 ID。
+4. 在“扫描与 Agent”填写任务与授权背景，选择漏洞族、身份、预算，并为五个 Agent 明确选择模型 Profile；SSRF 回调 URL 也必须位于 Scope 内。
+5. 启动任务，查看阶段事件、接口、证据和 Findings；完成后生成并导出脱敏报告。
+
+完整操作说明见 [docs/user-guide.md](docs/user-guide.md)。
+
+## 模型配置
+
+应用首次启动会为五个角色创建本地确定性 Profile，因此无需外部 API 即可运行固定流程和基准。也可以在“模型设置”中添加 OpenAI-compatible Provider，填写 Base URL、模型和 API Key 后执行连接测试。连接测试会真实调用该 Profile 的 `chat/completions` 并校验最小 JSON 响应，不再只检查 `/models` 列表。
+
+创建扫描时会把 Planner、Knowledge、Strategy、Analysis、Verifier 的 Profile ID 固定到任务配置中，运行期间不会因为全局 Profile 顺序变化而悄然换模型。API Key 只进入操作系统加密凭据文件，SQLite 仅保存 `credentialId`。外部模型输入会先脱敏，创建页会明确显示任务描述和结构化上下文将发往哪些 Provider；输出必须通过角色对应的结构化 Schema。模型不能直接调用执行器或改变安全策略。费用预算使用兼容 Provider 返回的费用字段，未报告费用时记录为 0。
+
+## 质量检查
 
 ```powershell
-pnpm typecheck
-pnpm test
-pnpm build
+pnpm check
 pnpm smoke:desktop
+pnpm benchmark:verify
 ```
 
-本机已有的可选开发环境配置见 docs/development-environment.md；项目本身不依赖固定盘符。
+`pnpm check` 依次执行全仓 TypeScript 检查、Vitest 和桌面构建。`smoke:desktop` 会启动开发构建并验证 Renderer、主进程和安全策略，不会访问外部目标。
+
+## 固定靶场评测
+
+```powershell
+# 可选：单独启动靶场供人工检查
+pnpm benchmark:fixture
+
+# 自动启动固定靶场并运行 40 Case
+pnpm benchmark:run --output .\benchmark-results\my-run
+```
+
+2026-07-10 对 `agentgo-local-fixture/1.0.0` 的确定性回归运行结果为：40/40 有结论，20 个正例均 Confirmed，20 个负例均 Not Confirmed，Precision/Recall/F1 和证据完整率均为 1，FPR 为 0，六项安全硬门禁均为 0。
+
+这只是自建、固定、同分布靶场的回归基线，用于证明闭环和防止代码回退；不能据此推断真实互联网或复杂业务系统上的检测效果。Ground Truth 人工复核、第三方靶场、重复稳定性和消融实验仍需按研究计划继续完成。运行结果默认写入被 Git 忽略的 `benchmark-results/`。
+
+## Windows 打包
+
+```powershell
+# 生成免安装目录
+pnpm pack:win
+
+# 验证打包后的 EXE 能完成启动与策略自检
+pnpm smoke:packaged
+
+# 生成 x64 NSIS 安装器
+pnpm dist:win
+```
+
+产物位于 `release/`。当前为未签名研究原型，使用默认应用图标，Windows 可能显示信誉提示；这不影响核心功能验证。安装器按用户安装，并配置为卸载时保留应用数据。
 
 ## 文档
 
-- docs/README.md：完整文档索引
-- docs/workflows/src-hunting.md：授权 SRC 工作流
-- docs/security/active-probing-policy.md：主动探测安全规范
-- docs/knowledge/knowledge-agent.md：KnowledgeAgent 与知识库设计
-- docs/evaluation/benchmark-plan.md：研究评测计划
-- docs/roadmap.md：2026—2027 路线图
+- [docs/README.md](docs/README.md)：文档索引
+- [docs/user-guide.md](docs/user-guide.md)：安装、授权配置、扫描和报告说明
+- [docs/security/active-probing-policy.md](docs/security/active-probing-policy.md)：主动探测安全规范
+- [docs/architecture/overview.md](docs/architecture/overview.md)：进程和模块边界
+- [docs/knowledge/knowledge-agent.md](docs/knowledge/knowledge-agent.md)：知识链路
+- [docs/evaluation/benchmark-plan.md](docs/evaluation/benchmark-plan.md)：研究评测计划
+- [docs/roadmap.md](docs/roadmap.md)：已完成项与后续研究工作
 
 原始大创申报材料包含个人信息，不作为公开仓库文档发布。
-
-## 合规声明
-
-本项目只允许用于有明确授权的资产。使用者必须遵守目标范围、测试规则、速率限制、数据保护和漏洞披露约定。任何绕过 SecurityPolicy、对真实业务造成破坏或测试未授权目标的行为都不属于项目支持范围。
 
 ## License
 

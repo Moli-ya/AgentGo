@@ -10,6 +10,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@agentgo/contracts": "workspace:*",
     "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "@agentgo/agent-runtime": "workspace:*",
+    "@types/node": "26.1.1"
   }
 }

@@ -4,6 +4,7 @@ export interface KnowledgeSource {
   id: string
   title: string
   url: string
+  license: string
   trustLevel: 'built-in' | 'official' | 'reviewed-public'
   updatedAt: string
 }
@@ -61,6 +62,7 @@ export const KNOWLEDGE_SOURCES: KnowledgeSource[] = [
     id: 'owasp-wstg',
     title: 'OWASP Web Security Testing Guide',
     url: 'https://owasp.org/www-project-web-security-testing-guide/',
+    license: 'CC BY-SA 4.0',
     trustLevel: 'official',
     updatedAt: '2026-07-10'
   },
@@ -68,6 +70,7 @@ export const KNOWLEDGE_SOURCES: KnowledgeSource[] = [
     id: 'cwe',
     title: 'Common Weakness Enumeration',
     url: 'https://cwe.mitre.org/',
+    license: 'CWE Terms of Use',
     trustLevel: 'official',
     updatedAt: '2026-07-10'
   },
@@ -75,6 +78,7 @@ export const KNOWLEDGE_SOURCES: KnowledgeSource[] = [
     id: 'agentgo-policy',
     title: 'AgentGo Active Probing Policy',
     url: 'docs/security/active-probing-policy.md',
+    license: 'project-internal documentation',
     trustLevel: 'built-in',
     updatedAt: '2026-07-10'
   }

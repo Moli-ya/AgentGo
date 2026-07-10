@@ -3,12 +3,19 @@ import {
   integer,
   primaryKey,
   sqliteTable,
-  text
+  text,
+  uniqueIndex
 } from 'drizzle-orm/sqlite-core'
+import type {
+  AgentModelProfileSelection,
+  ScanBudget,
+  VulnerabilityFamily
+} from '@agentgo/contracts'
 
 export const workspaces = sqliteTable('workspaces', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
+  description: text('description').notNull(),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull()
 })
@@ -20,10 +27,16 @@ export const targets = sqliteTable(
     workspaceId: text('workspace_id').notNull(),
     name: text('name').notNull(),
     baseUrl: text('base_url').notNull(),
+    description: text('description').notNull(),
+    authorizationReference: text('authorization_reference').notNull(),
+    defaultIdentityId: text('default_identity_id'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull()
   },
-  (table) => [index('targets_workspace_idx').on(table.workspaceId)]
+  (table) => [
+    index('targets_workspace_idx').on(table.workspaceId),
+    uniqueIndex('targets_workspace_base_url_uq').on(table.workspaceId, table.baseUrl)
+  ]
 )
 
 export const targetScopes = sqliteTable(
@@ -35,16 +48,35 @@ export const targetScopes = sqliteTable(
     allowedPathPrefixes: text('allowed_path_prefixes', { mode: 'json' })
       .$type<string[]>()
       .notNull(),
+    deniedPathPrefixes: text('denied_path_prefixes', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    allowedPorts: text('allowed_ports', { mode: 'json' }).$type<number[]>().notNull(),
+    allowedIdentityIds: text('allowed_identity_ids', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
     allowActiveProbing: integer('allow_active_probing', { mode: 'boolean' }).notNull(),
     allowSensitiveProbing: integer('allow_sensitive_probing', {
       mode: 'boolean'
     }).notNull(),
+    allowPrivateNetworkTargets: integer('allow_private_network_targets', {
+      mode: 'boolean'
+    }).notNull(),
+    allowLoopbackTargets: integer('allow_loopback_targets', {
+      mode: 'boolean'
+    }).notNull(),
     maxRequestsPerMinute: integer('max_requests_per_minute').notNull(),
     maxConcurrency: integer('max_concurrency').notNull(),
+    authorizationReference: text('authorization_reference'),
+    validFrom: integer('valid_from'),
     validUntil: integer('valid_until'),
+    snapshotHash: text('snapshot_hash').notNull(),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('target_scopes_target_idx').on(table.targetId)]
+  (table) => [
+    index('target_scopes_target_idx').on(table.targetId),
+    uniqueIndex('target_scopes_hash_uq').on(table.targetId, table.snapshotHash)
+  ]
 )
 
 export const identities = sqliteTable(
@@ -54,29 +86,97 @@ export const identities = sqliteTable(
     targetId: text('target_id').notNull(),
     label: text('label').notNull(),
     role: text('role').notNull(),
+    authType: text('auth_type').notNull(),
+    headerName: text('header_name'),
     credentialId: text('credential_id'),
     isTestIdentity: integer('is_test_identity', { mode: 'boolean' }).notNull(),
-    createdAt: integer('created_at').notNull()
+    ownedResourceIds: text('owned_resource_ids', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
   },
-  (table) => [index('identities_target_idx').on(table.targetId)]
+  (table) => [
+    index('identities_target_idx').on(table.targetId),
+    uniqueIndex('identities_target_label_uq').on(table.targetId, table.label)
+  ]
 )
+
+export interface ScanConfiguration {
+  description: string
+  families: VulnerabilityFamily[]
+  identityIds: string[]
+  callbackUrl?: string
+  modelProfileIds: AgentModelProfileSelection
+}
 
 export const scans = sqliteTable(
   'scans',
   {
     id: text('id').primaryKey(),
     targetId: text('target_id').notNull(),
+    name: text('name').notNull(),
     scopeSnapshotId: text('scope_snapshot_id').notNull(),
     status: text('status').notNull(),
     phase: text('phase').notNull(),
-    budgetJson: text('budget_json', { mode: 'json' }).$type<Record<string, number>>().notNull(),
+    progress: integer('progress').notNull(),
+    budgetJson: text('budget_json', { mode: 'json' }).$type<ScanBudget>().notNull(),
+    configJson: text('config_json', { mode: 'json' }).$type<ScanConfiguration>().notNull(),
+    planJson: text('plan_json', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+    runtimeJson: text('runtime_json', { mode: 'json' })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    requestCount: integer('request_count').notNull(),
+    modelTokens: integer('model_tokens').notNull(),
+    estimatedCostMicros: integer('estimated_cost_micros').notNull(),
+    checkpointCount: integer('checkpoint_count').notNull(),
+    lastError: text('last_error'),
     createdAt: integer('created_at').notNull(),
-    updatedAt: integer('updated_at').notNull()
+    updatedAt: integer('updated_at').notNull(),
+    startedAt: integer('started_at'),
+    completedAt: integer('completed_at')
   },
   (table) => [
     index('scans_target_idx').on(table.targetId),
-    index('scans_status_idx').on(table.status)
+    index('scans_status_idx').on(table.status),
+    index('scans_updated_idx').on(table.updatedAt)
   ]
+)
+
+export const scanIdentities = sqliteTable(
+  'scan_identities',
+  {
+    scanId: text('scan_id').notNull(),
+    identityId: text('identity_id').notNull()
+  },
+  (table) => [primaryKey({ columns: [table.scanId, table.identityId] })]
+)
+
+export const scanCheckpoints = sqliteTable(
+  'scan_checkpoints',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    phase: text('phase').notNull(),
+    stateJson: text('state_json', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+    reason: text('reason').notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('scan_checkpoints_scan_idx').on(table.scanId, table.createdAt)]
+)
+
+export const scanEvents = sqliteTable(
+  'scan_events',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    type: text('type').notNull(),
+    level: text('level').notNull(),
+    message: text('message').notNull(),
+    detailJson: text('detail_json', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('scan_events_scan_idx').on(table.scanId, table.createdAt)]
 )
 
 export const pages = sqliteTable(
@@ -86,10 +186,17 @@ export const pages = sqliteTable(
     scanId: text('scan_id').notNull(),
     url: text('url').notNull(),
     title: text('title'),
+    depth: integer('depth').notNull(),
+    discoveredFrom: text('discovered_from'),
     stateHash: text('state_hash'),
-    createdAt: integer('created_at').notNull()
+    status: text('status').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
   },
-  (table) => [index('pages_scan_idx').on(table.scanId)]
+  (table) => [
+    index('pages_scan_idx').on(table.scanId),
+    uniqueIndex('pages_scan_url_uq').on(table.scanId, table.url)
+  ]
 )
 
 export const endpoints = sqliteTable(
@@ -100,10 +207,21 @@ export const endpoints = sqliteTable(
     pageId: text('page_id'),
     method: text('method').notNull(),
     urlTemplate: text('url_template').notNull(),
+    normalizedUrl: text('normalized_url').notNull(),
     contentType: text('content_type'),
-    createdAt: integer('created_at').notNull()
+    source: text('source').notNull(),
+    status: text('status').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
   },
-  (table) => [index('endpoints_scan_idx').on(table.scanId)]
+  (table) => [
+    index('endpoints_scan_idx').on(table.scanId),
+    uniqueIndex('endpoints_scan_method_url_uq').on(
+      table.scanId,
+      table.method,
+      table.normalizedUrl
+    )
+  ]
 )
 
 export const parameters = sqliteTable(
@@ -115,9 +233,17 @@ export const parameters = sqliteTable(
     location: text('location').notNull(),
     dataType: text('data_type'),
     required: integer('required', { mode: 'boolean' }).notNull(),
+    exampleMasked: text('example_masked'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('parameters_endpoint_idx').on(table.endpointId)]
+  (table) => [
+    index('parameters_endpoint_idx').on(table.endpointId),
+    uniqueIndex('parameters_endpoint_name_location_uq').on(
+      table.endpointId,
+      table.name,
+      table.location
+    )
+  ]
 )
 
 export const interactions = sqliteTable(
@@ -127,15 +253,22 @@ export const interactions = sqliteTable(
     scanId: text('scan_id').notNull(),
     endpointId: text('endpoint_id'),
     identityId: text('identity_id'),
+    policyDecisionId: text('policy_decision_id'),
     requestRef: text('request_ref').notNull(),
     responseRef: text('response_ref').notNull(),
+    requestSummaryJson: text('request_summary_json', { mode: 'json' })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    responseSummaryJson: text('response_summary_json', { mode: 'json' })
+      .$type<Record<string, unknown>>()
+      .notNull(),
     statusCode: integer('status_code'),
     durationMs: integer('duration_ms'),
     stateBeforeHash: text('state_before_hash'),
     stateAfterHash: text('state_after_hash'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('interactions_scan_idx').on(table.scanId)]
+  (table) => [index('interactions_scan_idx').on(table.scanId, table.createdAt)]
 )
 
 export const agentRuns = sqliteTable(
@@ -145,15 +278,18 @@ export const agentRuns = sqliteTable(
     scanId: text('scan_id').notNull(),
     parentRunId: text('parent_run_id'),
     role: text('role').notNull(),
+    promptId: text('prompt_id').notNull(),
     promptVersion: text('prompt_version').notNull(),
+    promptHash: text('prompt_hash').notNull(),
     modelProfileId: text('model_profile_id').notNull(),
     status: text('status').notNull(),
     inputRefs: text('input_refs', { mode: 'json' }).$type<string[]>().notNull(),
     outputRefs: text('output_refs', { mode: 'json' }).$type<string[]>().notNull(),
+    error: text('error'),
     startedAt: integer('started_at').notNull(),
     finishedAt: integer('finished_at')
   },
-  (table) => [index('agent_runs_scan_idx').on(table.scanId)]
+  (table) => [index('agent_runs_scan_idx').on(table.scanId, table.startedAt)]
 )
 
 export const modelInvocations = sqliteTable(
@@ -164,6 +300,8 @@ export const modelInvocations = sqliteTable(
     provider: text('provider').notNull(),
     model: text('model').notNull(),
     promptVersion: text('prompt_version').notNull(),
+    inputHash: text('input_hash').notNull(),
+    outputHash: text('output_hash').notNull(),
     promptTokens: integer('prompt_tokens').notNull(),
     completionTokens: integer('completion_tokens').notNull(),
     estimatedCostMicros: integer('estimated_cost_micros').notNull(),
@@ -180,15 +318,25 @@ export const probeProposals = sqliteTable(
     id: text('id').primaryKey(),
     scanId: text('scan_id').notNull(),
     agentRunId: text('agent_run_id').notNull(),
+    kind: text('kind').notNull(),
     targetUrl: text('target_url').notNull(),
     method: text('method').notNull(),
+    identityId: text('identity_id'),
     probeLevel: text('probe_level').notNull(),
     sideEffect: text('side_effect').notNull(),
     summary: text('summary').notNull(),
+    payloadSummary: text('payload_summary'),
+    expectedEvidence: text('expected_evidence').notNull(),
+    requestedRequestsPerMinute: integer('requested_requests_per_minute'),
+    requestedConcurrency: integer('requested_concurrency'),
+    maxRequests: integer('max_requests').notNull(),
+    timeoutMs: integer('timeout_ms').notNull(),
+    userApproved: integer('user_approved', { mode: 'boolean' }).notNull(),
+    stopConditions: text('stop_conditions', { mode: 'json' }).$type<string[]>().notNull(),
     cleanupPlan: text('cleanup_plan'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('probe_proposals_scan_idx').on(table.scanId)]
+  (table) => [index('probe_proposals_scan_idx').on(table.scanId, table.createdAt)]
 )
 
 export const policyDecisions = sqliteTable(
@@ -201,11 +349,16 @@ export const policyDecisions = sqliteTable(
     requiresApproval: integer('requires_approval', { mode: 'boolean' }).notNull(),
     code: text('code').notNull(),
     reasons: text('reasons', { mode: 'json' }).$type<string[]>().notNull(),
+    normalizedTarget: text('normalized_target'),
     approvedBy: text('approved_by'),
     approvedAt: integer('approved_at'),
+    validUntil: integer('valid_until'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('policy_decisions_proposal_idx').on(table.proposalId)]
+  (table) => [
+    index('policy_decisions_proposal_idx').on(table.proposalId),
+    index('policy_decisions_scope_idx').on(table.scopeSnapshotId)
+  ]
 )
 
 export const toolCalls = sqliteTable(
@@ -215,13 +368,15 @@ export const toolCalls = sqliteTable(
     scanId: text('scan_id').notNull(),
     policyDecisionId: text('policy_decision_id').notNull(),
     toolName: text('tool_name').notNull(),
+    toolVersion: text('tool_version').notNull(),
     argumentHash: text('argument_hash').notNull(),
     status: text('status').notNull(),
     durationMs: integer('duration_ms'),
     outputRef: text('output_ref'),
+    error: text('error'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('tool_calls_scan_idx').on(table.scanId)]
+  (table) => [index('tool_calls_scan_idx').on(table.scanId, table.createdAt)]
 )
 
 export const signals = sqliteTable(
@@ -236,6 +391,7 @@ export const signals = sqliteTable(
     identityId: text('identity_id'),
     hypothesis: text('hypothesis').notNull(),
     observedDifference: text('observed_difference').notNull(),
+    confidenceHint: integer('confidence_hint').notNull(),
     evidenceRefs: text('evidence_refs', { mode: 'json' }).$type<string[]>().notNull(),
     status: text('status').notNull(),
     createdAt: integer('created_at').notNull()
@@ -243,16 +399,19 @@ export const signals = sqliteTable(
   (table) => [index('signals_scan_family_idx').on(table.scanId, table.family)]
 )
 
-export const confirmationRules = sqliteTable('confirmation_rules', {
-  id: text('id').notNull(),
-  version: text('version').notNull(),
-  family: text('family').notNull(),
-  ruleJson: text('rule_json', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
-  sourceRefs: text('source_refs', { mode: 'json' }).$type<string[]>().notNull(),
-  createdAt: integer('created_at').notNull()
-}, (table) => [
-  primaryKey({ columns: [table.id, table.version] })
-])
+export const confirmationRules = sqliteTable(
+  'confirmation_rules',
+  {
+    id: text('id').notNull(),
+    version: text('version').notNull(),
+    family: text('family').notNull(),
+    ruleJson: text('rule_json', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+    requiredChecks: text('required_checks', { mode: 'json' }).$type<string[]>().notNull(),
+    sourceRefs: text('source_refs', { mode: 'json' }).$type<string[]>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [primaryKey({ columns: [table.id, table.version] })]
+)
 
 export const validationRuns = sqliteTable(
   'validation_runs',
@@ -261,10 +420,15 @@ export const validationRuns = sqliteTable(
     signalId: text('signal_id').notNull(),
     confirmationRuleId: text('confirmation_rule_id').notNull(),
     confirmationRuleVersion: text('confirmation_rule_version').notNull(),
+    probeProposalId: text('probe_proposal_id').notNull(),
     policyDecisionId: text('policy_decision_id').notNull(),
+    toolCallId: text('tool_call_id'),
     baselineRef: text('baseline_ref').notNull(),
     testRef: text('test_ref').notNull(),
     negativeControlRef: text('negative_control_ref'),
+    completedChecks: text('completed_checks', { mode: 'json' }).$type<string[]>().notNull(),
+    failedChecks: text('failed_checks', { mode: 'json' }).$type<string[]>().notNull(),
+    missingChecks: text('missing_checks', { mode: 'json' }).$type<string[]>().notNull(),
     cleanupStatus: text('cleanup_status').notNull(),
     result: text('result').notNull(),
     createdAt: integer('created_at').notNull()
@@ -276,19 +440,29 @@ export const evidenceItems = sqliteTable(
   'evidence_items',
   {
     id: text('id').primaryKey(),
+    workspaceId: text('workspace_id').notNull(),
     scanId: text('scan_id').notNull(),
+    interactionId: text('interaction_id'),
+    policyDecisionId: text('policy_decision_id'),
     type: text('type').notNull(),
     mimeType: text('mime_type').notNull(),
     filePath: text('file_path').notNull(),
     sha256: text('sha256').notNull(),
     size: integer('size').notNull(),
     source: text('source').notNull(),
+    createdBy: text('created_by').notNull(),
+    captureTool: text('capture_tool').notNull(),
+    captureToolVersion: text('capture_tool_version').notNull(),
     derivedFrom: text('derived_from'),
     redactionState: text('redaction_state').notNull(),
     integrityStatus: text('integrity_status').notNull(),
+    retentionUntil: integer('retention_until'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('evidence_items_scan_idx').on(table.scanId)]
+  (table) => [
+    index('evidence_items_scan_idx').on(table.scanId, table.createdAt),
+    uniqueIndex('evidence_items_scan_hash_uq').on(table.scanId, table.sha256, table.type)
+  ]
 )
 
 export const findings = sqliteTable(
@@ -301,6 +475,13 @@ export const findings = sqliteTable(
     verdict: text('verdict').notNull(),
     status: text('status').notNull(),
     severity: text('severity').notNull(),
+    confidence: integer('confidence').notNull(),
+    endpointId: text('endpoint_id'),
+    parameterId: text('parameter_id'),
+    identityId: text('identity_id'),
+    affectedResource: text('affected_resource'),
+    cwe: text('cwe'),
+    owasp: text('owasp'),
     confirmationRuleId: text('confirmation_rule_id').notNull(),
     confirmationRuleVersion: text('confirmation_rule_version').notNull(),
     reproducibility: text('reproducibility').notNull(),
@@ -310,7 +491,8 @@ export const findings = sqliteTable(
   },
   (table) => [
     index('findings_scan_idx').on(table.scanId),
-    index('findings_family_idx').on(table.family)
+    index('findings_family_idx').on(table.family),
+    index('findings_verdict_idx').on(table.verdict)
   ]
 )
 
@@ -320,9 +502,7 @@ export const findingEvidence = sqliteTable(
     findingId: text('finding_id').notNull(),
     evidenceId: text('evidence_id').notNull()
   },
-  (table) => [
-    primaryKey({ columns: [table.findingId, table.evidenceId] })
-  ]
+  (table) => [primaryKey({ columns: [table.findingId, table.evidenceId] })]
 )
 
 export const knowledgeDocs = sqliteTable('knowledge_docs', {
@@ -330,6 +510,7 @@ export const knowledgeDocs = sqliteTable('knowledge_docs', {
   title: text('title').notNull(),
   sourceType: text('source_type').notNull(),
   sourceUrl: text('source_url'),
+  author: text('author'),
   license: text('license'),
   trustLevel: text('trust_level').notNull(),
   reviewStatus: text('review_status').notNull(),
@@ -337,6 +518,109 @@ export const knowledgeDocs = sqliteTable('knowledge_docs', {
   publishedAt: integer('published_at'),
   ingestedAt: integer('ingested_at').notNull()
 })
+
+export const knowledgeChunks = sqliteTable(
+  'knowledge_chunks',
+  {
+    id: text('id').primaryKey(),
+    docId: text('doc_id').notNull(),
+    family: text('family'),
+    title: text('title').notNull(),
+    content: text('content').notNull(),
+    tags: text('tags', { mode: 'json' }).$type<string[]>().notNull(),
+    applicability: text('applicability', { mode: 'json' }).$type<string[]>().notNull(),
+    tokenEstimate: integer('token_estimate').notNull(),
+    contentHash: text('content_hash').notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    index('knowledge_chunks_doc_idx').on(table.docId),
+    index('knowledge_chunks_family_idx').on(table.family)
+  ]
+)
+
+export const reports = sqliteTable(
+  'reports',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    title: text('title').notNull(),
+    format: text('format').notNull(),
+    filePath: text('file_path'),
+    sha256: text('sha256').notNull(),
+    redacted: integer('redacted', { mode: 'boolean' }).notNull(),
+    contentRef: text('content_ref').notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('reports_scan_idx').on(table.scanId, table.createdAt)]
+)
+
+export const modelProfiles = sqliteTable(
+  'model_profiles',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    agentRole: text('agent_role').notNull(),
+    provider: text('provider').notNull(),
+    baseUrl: text('base_url'),
+    model: text('model').notNull(),
+    credentialId: text('credential_id'),
+    timeoutMs: integer('timeout_ms').notNull(),
+    rpmLimit: integer('rpm_limit').notNull(),
+    tpmLimit: integer('tpm_limit').notNull(),
+    tokenBudget: integer('token_budget').notNull(),
+    costBudgetMicros: integer('cost_budget_micros').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [
+    index('model_profiles_role_idx').on(table.agentRole),
+    uniqueIndex('model_profiles_name_uq').on(table.name)
+  ]
+)
+
+export const appSettings = sqliteTable('app_settings', {
+  key: text('key').primaryKey(),
+  valueJson: text('value_json', { mode: 'json' }).$type<unknown>().notNull(),
+  updatedAt: integer('updated_at').notNull()
+})
+
+export const benchmarkCases = sqliteTable(
+  'benchmark_cases',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    targetVersion: text('target_version').notNull(),
+    family: text('family').notNull(),
+    expectedVerdict: text('expected_verdict').notNull(),
+    endpoint: text('endpoint').notNull(),
+    parameter: text('parameter'),
+    identityPlanJson: text('identity_plan_json', { mode: 'json' })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    requiredEvidence: text('required_evidence', { mode: 'json' }).$type<string[]>().notNull(),
+    resetProcedure: text('reset_procedure').notNull(),
+    forbiddenActions: text('forbidden_actions', { mode: 'json' }).$type<string[]>().notNull(),
+    source: text('source').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [index('benchmark_cases_family_idx').on(table.family)]
+)
+
+export const benchmarkRuns = sqliteTable(
+  'benchmark_runs',
+  {
+    id: text('id').primaryKey(),
+    caseId: text('case_id').notNull(),
+    scanId: text('scan_id').notNull(),
+    expectedVerdict: text('expected_verdict').notNull(),
+    actualVerdict: text('actual_verdict').notNull(),
+    metricsJson: text('metrics_json', { mode: 'json' }).$type<Record<string, number>>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('benchmark_runs_case_idx').on(table.caseId, table.createdAt)]
+)
 
 export const auditLogs = sqliteTable(
   'audit_logs',
@@ -349,5 +633,5 @@ export const auditLogs = sqliteTable(
     detailJson: text('detail_json', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('audit_logs_workspace_idx').on(table.workspaceId)]
+  (table) => [index('audit_logs_workspace_idx').on(table.workspaceId, table.createdAt)]
 )

@@ -12,11 +12,13 @@
 
 ### PlannerAgent
 
-输入：TargetScope、当前上下文摘要、历史 checkpoint、预算。
+输入：任务与授权背景、Target、不可变 TargetScope、当前上下文摘要、历史 checkpoint、候选漏洞族和预算。
 
 输出：ScanPlan、阶段目标、候选漏洞族、停止条件、需要人工输入的项目。
 
 Planner 不能增加 scope，不能请求破坏性工具。计划修订次数和总步骤受预算限制。
+
+任务与授权背景是用户提供的不可信业务上下文，只能辅助 Planner 理解目标和限制，不能改变 Scope、身份、PolicyCapabilities 或工具权限。
 
 ### KnowledgeAgent
 
@@ -49,9 +51,9 @@ Verifier 不复用 StrategyAgent 的自由推理结论作为证据，必须读�
 ## 3. 确定性服务
 
 - SecurityPolicy：唯一的 allow/deny/approval 决策者。
-- AgentRuntime：阶段门禁、预算、重试、检查点、去重和循环检测。
+- AgentRuntime：阶段门禁、预算、失败恢复、检查点、去重和循环检测。
 - BrowserRunner / HttpRunner：只执行带 policyDecisionId 的已批准动作。
-- EvidenceStore：保存请求响应摘要、截图、HAR、DOM、回连日志和哈希。
+- EvidenceStore：保存请求响应、截图、DOM、受控回连证明、Agent 输出、报告和哈希。
 - Reporting：同时输出 Confirmed、Inconclusive 和已排除项摘要，避免只报告成功案例。
 
 ## 4. 结构化消息
@@ -78,6 +80,8 @@ interface AgentEnvelope<T> {
 
 大型原文通过引用传递。所有 payload 在进入状态机前使用 Zod 或 JSON Schema 校验。
 
+V1 的实际交接链为 Planner → Knowledge → Strategy → Analysis → Verifier。每次 AgentRun 保存 `parentRunId` 和 `inputRefs`：Knowledge 引用 Planner 输出，Strategy 引用 Planner 与 Knowledge 输出，Analysis 引用 Strategy 运行和执行证据，Verifier 引用 Analysis 输出与同一组证据。后续阶段不能用浅覆盖丢失上游引用。
+
 ## 5. 统一上下文
 
 ```text
@@ -100,7 +104,7 @@ Workspace
 
 - Run Memory：当前 Agent 调用需要的最小上下文，结束后可释放。
 - Scan Memory：一次扫描的页面、接口、身份、动作、信号和验证结果。
-- Workspace Memory：目标历史、已确认误报、用户备注和会话引用。
+- Workspace Memory：目标、Scope 快照、身份、扫描历史和审计记录。
 - Knowledge Memory：版本化知识条目和案例摘要。
 
 记忆压缩不得丢失关键证据引用。摘要超过 token 预算时按“事实 > 证据 > 决策 > 对话”优先级保留。
@@ -109,7 +113,7 @@ Workspace
 
 每个扫描至少设置：
 
-- 最大阶段数；
+- 固定且有界的阶段序列；
 - 最大计划修订次数；
 - 最大请求数和每分钟速率；
 - 最大并发；
@@ -117,18 +121,13 @@ Workspace
 - 最大总时长；
 - 相同动作指纹去重；
 - 连续无新证据次数；
-- 人工等待超时。
+- 人工暂停和显式恢复。
 
 达到预算、连续重复、scope 变化、会话失效或策略拒绝时，Runtime 必须暂停、重规划或输出 Inconclusive，不能无限循环。
 
 ## 8. 阶段状态机
 
-```text
-draft -> scoped -> recon -> enumerating -> hypothesizing
-      -> validating -> verifying -> reporting -> completed
-```
-
-任意执行阶段可以进入 awaiting_user、paused、retrying、failed 或 cancelled。每个阶段完成后生成 checkpoint。
+扫描状态为 `draft -> queued/running -> completed`，执行中可进入 `awaiting-user`、`paused`、`failed` 或 `cancelled`。运行阶段依次为 intake、passive-recon、active-enum、hypothesis、validation、verification、report，每个阶段完成后生成 checkpoint。
 
 ## 9. 人工介入点
 
@@ -144,6 +143,6 @@ draft -> scoped -> recon -> enumerating -> hypothesizing
 
 ## 10. Prompt 与模型
 
-Prompt 视为代码，至少记录 id、version、hash、适用 Agent、输入输出 schema 和变更说明。
+Prompt 视为代码，至少记录 id、version、hash、适用 Agent、输入输出 schema 和变更说明。当前五个 V1 Agent Prompt 版本为 `1.1.0`，均向外部模型提供明确 JSON 输出契约。
 
-不同 Agent 可以使用不同 Provider、Base URL、模型和预算，但都必须通过 ModelGateway。模型调用记录应保存模型标识、Prompt 版本、Token、耗时、费用估算、输入输出摘要和脱敏结果。
+不同 Agent 可以使用不同 Provider、Base URL、模型和预算，但都必须通过 ModelGateway。创建扫描时必须解析并冻结五个角色的 Profile ID；Coordinator 按扫描配置路由，只有兼容旧记录缺少该字段时才回退到角色默认 Profile。模型调用记录应保存模型标识、Prompt 版本、Token、耗时、费用估算、输入输出摘要和脱敏结果。OpenAI-compatible 连接测试必须真实调用 `chat/completions` 并完成结构化响应校验。

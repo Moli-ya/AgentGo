@@ -1,13 +1,14 @@
-# AgentGo 开发环境
+# AgentGo 开发与交付环境
 
 ## 通用要求
 
-- Windows 10/11
+- Windows 10/11 x64
 - Node.js 24+
 - pnpm 10+
 - Git
+- Microsoft Edge 或 Google Chrome，用于隔离 XSS 渲染测试
 
-验证：
+验证环境：
 
 ```powershell
 node --version
@@ -15,48 +16,73 @@ pnpm --version
 git --version
 ```
 
-克隆后在仓库根目录运行：
+项目不依赖固定盘符。SQLite 随 Node/Electron 运行时提供，最终用户不需要安装 SQLite CLI；Playwright Core 使用系统浏览器，不需要下载 Playwright 浏览器包。
+
+## 安装和开发
 
 ```powershell
 pnpm install
-pnpm typecheck
-pnpm test
 pnpm dev
 ```
 
-项目不能依赖某个固定盘符才能构建。所有缓存和工具路径都应允许通过环境变量覆盖。
+Renderer 浏览器预览只能用于界面调试，写数据库、凭据、扫描和导出等功能必须在 Electron 中运行。
 
-## 当前本机可选环境
+仓库中的 `scripts/use-local-env.ps1` 和 `scripts/configure-system-env.ps1` 仅是特定开发机的可选便利脚本，包含本机路径假设，不是项目运行前提，也不应在未知机器上直接执行管理员级脚本。
 
-当前开发机将工具和缓存集中在 D:\surrounding 下，包括 Git、Node.js、pnpm、SQLite、Playwright、Electron 缓存和 Rust。这是本机优化，不是项目的通用前置条件。
-
-如果新 PowerShell 尚未获得这些路径，可以在仓库根目录执行：
+## 质量门禁
 
 ```powershell
-. .\scripts\use-local-env.ps1
+pnpm check
+pnpm smoke:desktop
+pnpm benchmark:verify
 ```
 
-如确实需要写入系统级环境变量，可在管理员 PowerShell 中执行：
+- `pnpm check`：全仓类型检查、全部 Vitest、Electron 生产构建。
+- `pnpm smoke:desktop`：启动 Electron，等待 Renderer 就绪并验证安全策略；使用内存数据库，不访问外部目标。
+- `pnpm benchmark:verify`：校验 40 Case manifest 和指标实现，不执行完整扫描。
+
+单独调试测试可使用：
 
 ```powershell
-.\scripts\configure-system-env.ps1
+pnpm vitest run packages/application/src/application-service.test.ts
+pnpm --filter @agentgo/application typecheck
 ```
 
-系统级配置是可选项；普通贡献者不应为了运行项目而必须执行管理员脚本。
-
-## GitHub
-
-GitHub CLI 登录：
+## 固定靶场评测
 
 ```powershell
-gh auth login
+pnpm benchmark:fixture
+pnpm benchmark:run --output .\benchmark-results\my-run
 ```
 
-登录后可使用 git push 或 gh 管理远端仓库。
+`benchmark:run` 会自行启动只监听 `127.0.0.1` 的固定靶场，并保存数据库、证据、预测、JSON 汇总和 Markdown 报告。输出目录已被 Git 忽略。不要让 Agent 读取 `benchmarks/v1-ground-truth.json` 中的预期标签。
 
-## 后续环境项
+## Windows 交付
 
-- Playwright 浏览器通过项目脚本安装或由应用首次启动引导；
-- SQLite 驱动随应用打包，不要求最终用户安装 SQLite CLI；
-- Rust 仅用于未来经过 profiling 确认的热点模块；
-- API Key 不写入 .env 示例以外的仓库文件，运行时进入操作系统凭据存储。
+```powershell
+pnpm pack:win
+pnpm smoke:packaged
+pnpm dist:win
+```
+
+- `pack:win`：生成 `release/win-unpacked/AgentGo.exe`。
+- `smoke:packaged`：验证打包应用可初始化数据库、IPC、Renderer 和策略自检。
+- `dist:win`：生成 x64 NSIS 安装器。
+
+打包直接复用工作区已安装的 Electron 发行目录，因此 Electron 本体无需在每次构建时重新下载；首次生成 NSIS 安装器仍可能需要联网获取 electron-builder 的已校验工具包。
+
+当前原型未配置代码签名和自定义图标。正式分发前需要准备证书、签名策略、图标和安装/升级/卸载矩阵测试。
+
+## 凭据和环境变量
+
+API Key 不写入仓库或普通 `.env` 文件。运行时由 Electron `safeStorage` 加密，数据库只保存引用。CI 或本地命令如确需临时环境变量，应由调用环境注入，并确保日志不输出其值。
+
+## Git 边界
+
+以下内容属于本地材料或生成物，不应提交：
+
+- 原始 `.doc` / `.docx` 计划书；
+- 应用运行数据、凭据和证据；
+- `benchmark-results/`；
+- `release/`；
+- 开发者个人指令文件和本机环境配置。

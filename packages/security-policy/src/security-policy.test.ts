@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { ProbeAction, TargetScope } from '@agentgo/contracts'
-import { evaluateProbe } from './index'
+import {
+  classifyNetworkAddress,
+  evaluateProbe,
+  evaluateResolvedAddresses
+} from './index'
 
 const scope: TargetScope = {
   id: 'scope-demo',
   allowedOrigins: ['https://lab.example.test'],
   allowedPathPrefixes: ['/'],
+  deniedPathPrefixes: [],
+  allowedPorts: [443],
+  allowedIdentityIds: [],
   allowActiveProbing: true,
   allowSensitiveProbing: true,
+  allowPrivateNetworkTargets: false,
+  allowLoopbackTargets: false,
   maxRequestsPerMinute: 30,
   maxConcurrency: 2
 }
@@ -22,6 +31,8 @@ function action(overrides: Partial<ProbeAction> = {}): ProbeAction {
     sideEffect: 'none',
     summary: '发送惰性标记并比较响应差异',
     expectedEvidence: '基线与测试响应差异',
+    maxRequests: 1,
+    timeoutMs: 10_000,
     userApproved: false,
     ...overrides
   }
@@ -148,5 +159,60 @@ describe('evaluateProbe', () => {
       allowed: false,
       code: 'rate-limit-exceeded'
     })
+  })
+
+  it('enforces denied paths, ports and identity scope', () => {
+    const restricted: TargetScope = {
+      ...scope,
+      deniedPathPrefixes: ['/admin'],
+      allowedIdentityIds: ['identity-a']
+    }
+
+    expect(
+      evaluateProbe(
+        action({ targetUrl: 'https://lab.example.test/admin/users' }),
+        restricted
+      )
+    ).toMatchObject({ allowed: false, code: 'out-of-scope' })
+    expect(
+      evaluateProbe(
+        action({ targetUrl: 'https://lab.example.test:8443/search' }),
+        restricted
+      )
+    ).toMatchObject({ allowed: false, code: 'out-of-scope' })
+    expect(
+      evaluateProbe(action({ identityId: 'identity-b' }), restricted)
+    ).toMatchObject({ allowed: false, code: 'identity-out-of-scope' })
+  })
+})
+
+describe('resolved network boundary', () => {
+  it('classifies loopback, private, metadata and public addresses', () => {
+    expect(classifyNetworkAddress('127.0.0.1')).toBe('loopback')
+    expect(classifyNetworkAddress('10.1.2.3')).toBe('private')
+    expect(classifyNetworkAddress('169.254.169.254')).toBe('metadata')
+    expect(classifyNetworkAddress('8.8.8.8')).toBe('public')
+    expect(classifyNetworkAddress('::1')).toBe('loopback')
+  })
+
+  it('blocks local addresses unless explicitly authorized and never allows metadata', () => {
+    expect(evaluateResolvedAddresses(['127.0.0.1'], scope)).toMatchObject({
+      allowed: false,
+      code: 'network-address-blocked'
+    })
+    expect(
+      evaluateResolvedAddresses(['127.0.0.1'], {
+        ...scope,
+        allowLoopbackTargets: true,
+        allowPrivateNetworkTargets: true
+      })
+    ).toMatchObject({ allowed: true, code: 'allowed' })
+    expect(
+      evaluateResolvedAddresses(['169.254.169.254'], {
+        ...scope,
+        allowLoopbackTargets: true,
+        allowPrivateNetworkTargets: true
+      })
+    ).toMatchObject({ allowed: false, code: 'network-address-blocked' })
   })
 })

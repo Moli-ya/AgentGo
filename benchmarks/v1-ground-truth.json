@@ -1,0 +1,1237 @@
+{
+  "schemaVersion": "agentgo-ground-truth/1.0",
+  "targetVersion": "agentgo-local-fixture/1.0.0",
+  "note": "These labels define the fixed local benchmark contract. Experimental outputs are stored separately and must not be exposed to Agents during a scan.",
+  "cases": [
+    {
+      "caseId": "v1-sqli-positive-01",
+      "name": "SQLI positive local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/positive/1",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-positive-02",
+      "name": "SQLI positive local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/positive/2",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-positive-03",
+      "name": "SQLI positive local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/positive/3",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-positive-04",
+      "name": "SQLI positive local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/positive/4",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-positive-05",
+      "name": "SQLI positive local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/positive/5",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-negative-01",
+      "name": "SQLI negative local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/negative/1",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-negative-02",
+      "name": "SQLI negative local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/negative/2",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-negative-03",
+      "name": "SQLI negative local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/negative/3",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-negative-04",
+      "name": "SQLI negative local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/negative/4",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-sqli-negative-05",
+      "name": "SQLI negative local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "sqli",
+      "endpoint": "/cases/sqli/negative/5",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "sqli-boolean-differential@1.0.0",
+      "requiredEvidence": [
+        "baseline-response",
+        "boolean-test-response",
+        "negative-control",
+        "repeat-response"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-positive-01",
+      "name": "XSS positive local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/positive/1",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-positive-02",
+      "name": "XSS positive local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/positive/2",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-positive-03",
+      "name": "XSS positive local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/positive/3",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-positive-04",
+      "name": "XSS positive local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/positive/4",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-positive-05",
+      "name": "XSS positive local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/positive/5",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-negative-01",
+      "name": "XSS negative local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/negative/1",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-negative-02",
+      "name": "XSS negative local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/negative/2",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-negative-03",
+      "name": "XSS negative local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/negative/3",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-negative-04",
+      "name": "XSS negative local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/negative/4",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-xss-negative-05",
+      "name": "XSS negative local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "xss",
+      "endpoint": "/cases/xss/negative/5",
+      "parameter": "q",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "xss-inert-marker-execution@1.0.0",
+      "requiredEvidence": [
+        "http-response",
+        "isolated-dom",
+        "isolated-screenshot"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-positive-01",
+      "name": "SSRF positive local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/positive/1",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-positive-02",
+      "name": "SSRF positive local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/positive/2",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-positive-03",
+      "name": "SSRF positive local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/positive/3",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-positive-04",
+      "name": "SSRF positive local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/positive/4",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-positive-05",
+      "name": "SSRF positive local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/positive/5",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-negative-01",
+      "name": "SSRF negative local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/negative/1",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-negative-02",
+      "name": "SSRF negative local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/negative/2",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-negative-03",
+      "name": "SSRF negative local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/negative/3",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-negative-04",
+      "name": "SSRF negative local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/negative/4",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-ssrf-negative-05",
+      "name": "SSRF negative local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "ssrf",
+      "endpoint": "/cases/ssrf/negative/5",
+      "parameter": "url",
+      "identityPlan": {
+        "requiredRoles": [
+          "test-user"
+        ]
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "ssrf-controlled-proof-response@1.0.0",
+      "requiredEvidence": [
+        "callback-proof",
+        "target-response",
+        "negative-control"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-positive-01",
+      "name": "IDOR positive local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/positive/1",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-positive-02",
+      "name": "IDOR positive local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/positive/2",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-positive-03",
+      "name": "IDOR positive local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/positive/3",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-positive-04",
+      "name": "IDOR positive local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/positive/4",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-positive-05",
+      "name": "IDOR positive local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/positive/5",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-negative-01",
+      "name": "IDOR negative local case 1",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/negative/1",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-negative-02",
+      "name": "IDOR negative local case 2",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/negative/2",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-negative-03",
+      "name": "IDOR negative local case 3",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/negative/3",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-negative-04",
+      "name": "IDOR negative local case 4",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/negative/4",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    },
+    {
+      "caseId": "v1-idor-negative-05",
+      "name": "IDOR negative local case 5",
+      "targetVersion": "agentgo-local-fixture/1.0.0",
+      "family": "idor",
+      "endpoint": "/cases/idor/negative/5",
+      "parameter": "id",
+      "identityPlan": {
+        "requiredRoles": [
+          "owner",
+          "member"
+        ],
+        "ownedResourceIdsRequired": true
+      },
+      "expectedVerdict": "not-confirmed",
+      "confirmationRule": "idor-two-test-identities-readonly@1.0.0",
+      "requiredEvidence": [
+        "owner-read",
+        "second-identity-own-read",
+        "cross-identity-read"
+      ],
+      "resetProcedure": "Stateless local fixture; restart the fixture before each repeated experiment batch.",
+      "forbiddenActions": [
+        "destructive writes",
+        "out-of-scope access",
+        "credential exfiltration",
+        "high-intensity denial of service"
+      ],
+      "source": "AgentGo self-built fixed local fixture",
+      "license": "project-internal-test-data",
+      "reviewer": "project-team-human-review-required"
+    }
+  ]
+}

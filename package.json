@@ -14,11 +14,18 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "pnpm --filter @agentgo/desktop build",
+    "pack:win": "pnpm --filter @agentgo/desktop pack:win",
+    "dist:win": "pnpm --filter @agentgo/desktop dist:win",
     "smoke:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-desktop.ps1",
+    "smoke:packaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-packaged.ps1",
+    "benchmark:verify": "pnpm vitest run packages/evaluation/src/evaluation.test.ts",
+    "benchmark:fixture": "tsx packages/evaluation/src/serve-local-fixture.ts",
+    "benchmark:run": "tsx packages/evaluation/src/run-local-benchmark.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {
     "@types/node": "26.1.1",
+    "tsx": "4.23.0",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }

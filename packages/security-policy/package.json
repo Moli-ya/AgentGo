@@ -11,5 +11,8 @@
   },
   "dependencies": {
     "@agentgo/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1"
   }
 }

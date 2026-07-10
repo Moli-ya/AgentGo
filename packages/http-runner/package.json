@@ -8,5 +8,11 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "undici": "7.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1"
   }
 }

@@ -1,0 +1,27 @@
+{
+  "name": "@agentgo/application",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agentgo/agent-runtime": "workspace:*",
+    "@agentgo/browser-runner": "workspace:*",
+    "@agentgo/contracts": "workspace:*",
+    "@agentgo/db": "workspace:*",
+    "@agentgo/http-runner": "workspace:*",
+    "@agentgo/knowledge-base": "workspace:*",
+    "@agentgo/model-gateway": "workspace:*",
+    "@agentgo/reporting": "workspace:*",
+    "@agentgo/security-policy": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1"
+  }
+}

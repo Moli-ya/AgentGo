@@ -1,1 +1,6 @@
+export * from './credential-store'
+export * from './database'
+export * from './evidence-store'
+export * from './migrations'
+export * from './repository'
 export * from './schema'

@@ -4,6 +4,17 @@
 
 评测必须回答“Multi-Agent、KnowledgeAgent、主动验证和 Verifier 是否真的带来价值”，而不只是证明应用能够启动。
 
+## 当前实现状态
+
+仓库已提供固定版本 `agentgo-local-fixture/1.0.0`、40 Case Ground Truth、自动运行器、指标实现和六项安全门禁统计：
+
+```powershell
+pnpm benchmark:verify
+pnpm benchmark:run --output .\benchmark-results\my-run
+```
+
+2026-07-10 的确定性回归运行中，40/40 Case 有结论，Precision、Recall、F1 和证据完整率为 1，FPR 与 Inconclusive Rate 为 0，安全门禁全部为 0。该结果只证明自建固定靶场上的回归闭环，不代表真实世界泛化能力，也不能替代本计划要求的双人人工复核、第三方靶场、重复实验和消融研究。
+
 ## 2. 固定测试环境
 
 优先使用本地、可重置、版本固定的授权环境，例如：

@@ -29,6 +29,23 @@ export const ScanPhaseSchema = z.enum([
 
 export type ScanPhase = z.infer<typeof ScanPhaseSchema>
 
+export const ScanStatusSchema = z.enum([
+  'draft',
+  'queued',
+  'running',
+  'paused',
+  'awaiting-user',
+  'completed',
+  'failed',
+  'cancelled'
+])
+
+export type ScanStatus = z.infer<typeof ScanStatusSchema>
+
+export const ScanControlActionSchema = z.enum(['start', 'pause', 'resume', 'cancel'])
+
+export type ScanControlAction = z.infer<typeof ScanControlActionSchema>
+
 export const AgentRoleSchema = z.enum([
   'planner',
   'knowledge',
@@ -64,3 +81,13 @@ export interface ScanBudget {
   maxModelTokens: number
   maxEstimatedCost: number
 }
+
+export const ScanBudgetSchema = z.object({
+  maxRequests: z.number().int().positive().max(10_000),
+  maxRequestsPerMinute: z.number().int().positive().max(600),
+  maxConcurrency: z.number().int().positive().max(32),
+  maxPlanRevisions: z.number().int().nonnegative().max(20),
+  maxDurationMinutes: z.number().int().positive().max(1_440),
+  maxModelTokens: z.number().int().nonnegative().max(10_000_000),
+  maxEstimatedCost: z.number().nonnegative().max(100_000)
+})

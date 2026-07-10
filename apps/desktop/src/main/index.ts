@@ -1,23 +1,80 @@
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain } from 'electron'
-import { createDefaultScanPlan } from '@agentgo/agent-runtime'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import {
+  AgentGoApplicationService,
+  AgentPromptCatalog,
+  DefaultScanCoordinator,
+  ExecutionService,
+  PolicyBroker,
+  PolicyExecutionGuard,
+  ReportService
+} from '@agentgo/application'
+import { createDefaultScanPlan } from '@agentgo/agent-runtime'
+import { PlaywrightBrowserRunner } from '@agentgo/browser-runner'
+import {
+  AuditFilterSchema,
+  ControlScanInputSchema,
+  CreateScanInputSchema,
+  CreateTargetInputSchema,
+  CreateWorkspaceInputSchema,
+  DeleteByIdInputSchema,
+  DesktopOutputSchemas,
+  ExportReportInputSchema,
+  FindingFilterSchema,
+  GenerateReportInputSchema,
   IPC_CHANNELS,
+  KnowledgeSearchInputSchema,
+  ModelProfileFilterSchema,
+  OptionalWorkspaceFilterSchema,
+  ReportFilterSchema,
+  SaveModelProfileInputSchema,
+  SaveIdentityInputSchema,
+  ScanFilterSchema,
+  TargetFilterSchema,
+  UpdateTargetInputSchema,
+  WorkspaceFilterSchema,
   type BootstrapState,
   type PolicySelfCheckResult,
   type ProbeAction,
   type TargetScope
 } from '@agentgo/contracts'
+import {
+  AgentGoRepository,
+  EvidenceStore,
+  FileCredentialStore,
+  openAgentGoDatabase,
+  type AgentGoDatabase,
+  type SecretProtector
+} from '@agentgo/db'
+import { UndiciHttpRunner } from '@agentgo/http-runner'
+import { DefaultModelGateway } from '@agentgo/model-gateway'
 import { evaluateProbe } from '@agentgo/security-policy'
 
 const plan = createDefaultScanPlan()
 const isSmokeTest = process.env.AGENTGO_SMOKE_TEST === '1'
 
+interface Parser<T> {
+  parse(value: unknown): T
+}
+
+interface MainInfrastructure {
+  database: AgentGoDatabase
+  repository: AgentGoRepository
+  applicationService: AgentGoApplicationService
+  scanCoordinator: DefaultScanCoordinator
+  dataDirectory: string
+}
+
+let infrastructure: MainInfrastructure | undefined
+
 function getBootstrapState(): BootstrapState {
   return {
     appVersion: app.getVersion(),
-    milestone: 'M0',
-    projectStatus: '架构骨架已建立，主动探测策略处于可验证状态',
+    milestone: 'V1',
+    projectStatus: '四类漏洞的授权验证、证据、复核与报告闭环已接入',
+    dataDirectory: infrastructure?.dataDirectory ?? '',
+    databaseReady: Boolean(infrastructure),
     agents: ['planner', 'knowledge', 'strategy', 'analysis', 'verifier'],
     phases: plan.phases,
     vulnerabilityFamilies: plan.families,
@@ -35,8 +92,13 @@ function runPolicySelfCheck(): PolicySelfCheckResult {
     id: 'desktop-self-check',
     allowedOrigins: ['https://lab.example.test'],
     allowedPathPrefixes: ['/'],
+    deniedPathPrefixes: [],
+    allowedPorts: [443],
+    allowedIdentityIds: [],
     allowActiveProbing: true,
     allowSensitiveProbing: false,
+    allowPrivateNetworkTargets: false,
+    allowLoopbackTargets: false,
     maxRequestsPerMinute: 30,
     maxConcurrency: 2
   }
@@ -52,6 +114,8 @@ function runPolicySelfCheck(): PolicySelfCheckResult {
     expectedEvidence: '基线和测试响应摘要',
     requestedRequestsPerMinute: 5,
     requestedConcurrency: 1,
+    maxRequests: 1,
+    timeoutMs: 10_000,
     userApproved: false
   }
 
@@ -65,6 +129,8 @@ function runPolicySelfCheck(): PolicySelfCheckResult {
     summary: '尝试执行破坏性数据库语句',
     payloadSummary: 'DROP TABLE users',
     expectedEvidence: '该动作不应执行',
+    maxRequests: 1,
+    timeoutMs: 10_000,
     userApproved: true
   }
 
@@ -75,9 +141,209 @@ function runPolicySelfCheck(): PolicySelfCheckResult {
   }
 }
 
-function registerIpcHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.getBootstrapState, () => getBootstrapState())
-  ipcMain.handle(IPC_CHANNELS.runPolicySelfCheck, () => runPolicySelfCheck())
+function handle<TInput, TResult>(
+  channel: string,
+  inputParser: Parser<TInput>,
+  outputParser: Parser<TResult>,
+  callback: (input: TInput) => TResult | Promise<TResult>
+): void {
+  ipcMain.handle(channel, async (_event, payload: unknown) =>
+    outputParser.parse(await callback(inputParser.parse(payload)))
+  )
+}
+
+function handleNoInput<TResult>(
+  channel: string,
+  outputParser: Parser<TResult>,
+  callback: () => TResult | Promise<TResult>
+): void {
+  ipcMain.handle(channel, async () => outputParser.parse(await callback()))
+}
+
+function registerIpcHandlers(service: AgentGoApplicationService): void {
+  handleNoInput(
+    IPC_CHANNELS.getBootstrapState,
+    DesktopOutputSchemas.bootstrapState,
+    getBootstrapState
+  )
+  handleNoInput(
+    IPC_CHANNELS.runPolicySelfCheck,
+    DesktopOutputSchemas.policySelfCheck,
+    runPolicySelfCheck
+  )
+  handleNoInput(
+    IPC_CHANNELS.listWorkspaces,
+    DesktopOutputSchemas.workspaces,
+    () => service.listWorkspaces()
+  )
+
+  handle(
+    IPC_CHANNELS.getDashboard,
+    OptionalWorkspaceFilterSchema,
+    DesktopOutputSchemas.dashboard,
+    (input) => service.getDashboard(input.workspaceId)
+  )
+  handle(
+    IPC_CHANNELS.createWorkspace,
+    CreateWorkspaceInputSchema,
+    DesktopOutputSchemas.workspace,
+    (input) => service.createWorkspace(input)
+  )
+  handle(
+    IPC_CHANNELS.deleteWorkspace,
+    DeleteByIdInputSchema,
+    DesktopOutputSchemas.deleteResult,
+    (input) => service.deleteWorkspace(input.id)
+  )
+  handle(
+    IPC_CHANNELS.listTargets,
+    WorkspaceFilterSchema,
+    DesktopOutputSchemas.targets,
+    (input) => service.listTargets(input.workspaceId)
+  )
+  handle(
+    IPC_CHANNELS.getTargetDetail,
+    TargetFilterSchema,
+    DesktopOutputSchemas.targetDetail,
+    (input) => service.getTargetDetail(input.targetId)
+  )
+  handle(
+    IPC_CHANNELS.createTarget,
+    CreateTargetInputSchema,
+    DesktopOutputSchemas.targetDetail,
+    (input) => service.createTarget(input)
+  )
+  handle(
+    IPC_CHANNELS.updateTarget,
+    UpdateTargetInputSchema,
+    DesktopOutputSchemas.targetDetail,
+    (input) => service.updateTarget(input)
+  )
+  handle(
+    IPC_CHANNELS.deleteTarget,
+    DeleteByIdInputSchema,
+    DesktopOutputSchemas.deleteResult,
+    (input) => service.deleteTarget(input.id)
+  )
+  handle(
+    IPC_CHANNELS.saveIdentity,
+    SaveIdentityInputSchema,
+    DesktopOutputSchemas.identity,
+    (input) => service.saveIdentity(input)
+  )
+  handle(
+    IPC_CHANNELS.deleteIdentity,
+    DeleteByIdInputSchema,
+    DesktopOutputSchemas.deleteResult,
+    (input) => service.deleteIdentity(input.id)
+  )
+  handle(
+    IPC_CHANNELS.listScans,
+    OptionalWorkspaceFilterSchema,
+    DesktopOutputSchemas.scans,
+    (input) => service.listScans(input.workspaceId)
+  )
+  handle(
+    IPC_CHANNELS.createScan,
+    CreateScanInputSchema,
+    DesktopOutputSchemas.scan,
+    (input) => service.createScan(input)
+  )
+  handle(
+    IPC_CHANNELS.controlScan,
+    ControlScanInputSchema,
+    DesktopOutputSchemas.scan,
+    (input) => service.controlScan(input.scanId, input.action)
+  )
+  handle(
+    IPC_CHANNELS.getScanDetail,
+    ScanFilterSchema,
+    DesktopOutputSchemas.scanDetail,
+    (input) => service.getScanDetail(input.scanId)
+  )
+  handle(
+    IPC_CHANNELS.searchKnowledge,
+    KnowledgeSearchInputSchema,
+    DesktopOutputSchemas.knowledgeEntries,
+    (input) => service.searchKnowledge(input)
+  )
+  handle(
+    IPC_CHANNELS.listFindings,
+    FindingFilterSchema,
+    DesktopOutputSchemas.findings,
+    (input) => service.listFindings(input)
+  )
+  handle(
+    IPC_CHANNELS.listReports,
+    ReportFilterSchema,
+    DesktopOutputSchemas.reports,
+    (input) => service.listReports(input.scanId)
+  )
+  handle(
+    IPC_CHANNELS.generateReport,
+    GenerateReportInputSchema,
+    DesktopOutputSchemas.report,
+    (input) => service.generateReport(input)
+  )
+  handle(
+    IPC_CHANNELS.exportReport,
+    ExportReportInputSchema,
+    DesktopOutputSchemas.exportReport,
+    async (input) => {
+      const report = await service.readReport(input.reportId)
+      const safeName = report.report.title
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+        .slice(0, 120)
+      const selection = await dialog.showSaveDialog({
+        title: '导出脱敏安全验证报告',
+        defaultPath: `${safeName}${report.extension}`,
+        filters: [
+          {
+            name: report.report.format.toUpperCase(),
+            extensions: [report.extension.slice(1)]
+          }
+        ]
+      })
+      if (selection.canceled || !selection.filePath) {
+        return DesktopOutputSchemas.exportReport.parse({ exported: false })
+      }
+      await writeFile(selection.filePath, report.content, { flag: 'w', mode: 0o600 })
+      await service.markReportExported(input.reportId, selection.filePath)
+      return DesktopOutputSchemas.exportReport.parse({
+        exported: true,
+        filePath: selection.filePath
+      })
+    }
+  )
+  handleNoInput(
+    IPC_CHANNELS.listModelProfiles,
+    DesktopOutputSchemas.modelProfiles,
+    () => service.listModelProfiles()
+  )
+  handle(
+    IPC_CHANNELS.saveModelProfile,
+    SaveModelProfileInputSchema,
+    DesktopOutputSchemas.modelProfile,
+    (input) => service.saveModelProfile(input)
+  )
+  handle(
+    IPC_CHANNELS.deleteModelProfile,
+    DeleteByIdInputSchema,
+    DesktopOutputSchemas.deleteResult,
+    (input) => service.deleteModelProfile(input.id)
+  )
+  handle(
+    IPC_CHANNELS.testModelProfile,
+    ModelProfileFilterSchema,
+    DesktopOutputSchemas.connectionTest,
+    (input) => service.testModelProfile(input.id)
+  )
+  handle(
+    IPC_CHANNELS.listAuditLogs,
+    AuditFilterSchema,
+    DesktopOutputSchemas.auditLogs,
+    (input) => infrastructure!.repository.listAuditLogs(input)
+  )
 
   if (isSmokeTest) {
     const smokeTimeout = setTimeout(() => {
@@ -88,14 +354,81 @@ function registerIpcHandlers(): void {
     ipcMain.once(IPC_CHANNELS.rendererReady, () => {
       clearTimeout(smokeTimeout)
       const result = runPolicySelfCheck()
-      const passed = result.safeProbe.allowed && !result.destructiveProbe.allowed
-      console.log(
-        passed
-          ? 'AGENTGO_SMOKE_TEST_OK'
-          : 'AGENTGO_SMOKE_TEST_FAILED'
-      )
+      const passed =
+        result.safeProbe.allowed &&
+        !result.destructiveProbe.allowed &&
+        Boolean(infrastructure)
+      console.log(passed ? 'AGENTGO_SMOKE_TEST_OK' : 'AGENTGO_SMOKE_TEST_FAILED')
       app.exit(passed ? 0 : 1)
     })
+  }
+}
+
+function createInfrastructure(): MainInfrastructure {
+  const dataDirectory = isSmokeTest ? ':memory:' : app.getPath('userData')
+  const databasePath = isSmokeTest
+    ? ':memory:'
+    : join(dataDirectory, 'data', 'agentgo.sqlite')
+  const database = openAgentGoDatabase(databasePath)
+  const repository = new AgentGoRepository(database)
+  const protector: SecretProtector = {
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    protect: (value) => safeStorage.encryptString(value),
+    unprotect: (value) => safeStorage.decryptString(value)
+  }
+  const credentialPath = isSmokeTest
+    ? join(app.getPath('temp'), `agentgo-smoke-credentials-${process.pid}.json`)
+    : join(dataDirectory, 'credentials', 'credentials.json')
+  const credentialStore = new FileCredentialStore(credentialPath, protector)
+  const artifactRoot = isSmokeTest
+    ? join(app.getPath('temp'), `agentgo-smoke-artifacts-${process.pid}`)
+    : join(dataDirectory, 'artifacts')
+  const evidenceStore = new EvidenceStore(database, artifactRoot)
+  const guard = new PolicyExecutionGuard(repository)
+  const executionService = new ExecutionService(
+    repository,
+    evidenceStore,
+    new UndiciHttpRunner(guard),
+    new PlaywrightBrowserRunner(guard, { headless: true })
+  )
+  const reportService = new ReportService(repository, evidenceStore)
+  const modelGateway = new DefaultModelGateway({
+    profiles: repository,
+    credentials: credentialStore,
+    prompts: new AgentPromptCatalog(),
+    invocations: repository
+  })
+  const applicationService = new AgentGoApplicationService({
+    repository,
+    credentialStore,
+    evidenceStore,
+    modelGateway,
+    reportService
+  })
+  const scanCoordinator = new DefaultScanCoordinator({
+    repository,
+    credentialStore,
+    evidenceStore,
+    executionService,
+    policyBroker: new PolicyBroker(repository),
+    modelGateway,
+    reportService,
+    onEvent: (event) => {
+      const validatedEvent = DesktopOutputSchemas.scanEvent.parse(event)
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) {
+          window.webContents.send(IPC_CHANNELS.scanEvent, validatedEvent)
+        }
+      }
+    }
+  })
+  applicationService.setScanCoordinator(scanCoordinator)
+  return {
+    database,
+    repository,
+    applicationService,
+    scanCoordinator,
+    dataDirectory
   }
 }
 
@@ -106,12 +439,13 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 640,
     show: false,
-    backgroundColor: '#0b1220',
+    backgroundColor: '#f5f7fb',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       sandbox: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      devTools: !app.isPackaged
     }
   })
 
@@ -121,22 +455,16 @@ function createWindow(): void {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
   const devUrl = process.env.ELECTRON_RENDERER_URL
-
   window.webContents.on('will-navigate', (event, url) => {
     const allowed = devUrl ? url.startsWith(devUrl) : url.startsWith('file://')
-    if (!allowed) {
-      event.preventDefault()
-    }
+    if (!allowed) event.preventDefault()
   })
 
   if (isSmokeTest) {
-    window.webContents.once(
-      'did-fail-load',
-      (_event, errorCode, errorDescription) => {
-        console.error('AGENTGO_SMOKE_TEST_LOAD_FAILED', errorCode, errorDescription)
-        app.exit(1)
-      }
-    )
+    window.webContents.once('did-fail-load', (_event, code, description) => {
+      console.error('AGENTGO_SMOKE_TEST_LOAD_FAILED', code, description)
+      app.exit(1)
+    })
   }
 
   if (devUrl) {
@@ -146,19 +474,30 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
-  registerIpcHandlers()
+app.whenReady().then(async () => {
+  infrastructure = createInfrastructure()
+  await infrastructure.applicationService.initialize()
+  registerIpcHandlers(infrastructure.applicationService)
   createWindow()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+let shutdownStarted = false
+app.on('before-quit', (event) => {
+  if (!infrastructure || shutdownStarted) return
+  event.preventDefault()
+  shutdownStarted = true
+  const current = infrastructure
+  void current.scanCoordinator.shutdown().finally(() => {
+    current.database.close()
+    infrastructure = undefined
+    app.quit()
   })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (process.platform !== 'darwin') app.quit()
 })
