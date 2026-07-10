@@ -284,15 +284,171 @@ export type KnowledgeSearchInput = z.infer<typeof KnowledgeSearchInputSchema>
 export const KnowledgeEntrySummarySchema = z.object({
   id: IdSchema,
   version: z.string(),
-  family: VulnerabilityFamilySchema,
+  family: VulnerabilityFamilySchema.optional(),
   title: z.string(),
   applicability: z.array(z.string()),
   confirmationRules: z.array(z.string()),
   remediationHints: z.array(z.string()),
-  sourceTitles: z.array(z.string())
+  sourceTitles: z.array(z.string()),
+  vendor: z.string().optional(),
+  product: z.string().optional(),
+  sourceType: z.string().optional()
 })
 
 export type KnowledgeEntrySummary = z.infer<typeof KnowledgeEntrySummarySchema>
+
+export const KnowledgeSourceTypeSchema = z.enum([
+  'vendor-advisory',
+  'public-poc',
+  'research',
+  'repository',
+  'other'
+])
+export type KnowledgeSourceType = z.infer<typeof KnowledgeSourceTypeSchema>
+
+export const KnowledgeImportStatusSchema = z.enum([
+  'draft',
+  'extracting',
+  'needs-review',
+  'ready-for-review',
+  'published',
+  'rejected',
+  'failed'
+])
+export type KnowledgeImportStatus = z.infer<typeof KnowledgeImportStatusSchema>
+
+export const KnowledgeHttpRequestTemplateSchema = z.object({
+  method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']),
+  pathTemplate: z.string().trim().min(1).max(2_048),
+  contentType: z.string().trim().max(200).optional(),
+  queryParameters: z.array(z.string().trim().min(1).max(200)).max(100).default([]),
+  headersTemplate: z.record(
+    z.string().trim().min(1).max(200),
+    z.string().max(4_096)
+  ).default({}),
+  bodyTemplate: z.string().max(100_000).optional(),
+  controllableFields: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  riskFlags: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  unsafeToExecute: z.literal(true).default(true)
+})
+export type KnowledgeHttpRequestTemplate = z.infer<typeof KnowledgeHttpRequestTemplateSchema>
+
+export const KnowledgeFieldEvidenceSchema = z.object({
+  field: z.string().trim().min(1).max(300),
+  quote: z.string().trim().min(1).max(2_000),
+  confidence: z.number().min(0).max(1)
+})
+export type KnowledgeFieldEvidence = z.infer<typeof KnowledgeFieldEvidenceSchema>
+
+export const KnowledgeIntelligenceCandidateSchema = z.object({
+  schemaVersion: z.literal('vulnerability-intel.v1'),
+  title: z.string().trim().min(1).max(500),
+  vendor: z.string().trim().min(1).max(300),
+  product: z.string().trim().min(1).max(300),
+  vulnerabilityType: z.string().trim().min(1).max(300),
+  family: VulnerabilityFamilySchema.optional(),
+  identifiers: z.object({
+    cve: z.array(z.string().regex(/^CVE-\d{4}-\d{4,}$/i)).max(100).default([]),
+    cwe: z.array(z.string().regex(/^CWE-\d+$/i)).max(100).default([]),
+    other: z.array(z.string().trim().min(1).max(300)).max(100).default([])
+  }),
+  affectedVersions: z.array(z.string().trim().min(1).max(500)).max(200).default([]),
+  preconditions: z.array(z.string().trim().min(1).max(1_000)).max(100).default([]),
+  affectedEndpoints: z.array(KnowledgeHttpRequestTemplateSchema).max(50).default([]),
+  signals: z.array(z.string().trim().min(1).max(1_000)).max(100).default([]),
+  confirmationRules: z.array(z.string().trim().min(1).max(1_000)).max(100).default([]),
+  remediation: z.array(z.string().trim().min(1).max(1_000)).max(100).default([]),
+  forbiddenActions: z.array(z.string().trim().min(1).max(1_000)).max(100).default([]),
+  fieldEvidence: z.array(KnowledgeFieldEvidenceSchema).max(300).default([]),
+  extractionConfidence: z.number().min(0).max(1)
+})
+export type KnowledgeIntelligenceCandidate = z.infer<typeof KnowledgeIntelligenceCandidateSchema>
+
+export const KnowledgeReviewIssueSchema = z.object({
+  severity: z.enum(['info', 'warning', 'error']),
+  field: z.string().trim().min(1).max(300),
+  message: z.string().trim().min(1).max(1_000)
+})
+export type KnowledgeReviewIssue = z.infer<typeof KnowledgeReviewIssueSchema>
+
+export const KnowledgeAgentRunSchema = z.object({
+  id: IdSchema,
+  importId: IdSchema,
+  parentRunId: IdSchema.optional(),
+  role: z.enum(['intelligence-extractor', 'intelligence-reviewer']),
+  promptId: z.string().min(1),
+  promptVersion: z.string().min(1),
+  modelProfileId: IdSchema,
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  status: z.enum(['running', 'completed', 'failed']),
+  promptTokens: z.number().int().nonnegative(),
+  completionTokens: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative(),
+  error: z.string().optional(),
+  startedAt: IsoDateSchema,
+  finishedAt: IsoDateSchema.optional()
+})
+export type KnowledgeAgentRunRecord = z.infer<typeof KnowledgeAgentRunSchema>
+
+export const KnowledgeImportSummarySchema = z.object({
+  id: IdSchema,
+  documentId: IdSchema,
+  sourceType: KnowledgeSourceTypeSchema,
+  title: z.string().min(1),
+  sourceUrl: z.string().optional(),
+  author: z.string().optional(),
+  license: z.string().optional(),
+  status: KnowledgeImportStatusSchema,
+  instructionFlags: z.array(z.string()),
+  rawContentSha256: z.string().length(64),
+  sourceExcerpt: z.string(),
+  extractorProfileId: IdSchema.optional(),
+  reviewerProfileId: IdSchema.optional(),
+  reviewIssues: z.array(KnowledgeReviewIssueSchema),
+  candidate: KnowledgeIntelligenceCandidateSchema.optional(),
+  lastError: z.string().optional(),
+  createdAt: IsoDateSchema,
+  updatedAt: IsoDateSchema
+})
+export type KnowledgeImportSummary = z.infer<typeof KnowledgeImportSummarySchema>
+
+export const KnowledgeImportDetailSchema = KnowledgeImportSummarySchema.extend({
+  rawContent: z.string(),
+  runs: z.array(KnowledgeAgentRunSchema)
+})
+export type KnowledgeImportDetail = z.infer<typeof KnowledgeImportDetailSchema>
+
+export const CreateKnowledgeImportInputSchema = z.object({
+  sourceType: KnowledgeSourceTypeSchema,
+  title: z.string().trim().min(1).max(500),
+  sourceUrl: z.string().trim().max(4_096).optional(),
+  author: z.string().trim().max(300).optional(),
+  license: z.string().trim().max(300).optional(),
+  rawContent: z.string().min(1).max(1_000_000),
+  vendorHint: z.string().trim().max(300).optional(),
+  productHint: z.string().trim().max(300).optional()
+})
+export type CreateKnowledgeImportInput = z.infer<typeof CreateKnowledgeImportInputSchema>
+
+export const ExtractKnowledgeImportInputSchema = z.object({
+  id: IdSchema,
+  extractorProfileId: IdSchema,
+  reviewerProfileId: IdSchema
+})
+export type ExtractKnowledgeImportInput = z.infer<typeof ExtractKnowledgeImportInputSchema>
+
+export const UpdateKnowledgeCandidateInputSchema = z.object({
+  id: IdSchema,
+  candidate: KnowledgeIntelligenceCandidateSchema
+})
+export type UpdateKnowledgeCandidateInput = z.infer<typeof UpdateKnowledgeCandidateInputSchema>
+
+export const ReviewKnowledgeImportInputSchema = z.object({
+  id: IdSchema,
+  action: z.enum(['publish', 'reject', 'reopen'])
+})
+export type ReviewKnowledgeImportInput = z.infer<typeof ReviewKnowledgeImportInputSchema>
 
 export const ModelProfileSchema = z.object({
   id: IdSchema,
@@ -320,6 +476,7 @@ export const SaveModelProfileInputSchema = ModelProfileSchema.omit({
   updatedAt: true
 }).extend({
   id: IdSchema.optional(),
+  costBudget: z.number().nonnegative().default(0),
   apiKey: z.string().min(1).max(16_384).optional()
 }).superRefine((value, context) => {
   if (value.provider === 'openai-compatible' && !value.baseUrl) {
@@ -339,6 +496,178 @@ export const SaveModelProfileInputSchema = ModelProfileSchema.omit({
 })
 
 export type SaveModelProfileInput = z.infer<typeof SaveModelProfileInputSchema>
+
+export const ModelProfileUsageSchema = z.object({
+  profileId: IdSchema,
+  invocationCount: z.number().int().nonnegative(),
+  promptTokens: z.number().int().nonnegative(),
+  completionTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  lastUsedAt: IsoDateSchema.optional()
+})
+
+export type ModelProfileUsageRecord = z.infer<typeof ModelProfileUsageSchema>
+
+export const McpTransportSchema = z.enum(['stdio', 'streamable-http'])
+export type McpTransport = z.infer<typeof McpTransportSchema>
+
+export const McpAuthTypeSchema = z.enum(['none', 'bearer', 'header'])
+export type McpAuthType = z.infer<typeof McpAuthTypeSchema>
+
+export const McpRiskLabelSchema = z.enum([
+  'file-access',
+  'command-execution',
+  'network-access'
+])
+export type McpRiskLabel = z.infer<typeof McpRiskLabelSchema>
+
+export const McpServerStatusSchema = z.enum([
+  'disabled',
+  'untested',
+  'ready',
+  'error'
+])
+export type McpServerStatus = z.infer<typeof McpServerStatusSchema>
+
+export const McpToolSummarySchema = z.object({
+  name: z.string().min(1).max(300),
+  description: z.string().max(2_000).optional()
+})
+export type McpToolSummary = z.infer<typeof McpToolSummarySchema>
+
+export const McpResourceSummarySchema = z.object({
+  uri: z.string().min(1).max(4_000),
+  name: z.string().max(300).optional()
+})
+export type McpResourceSummary = z.infer<typeof McpResourceSummarySchema>
+
+export const McpPromptSummarySchema = z.object({
+  name: z.string().min(1).max(300),
+  description: z.string().max(2_000).optional()
+})
+export type McpPromptSummary = z.infer<typeof McpPromptSummarySchema>
+
+export const McpServerSchema = z.object({
+  id: IdSchema,
+  name: z.string().min(1).max(120),
+  transport: McpTransportSchema,
+  enabled: z.boolean(),
+  command: z.string().max(2_048).optional(),
+  args: z.array(z.string().max(4_096)).max(128),
+  cwd: z.string().max(2_048).optional(),
+  url: z.string().url().optional(),
+  authType: McpAuthTypeSchema,
+  authHeaderName: z.string().max(200).optional(),
+  credentialId: IdSchema.optional(),
+  environmentKeys: z.array(z.string().max(200)).max(256),
+  headerNames: z.array(z.string().max(200)).max(256),
+  timeoutMs: z.number().int().min(1_000).max(120_000),
+  roots: z.array(z.string().max(2_048)).max(64),
+  allowedAgentRoles: z.array(z.enum([
+    'planner',
+    'knowledge',
+    'strategy',
+    'analysis',
+    'verifier'
+  ])).max(5),
+  riskLabels: z.array(McpRiskLabelSchema).max(3),
+  status: McpServerStatusSchema,
+  protocolVersion: z.string().max(100).optional(),
+  serverName: z.string().max(300).optional(),
+  serverVersion: z.string().max(100).optional(),
+  tools: z.array(McpToolSummarySchema).max(500),
+  resources: z.array(McpResourceSummarySchema).max(500),
+  prompts: z.array(McpPromptSummarySchema).max(500),
+  lastTestedAt: IsoDateSchema.optional(),
+  lastError: z.string().max(4_000).optional(),
+  createdAt: IsoDateSchema,
+  updatedAt: IsoDateSchema
+})
+
+export type McpServerRecord = z.infer<typeof McpServerSchema>
+
+const McpEnvironmentSchema = z.record(
+  z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(200),
+  z.string().max(16_384)
+)
+
+const McpHeadersSchema = z.record(
+  z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/).max(200),
+  z.string().max(16_384)
+)
+
+export const SaveMcpServerInputSchema = z.object({
+  id: IdSchema.optional(),
+  name: z.string().trim().min(1).max(120),
+  transport: McpTransportSchema,
+  enabled: z.boolean().default(false),
+  command: z.string().trim().max(2_048).optional(),
+  args: z.array(z.string().max(4_096)).max(128).default([]),
+  cwd: z.string().trim().max(2_048).optional(),
+  url: z.string().url().optional(),
+  authType: McpAuthTypeSchema.default('none'),
+  authHeaderName: z.string().trim().max(200).optional(),
+  token: z.string().min(1).max(16_384).optional(),
+  environment: McpEnvironmentSchema.optional(),
+  headers: McpHeadersSchema.optional(),
+  timeoutMs: z.number().int().min(1_000).max(120_000).default(15_000),
+  roots: z.array(z.string().trim().min(1).max(2_048)).max(64).default([]),
+  allowedAgentRoles: z.array(z.enum([
+    'planner',
+    'knowledge',
+    'strategy',
+    'analysis',
+    'verifier'
+  ])).max(5).default([]),
+  riskLabels: z.array(McpRiskLabelSchema).max(3).default([])
+}).superRefine((value, context) => {
+  if (value.transport === 'stdio' && !value.command) {
+    context.addIssue({
+      code: 'custom',
+      message: '本地 STDIO MCP Server 必须提供启动命令。',
+      path: ['command']
+    })
+  }
+  if (value.transport === 'streamable-http') {
+    if (!value.url || !/^https?:\/\//i.test(value.url)) {
+      context.addIssue({
+        code: 'custom',
+        message: '远程 MCP Server 必须提供 HTTP 或 HTTPS URL。',
+        path: ['url']
+      })
+    }
+    if (value.authType === 'header' && !value.authHeaderName) {
+      context.addIssue({
+        code: 'custom',
+        message: '自定义 Header 鉴权必须提供 Header 名称。',
+        path: ['authHeaderName']
+      })
+    }
+    if (value.authType !== 'none' && !value.id && !value.token) {
+      context.addIssue({
+        code: 'custom',
+        message: '启用远程 MCP 鉴权时必须提供 Token。',
+        path: ['token']
+      })
+    }
+  }
+})
+
+export type SaveMcpServerInput = z.infer<typeof SaveMcpServerInputSchema>
+
+export const McpConnectionTestResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string().min(1),
+  durationMs: z.number().nonnegative(),
+  protocolVersion: z.string().max(100).optional(),
+  serverName: z.string().max(300).optional(),
+  serverVersion: z.string().max(100).optional(),
+  tools: z.array(McpToolSummarySchema).max(500),
+  resources: z.array(McpResourceSummarySchema).max(500),
+  prompts: z.array(McpPromptSummarySchema).max(500)
+})
+
+export type McpConnectionTestResult = z.infer<typeof McpConnectionTestResultSchema>
 
 export const ReportSchema = z.object({
   id: IdSchema,
@@ -412,6 +741,7 @@ export const TargetFilterSchema = z.object({ targetId: IdSchema })
 export const ScanFilterSchema = z.object({ scanId: IdSchema })
 export const ReportFilterSchema = z.object({ scanId: IdSchema })
 export const ModelProfileFilterSchema = z.object({ id: IdSchema })
+export const McpServerFilterSchema = z.object({ id: IdSchema })
 export const FindingFilterSchema = z.object({
   workspaceId: IdSchema.optional(),
   scanId: IdSchema.optional(),

@@ -10,7 +10,9 @@ import {
   openAgentGoDatabase,
   type SecretProtector
 } from '@agentgo/db'
-import { AgentGoApplicationService } from './index'
+import type { McpConnectionSecrets, McpHub } from '@agentgo/mcp-hub'
+import { DefaultModelGateway, type ModelGateway } from '@agentgo/model-gateway'
+import { AgentGoApplicationService, AgentPromptCatalog } from './index'
 
 const temporaryDirectories: string[] = []
 
@@ -126,7 +128,23 @@ describe('AgentGoApplicationService recovery', () => {
       join(directory, 'credentials.json'),
       protector
     )
-    const application = new AgentGoApplicationService({ repository, credentialStore })
+    const modelGateway = {
+      testConnection: async () => ({
+        ok: true,
+        message: 'model ready',
+        promptTokens: 7,
+        completionTokens: 3,
+        totalTokens: 10
+      }),
+      structuredCompletion: async () => {
+        throw new Error('not used in this test')
+      }
+    } as ModelGateway
+    const application = new AgentGoApplicationService({
+      repository,
+      credentialStore,
+      modelGateway
+    })
 
     try {
       await application.initialize()
@@ -147,6 +165,18 @@ describe('AgentGoApplicationService recovery', () => {
         tokenBudget: 1_000_000,
         costBudget: 1
       })
+      expect(externalPlanner.costBudget).toBe(0)
+      const connection = await application.testModelProfile(externalPlanner.id)
+      expect(connection.totalTokens).toBe(10)
+      expect(await application.listModelProfileUsage()).toMatchObject([
+        {
+          profileId: externalPlanner.id,
+          invocationCount: 1,
+          promptTokens: 7,
+          completionTokens: 3,
+          totalTokens: 10
+        }
+      ])
       const workspace = await application.createWorkspace({
         name: 'Routing test',
         description: ''
@@ -198,6 +228,126 @@ describe('AgentGoApplicationService recovery', () => {
           budget: plan.budget
         })
       ).rejects.toThrow('不属于 knowledge Agent')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('extracts, independently reviews and publishes imported vulnerability intelligence', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-knowledge-ingestion-'))
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+    const credentialStore = new FileCredentialStore(
+      join(directory, 'credentials.json'),
+      protector
+    )
+    const modelGateway = new DefaultModelGateway({
+      profiles: repository,
+      credentials: credentialStore,
+      prompts: new AgentPromptCatalog(),
+      invocations: repository
+    })
+    const application = new AgentGoApplicationService({
+      repository,
+      credentialStore,
+      modelGateway
+    })
+
+    try {
+      await application.initialize()
+      const profiles = await application.listModelProfiles()
+      const extractor = profiles.find(
+        (profile) => profile.agentRole === 'knowledge' && profile.provider === 'deterministic'
+      )
+      const reviewer = profiles.find(
+        (profile) => profile.agentRole === 'verifier' && profile.provider === 'deterministic'
+      )
+      expect(extractor).toBeDefined()
+      expect(reviewer).toBeDefined()
+
+      const imported = await application.createKnowledgeImport({
+        sourceType: 'public-poc',
+        title: 'Acme Portal SQL Injection CVE-2026-12345',
+        sourceUrl: 'https://example.test/acme-poc',
+        author: 'Security Researcher',
+        license: 'MIT',
+        vendorHint: 'Acme',
+        productHint: 'Portal',
+        rawContent: [
+          'Acme Portal SQL Injection CVE-2026-12345',
+          'POST /api/products/query?id=1 HTTP/1.1',
+          'Host: target.example',
+          'Content-Type: application/json',
+          'Authorization: Bearer public-poc-placeholder',
+          '',
+          '{"productId":"1"}'
+        ].join('\n')
+      })
+      expect(imported.status).toBe('needs-review')
+      expect(imported.instructionFlags).toContain('sensitive-data-redacted')
+      expect(imported.rawContent).not.toContain('public-poc-placeholder')
+
+      const extracted = await application.extractKnowledgeImport({
+        id: imported.id,
+        extractorProfileId: extractor!.id,
+        reviewerProfileId: reviewer!.id
+      })
+      expect(extracted.status).toBe('ready-for-review')
+      expect(extracted.candidate).toMatchObject({
+        vendor: 'Acme',
+        product: 'Portal',
+        family: 'sqli',
+        identifiers: { cve: ['CVE-2026-12345'] }
+      })
+      expect(extracted.candidate?.affectedEndpoints[0]).toMatchObject({
+        method: 'POST',
+        pathTemplate: '/api/products/query?id=%7B%7BID_VALUE%7D%7D',
+        unsafeToExecute: true,
+        headersTemplate: { Authorization: '{{TEST_CREDENTIAL}}' }
+      })
+      expect(extracted.runs).toHaveLength(2)
+      expect(extracted.runs[1]?.parentRunId).toBe(extracted.runs[0]?.id)
+
+      const published = await application.reviewKnowledgeImport({
+        id: imported.id,
+        action: 'publish'
+      })
+      expect(published.status).toBe('published')
+      const search = await application.searchKnowledge({
+        query: 'Acme Portal',
+        families: [],
+        limit: 20
+      })
+      expect(search).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ vendor: 'Acme', product: 'Portal' })
+        ])
+      )
+      const usage = await application.listModelProfileUsage()
+      expect(usage.find((item) => item.profileId === extractor!.id)?.totalTokens).toBeGreaterThan(0)
+      expect(usage.find((item) => item.profileId === reviewer!.id)?.totalTokens).toBeGreaterThan(0)
+
+      await expect(
+        application.extractKnowledgeImport({
+          id: imported.id,
+          extractorProfileId: extractor!.id,
+          reviewerProfileId: reviewer!.id
+        })
+      ).rejects.toThrow('必须先重新打开审核')
+      await expect(
+        application.updateKnowledgeCandidate({
+          id: imported.id,
+          candidate: published.candidate!
+        })
+      ).rejects.toThrow('必须先重新打开审核')
+      await expect(application.deleteKnowledgeImport(imported.id)).rejects.toThrow(
+        '必须先重新打开审核'
+      )
+      await application.reviewKnowledgeImport({ id: imported.id, action: 'reopen' })
+      await expect(application.deleteKnowledgeImport(imported.id)).resolves.toEqual({
+        deleted: true
+      })
     } finally {
       database.close()
     }
@@ -363,6 +513,78 @@ describe('AgentGoApplicationService recovery', () => {
           credentialStore.get(workspaceIdentity.credentialId)
       ).toBeUndefined()
       expect(existsSync(workspaceEvidencePath)).toBe(false)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('stores MCP secrets outside SQLite and persists capability discovery', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-mcp-config-'))
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+    const credentialStore = new FileCredentialStore(
+      join(directory, 'credentials.json'),
+      protector
+    )
+    let receivedSecrets: McpConnectionSecrets | undefined
+    const mcpHub: McpHub = {
+      testConnection: async (_server, secrets) => {
+        receivedSecrets = secrets
+        return {
+          ok: true,
+          message: 'MCP ready',
+          durationMs: 5,
+          serverName: 'test-mcp',
+          serverVersion: '1.0.0',
+          tools: [{ name: 'safe-tool', description: 'fixture' }],
+          resources: [],
+          prompts: []
+        }
+      }
+    }
+    const application = new AgentGoApplicationService({
+      repository,
+      credentialStore,
+      mcpHub
+    })
+
+    try {
+      await application.initialize()
+      const saved = await application.saveMcpServer({
+        name: 'Local test MCP',
+        transport: 'stdio',
+        enabled: false,
+        command: 'node',
+        args: ['server.mjs'],
+        authType: 'none',
+        environment: { MCP_TOKEN: 'mcp-secret-value' },
+        timeoutMs: 5_000,
+        roots: ['F:\\Agentgo'],
+        allowedAgentRoles: ['strategy'],
+        riskLabels: []
+      })
+
+      expect(saved.enabled).toBe(false)
+      expect(saved.riskLabels).toEqual(
+        expect.arrayContaining(['command-execution', 'file-access'])
+      )
+      expect(JSON.stringify(saved)).not.toContain('mcp-secret-value')
+      expect(saved.credentialId && credentialStore.get(saved.credentialId)).toContain(
+        'mcp-secret-value'
+      )
+
+      const result = await application.testMcpServer(saved.id)
+      expect(result.ok).toBe(true)
+      expect(receivedSecrets?.environment).toEqual({ MCP_TOKEN: 'mcp-secret-value' })
+      expect((await application.listMcpServers())[0]).toMatchObject({
+        status: 'ready',
+        serverName: 'test-mcp',
+        tools: [{ name: 'safe-tool', description: 'fixture' }]
+      })
+
+      await expect(application.deleteMcpServer(saved.id)).resolves.toEqual({ deleted: true })
+      expect(saved.credentialId && credentialStore.get(saved.credentialId)).toBeUndefined()
     } finally {
       database.close()
     }

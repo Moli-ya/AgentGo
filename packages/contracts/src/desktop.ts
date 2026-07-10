@@ -5,7 +5,12 @@ import {
   FindingSchema,
   IdentitySchema,
   KnowledgeEntrySummarySchema,
+  KnowledgeImportDetailSchema,
+  KnowledgeImportSummarySchema,
+  McpConnectionTestResultSchema,
+  McpServerSchema,
   ModelProfileSchema,
+  ModelProfileUsageSchema,
   ReportSchema,
   ScanDetailSchema,
   ScanEventSchema,
@@ -16,6 +21,7 @@ import {
 } from './application'
 import type {
   AuditLogRecord,
+  CreateKnowledgeImportInput,
   CreateScanInput,
   CreateTargetInput,
   CreateWorkspaceInput,
@@ -25,16 +31,25 @@ import type {
   GenerateReportInput,
   IdentityRecord,
   KnowledgeEntrySummary,
+  KnowledgeImportDetail,
+  KnowledgeImportSummary,
   KnowledgeSearchInput,
+  McpConnectionTestResult,
+  McpServerRecord,
   ModelProfileRecord,
+  ModelProfileUsageRecord,
   ReportRecord,
+  ReviewKnowledgeImportInput,
   SaveIdentityInput,
+  SaveMcpServerInput,
   SaveModelProfileInput,
   ScanDetail,
   ScanEvent,
   ScanRecord,
   TargetDetail,
   TargetRecord,
+  ExtractKnowledgeImportInput,
+  UpdateKnowledgeCandidateInput,
   UpdateTargetInput,
   WorkspaceRecord
 } from './application'
@@ -78,6 +93,9 @@ export const ConnectionTestResultSchema = z.object({
   message: z.string().min(1),
   provider: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
+  promptTokens: z.number().int().nonnegative().optional(),
+  completionTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
   durationMs: z.number().nonnegative().optional()
 })
 
@@ -94,9 +112,12 @@ export const WorkspaceListSchema = z.array(WorkspaceSchema)
 export const TargetListSchema = z.array(TargetSchema)
 export const ScanListSchema = z.array(ScanSchema)
 export const KnowledgeEntrySummaryListSchema = z.array(KnowledgeEntrySummarySchema)
+export const KnowledgeImportSummaryListSchema = z.array(KnowledgeImportSummarySchema)
 export const FindingListSchema = z.array(FindingSchema)
 export const ReportListSchema = z.array(ReportSchema)
 export const ModelProfileListSchema = z.array(ModelProfileSchema)
+export const ModelProfileUsageListSchema = z.array(ModelProfileUsageSchema)
+export const McpServerListSchema = z.array(McpServerSchema)
 export const AuditLogListSchema = z.array(AuditLogSchema)
 
 export const DesktopOutputSchemas = {
@@ -114,11 +135,17 @@ export const DesktopOutputSchemas = {
   scanDetail: ScanDetailSchema,
   scanEvent: ScanEventSchema,
   knowledgeEntries: KnowledgeEntrySummaryListSchema,
+  knowledgeImport: KnowledgeImportDetailSchema,
+  knowledgeImports: KnowledgeImportSummaryListSchema,
   findings: FindingListSchema,
   report: ReportSchema,
   reports: ReportListSchema,
   modelProfile: ModelProfileSchema,
   modelProfiles: ModelProfileListSchema,
+  modelProfileUsage: ModelProfileUsageListSchema,
+  mcpServer: McpServerSchema,
+  mcpServers: McpServerListSchema,
+  mcpConnectionTest: McpConnectionTestResultSchema,
   auditLogs: AuditLogListSchema,
   deleteResult: DeleteResultSchema,
   connectionTest: ConnectionTestResultSchema,
@@ -150,6 +177,13 @@ export interface AgentGoDesktopApi {
   onScanEvent: (listener: (event: ScanEvent) => void) => () => void
 
   searchKnowledge: (input: KnowledgeSearchInput) => Promise<KnowledgeEntrySummary[]>
+  listKnowledgeImports: () => Promise<KnowledgeImportSummary[]>
+  getKnowledgeImport: (id: string) => Promise<KnowledgeImportDetail>
+  createKnowledgeImport: (input: CreateKnowledgeImportInput) => Promise<KnowledgeImportDetail>
+  extractKnowledgeImport: (input: ExtractKnowledgeImportInput) => Promise<KnowledgeImportDetail>
+  updateKnowledgeCandidate: (input: UpdateKnowledgeCandidateInput) => Promise<KnowledgeImportDetail>
+  reviewKnowledgeImport: (input: ReviewKnowledgeImportInput) => Promise<KnowledgeImportDetail>
+  deleteKnowledgeImport: (id: string) => Promise<DeleteResult>
   listFindings: (input?: {
     workspaceId?: string
     scanId?: string
@@ -162,9 +196,15 @@ export interface AgentGoDesktopApi {
   exportReport: (input: ExportReportInput) => Promise<ExportReportResult>
 
   listModelProfiles: () => Promise<ModelProfileRecord[]>
+  listModelProfileUsage: () => Promise<ModelProfileUsageRecord[]>
   saveModelProfile: (input: SaveModelProfileInput) => Promise<ModelProfileRecord>
   deleteModelProfile: (id: string) => Promise<DeleteResult>
   testModelProfile: (id: string) => Promise<ConnectionTestResult>
+
+  listMcpServers: () => Promise<McpServerRecord[]>
+  saveMcpServer: (input: SaveMcpServerInput) => Promise<McpServerRecord>
+  deleteMcpServer: (id: string) => Promise<DeleteResult>
+  testMcpServer: (id: string) => Promise<McpConnectionTestResult>
 
   listAuditLogs: (workspaceId: string, scanId?: string) => Promise<AuditLogRecord[]>
   notifyRendererReady: () => void
@@ -190,14 +230,26 @@ export const IPC_CHANNELS = {
   getScanDetail: 'agentgo:get-scan-detail',
   scanEvent: 'agentgo:scan-event',
   searchKnowledge: 'agentgo:search-knowledge',
+  listKnowledgeImports: 'agentgo:list-knowledge-imports',
+  getKnowledgeImport: 'agentgo:get-knowledge-import',
+  createKnowledgeImport: 'agentgo:create-knowledge-import',
+  extractKnowledgeImport: 'agentgo:extract-knowledge-import',
+  updateKnowledgeCandidate: 'agentgo:update-knowledge-candidate',
+  reviewKnowledgeImport: 'agentgo:review-knowledge-import',
+  deleteKnowledgeImport: 'agentgo:delete-knowledge-import',
   listFindings: 'agentgo:list-findings',
   listReports: 'agentgo:list-reports',
   generateReport: 'agentgo:generate-report',
   exportReport: 'agentgo:export-report',
   listModelProfiles: 'agentgo:list-model-profiles',
+  listModelProfileUsage: 'agentgo:list-model-profile-usage',
   saveModelProfile: 'agentgo:save-model-profile',
   deleteModelProfile: 'agentgo:delete-model-profile',
   testModelProfile: 'agentgo:test-model-profile',
+  listMcpServers: 'agentgo:list-mcp-servers',
+  saveMcpServer: 'agentgo:save-mcp-server',
+  deleteMcpServer: 'agentgo:delete-mcp-server',
+  testMcpServer: 'agentgo:test-mcp-server',
   listAuditLogs: 'agentgo:list-audit-logs',
   rendererReady: 'agentgo:renderer-ready'
 } as const

@@ -5,9 +5,11 @@ import {
   transitionRuntime,
   type ScanRuntimeState
 } from '@agentgo/agent-runtime'
+import { KnowledgeIntelligenceCandidateSchema } from '@agentgo/contracts'
 import type {
   AgentModelProfileSelection,
   AgentRole,
+  CreateKnowledgeImportInput,
   CreateScanInput,
   CreateTargetInput,
   CreateWorkspaceInput,
@@ -17,10 +19,17 @@ import type {
   GenerateReportInput,
   IdentityRecord,
   KnowledgeEntrySummary,
+  KnowledgeImportDetail,
+  KnowledgeImportSummary,
   KnowledgeSearchInput,
+  McpConnectionTestResult,
+  McpServerRecord,
   ModelProfileRecord,
+  ModelProfileUsageRecord,
   ReportRecord,
+  ReviewKnowledgeImportInput,
   SaveModelProfileInput,
+  SaveMcpServerInput,
   SaveIdentityInput,
   ScanControlAction,
   ScanDetail,
@@ -28,18 +37,31 @@ import type {
   TargetDetail,
   TargetRecord,
   UpdateTargetInput,
+  UpdateKnowledgeCandidateInput,
+  ExtractKnowledgeImportInput,
   WorkspaceRecord
 } from '@agentgo/contracts'
 import {
   AgentGoRepository,
   EvidenceStore,
-  FileCredentialStore
+  FileCredentialStore,
+  stableJson
 } from '@agentgo/db'
 import {
   KNOWLEDGE_SOURCES,
-  V1_KNOWLEDGE_ENTRIES
+  V1_KNOWLEDGE_ENTRIES,
+  inspectKnowledgeContent
 } from '@agentgo/knowledge-base'
-import type { ModelGateway } from '@agentgo/model-gateway'
+import {
+  DefaultMcpHub,
+  type McpConnectionSecrets,
+  type McpHub
+} from '@agentgo/mcp-hub'
+import { redactSensitiveText, type ModelGateway } from '@agentgo/model-gateway'
+import {
+  KNOWLEDGE_INGESTION_PROMPTS,
+  KnowledgeReviewerOutputSchema
+} from './agent-prompts'
 import { ReportService, type ReportContent } from './report-service'
 
 export * from './execution-policy'
@@ -53,11 +75,16 @@ export interface ScanCoordinator {
   control(scanId: string, action: ScanControlAction): Promise<ScanRecord>
 }
 
+function applicationErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '未知错误。'
+}
+
 export interface AgentGoApplicationDependencies {
   repository: AgentGoRepository
   credentialStore: FileCredentialStore
   evidenceStore?: EvidenceStore
   modelGateway?: ModelGateway
+  mcpHub?: McpHub
   reportService?: ReportService
   scanCoordinator?: ScanCoordinator
 }
@@ -67,6 +94,7 @@ export class AgentGoApplicationService {
   private readonly credentialStore: FileCredentialStore
   private readonly evidenceStore?: EvidenceStore
   private readonly modelGateway?: ModelGateway
+  private readonly mcpHub: McpHub
   private readonly reportService?: ReportService
   private scanCoordinator?: ScanCoordinator
 
@@ -75,6 +103,7 @@ export class AgentGoApplicationService {
     this.credentialStore = dependencies.credentialStore
     this.evidenceStore = dependencies.evidenceStore
     this.modelGateway = dependencies.modelGateway
+    this.mcpHub = dependencies.mcpHub ?? new DefaultMcpHub()
     this.reportService =
       dependencies.reportService ??
       (dependencies.evidenceStore
@@ -308,21 +337,247 @@ export class AgentGoApplicationService {
   async searchKnowledge(input: KnowledgeSearchInput): Promise<KnowledgeEntrySummary[]> {
     const entryIds = await this.repository.searchKnowledgeEntryIds(input)
     const entriesById = new Map(V1_KNOWLEDGE_ENTRIES.map((entry) => [entry.id, entry]))
-    return entryIds
-      .map((entryId) => entriesById.get(entryId))
-      .filter((entry): entry is (typeof V1_KNOWLEDGE_ENTRIES)[number] => Boolean(entry))
-      .map((entry) => ({
-        id: entry.id,
-        version: entry.version,
-        family: entry.family,
-        title: entry.title,
-        applicability: entry.applicability,
-        confirmationRules: entry.confirmationRules,
-        remediationHints: entry.remediationHints,
-        sourceTitles: entry.sourceRefs
-          .map((sourceId) => KNOWLEDGE_SOURCES.find((source) => source.id === sourceId)?.title)
-          .filter((title): title is string => Boolean(title))
-      }))
+    const imported = await this.repository.listPublishedKnowledgeEntries(entryIds)
+    const importedById = new Map(imported.map((entry) => [entry.chunkId, entry]))
+    const results: KnowledgeEntrySummary[] = []
+    for (const entryId of entryIds) {
+      const builtIn = entriesById.get(entryId)
+      if (builtIn) {
+        results.push({
+          id: builtIn.id,
+          version: builtIn.version,
+          family: builtIn.family,
+          title: builtIn.title,
+          applicability: builtIn.applicability,
+          confirmationRules: builtIn.confirmationRules,
+          remediationHints: builtIn.remediationHints,
+          sourceTitles: builtIn.sourceRefs
+            .map((sourceId) => KNOWLEDGE_SOURCES.find((source) => source.id === sourceId)?.title)
+            .filter((title): title is string => Boolean(title)),
+          sourceType: 'built-in-curated'
+        })
+        continue
+      }
+      const published = importedById.get(entryId)
+      if (!published) continue
+      results.push({
+        id: published.chunkId,
+        version: published.candidate.schemaVersion,
+        ...(published.candidate.family ? { family: published.candidate.family } : {}),
+        title: published.candidate.title,
+        applicability: [
+          ...published.candidate.affectedVersions,
+          ...published.candidate.preconditions
+        ],
+        confirmationRules: published.candidate.confirmationRules,
+        remediationHints: published.candidate.remediation,
+        sourceTitles: [published.sourceTitle],
+        vendor: published.candidate.vendor,
+        product: published.candidate.product,
+        sourceType: published.sourceType
+      })
+    }
+    return results
+  }
+
+  listKnowledgeImports(): Promise<KnowledgeImportSummary[]> {
+    return this.repository.listKnowledgeImports()
+  }
+
+  async getKnowledgeImport(id: string): Promise<KnowledgeImportDetail> {
+    const record = await this.repository.getKnowledgeImport(id)
+    if (!record) throw new Error('知识导入记录不存在。')
+    return record
+  }
+
+  createKnowledgeImport(input: CreateKnowledgeImportInput): Promise<KnowledgeImportDetail> {
+    const redactedContent = redactSensitiveText(input.rawContent)
+    const inspection = inspectKnowledgeContent(redactedContent)
+    const flags = [
+      ...inspection.flags,
+      ...(redactedContent !== input.rawContent ? ['sensitive-data-redacted'] : [])
+    ]
+    return this.repository.createKnowledgeImport(
+      { ...input, rawContent: redactedContent },
+      flags
+    )
+  }
+
+  async extractKnowledgeImport(
+    input: ExtractKnowledgeImportInput
+  ): Promise<KnowledgeImportDetail> {
+    if (!this.modelGateway) throw new Error('模型网关尚未初始化。')
+    const record = await this.getKnowledgeImport(input.id)
+    if (record.status === 'published') {
+      throw new Error('已发布知识必须先重新打开审核，才能再次提取。')
+    }
+    const extractorProfile = await this.requireKnowledgeIngestionProfile(
+      input.extractorProfileId,
+      'knowledge'
+    )
+    const reviewerProfile = await this.requireKnowledgeIngestionProfile(
+      input.reviewerProfileId,
+      'verifier'
+    )
+    await this.repository.updateKnowledgeImportState({
+      id: input.id,
+      status: 'extracting',
+      extractorProfileId: extractorProfile.id,
+      reviewerProfileId: reviewerProfile.id,
+      lastError: null
+    })
+
+    let activeRunId: string | undefined
+    try {
+      const hints = await this.repository.getKnowledgeImportHints(input.id)
+      const extractorInput = {
+        title: record.title,
+        sourceType: record.sourceType,
+        sourceUrl: record.sourceUrl,
+        author: record.author,
+        license: record.license,
+        rawContent: record.rawContent,
+        vendorHint: hints.vendorHint,
+        productHint: hints.productHint
+      }
+      const extractorRun = await this.repository.createKnowledgeAgentRun({
+        importId: input.id,
+        role: 'intelligence-extractor',
+        promptId: KNOWLEDGE_INGESTION_PROMPTS.extractor.id,
+        promptVersion: KNOWLEDGE_INGESTION_PROMPTS.extractor.version,
+        modelProfileId: extractorProfile.id,
+        inputHashSource: stableJson(extractorInput)
+      })
+      activeRunId = extractorRun.id
+      const extraction = await this.modelGateway.structuredCompletion({
+        profileId: extractorProfile.id,
+        systemPromptId: KNOWLEDGE_INGESTION_PROMPTS.extractor.id,
+        systemPromptVersion: KNOWLEDGE_INGESTION_PROMPTS.extractor.version,
+        input: extractorInput,
+        schema: KnowledgeIntelligenceCandidateSchema,
+        agentRunId: extractorRun.id,
+        invocationSource: 'knowledge-extraction',
+        invocationSink: {
+          recordModelInvocation: (invocation) =>
+            this.repository.recordKnowledgeModelInvocation({
+              runId: invocation.agentRunId,
+              profileId: invocation.profileId,
+              provider: invocation.provider,
+              model: invocation.model,
+              outputHashSource: invocation.outputHashSource,
+              promptTokens: invocation.promptTokens,
+              completionTokens: invocation.completionTokens,
+              durationMs: invocation.durationMs,
+              source: 'knowledge-extraction'
+            })
+        }
+      })
+      await this.repository.finishKnowledgeAgentRun({
+        id: extractorRun.id,
+        status: 'completed',
+        provider: extraction.provider,
+        model: extraction.model,
+        outputHashSource: stableJson(extraction.value),
+        promptTokens: extraction.promptTokens,
+        completionTokens: extraction.completionTokens,
+        durationMs: extraction.durationMs
+      })
+      activeRunId = undefined
+
+      const reviewerInput = {
+        candidate: extraction.value,
+        rawContent: record.rawContent.slice(0, 200_000),
+        instructionFlags: record.instructionFlags
+      }
+      const reviewerRun = await this.repository.createKnowledgeAgentRun({
+        importId: input.id,
+        parentRunId: extractorRun.id,
+        role: 'intelligence-reviewer',
+        promptId: KNOWLEDGE_INGESTION_PROMPTS.reviewer.id,
+        promptVersion: KNOWLEDGE_INGESTION_PROMPTS.reviewer.version,
+        modelProfileId: reviewerProfile.id,
+        inputHashSource: stableJson(reviewerInput)
+      })
+      activeRunId = reviewerRun.id
+      const review = await this.modelGateway.structuredCompletion({
+        profileId: reviewerProfile.id,
+        systemPromptId: KNOWLEDGE_INGESTION_PROMPTS.reviewer.id,
+        systemPromptVersion: KNOWLEDGE_INGESTION_PROMPTS.reviewer.version,
+        input: reviewerInput,
+        schema: KnowledgeReviewerOutputSchema,
+        agentRunId: reviewerRun.id,
+        invocationSource: 'knowledge-review',
+        invocationSink: {
+          recordModelInvocation: (invocation) =>
+            this.repository.recordKnowledgeModelInvocation({
+              runId: invocation.agentRunId,
+              profileId: invocation.profileId,
+              provider: invocation.provider,
+              model: invocation.model,
+              outputHashSource: invocation.outputHashSource,
+              promptTokens: invocation.promptTokens,
+              completionTokens: invocation.completionTokens,
+              durationMs: invocation.durationMs,
+              source: 'knowledge-review'
+            })
+        }
+      })
+      await this.repository.finishKnowledgeAgentRun({
+        id: reviewerRun.id,
+        status: 'completed',
+        provider: review.provider,
+        model: review.model,
+        outputHashSource: stableJson(review.value),
+        promptTokens: review.promptTokens,
+        completionTokens: review.completionTokens,
+        durationMs: review.durationMs
+      })
+      activeRunId = undefined
+      return this.repository.saveKnowledgeCandidate(
+        input.id,
+        extraction.value,
+        review.value.issues,
+        review.value.decision
+      )
+    } catch (error) {
+      if (activeRunId) {
+        await this.repository.finishKnowledgeAgentRun({
+          id: activeRunId,
+          status: 'failed',
+          error: applicationErrorMessage(error)
+        })
+      }
+      await this.repository.updateKnowledgeImportState({
+        id: input.id,
+        status: 'failed',
+        lastError: applicationErrorMessage(error)
+      })
+      throw error
+    }
+  }
+
+  async updateKnowledgeCandidate(
+    input: UpdateKnowledgeCandidateInput
+  ): Promise<KnowledgeImportDetail> {
+    const existing = await this.getKnowledgeImport(input.id)
+    if (existing.status === 'published') {
+      throw new Error('已发布知识必须先重新打开审核，才能修改。')
+    }
+    const candidate = KnowledgeIntelligenceCandidateSchema.parse(input.candidate)
+    return this.repository.saveKnowledgeCandidate(
+      input.id,
+      candidate,
+      [],
+      'ready-for-review'
+    )
+  }
+
+  reviewKnowledgeImport(input: ReviewKnowledgeImportInput): Promise<KnowledgeImportDetail> {
+    return this.repository.reviewKnowledgeImport(input.id, input.action)
+  }
+
+  async deleteKnowledgeImport(id: string): Promise<DeleteResult> {
+    return { deleted: await this.repository.deleteKnowledgeImport(id) }
   }
 
   listFindings(input?: {
@@ -354,6 +609,10 @@ export class AgentGoApplicationService {
     return this.repository.listModelProfiles()
   }
 
+  listModelProfileUsage(): Promise<ModelProfileUsageRecord[]> {
+    return this.repository.listModelProfileUsage()
+  }
+
   async saveModelProfile(input: SaveModelProfileInput): Promise<ModelProfileRecord> {
     const existing = input.id
       ? await this.repository.getModelProfile(input.id)
@@ -374,7 +633,7 @@ export class AgentGoApplicationService {
       throw new Error('OpenAI-compatible Profile 缺少 API Key。')
     }
     const profile = await this.repository.saveModelProfile(
-      { ...input, apiKey: undefined },
+      { ...input, apiKey: undefined, costBudget: 0 },
       credentialId
     )
     return profile
@@ -396,18 +655,20 @@ export class AgentGoApplicationService {
     return { deleted }
   }
 
-  async testModelProfile(id: string): Promise<{
-    ok: boolean
-    message: string
-    provider?: string
-    model?: string
-    durationMs?: number
-  }> {
+  async testModelProfile(id: string) {
     if (!this.modelGateway) throw new Error('ModelGateway 尚未初始化。')
     const profile = await this.repository.getModelProfile(id)
     if (!profile) throw new Error('模型 Profile 不存在。')
     const startedAt = Date.now()
     const result = await this.modelGateway.testConnection(id)
+    if ((result.promptTokens ?? 0) + (result.completionTokens ?? 0) > 0) {
+      await this.repository.recordModelProfileUsage({
+        profileId: id,
+        source: 'connection-test',
+        promptTokens: result.promptTokens ?? 0,
+        completionTokens: result.completionTokens ?? 0
+      })
+    }
     return {
       ...result,
       provider: profile.provider,
@@ -416,9 +677,163 @@ export class AgentGoApplicationService {
     }
   }
 
+  listMcpServers(): Promise<McpServerRecord[]> {
+    return this.repository.listMcpServers()
+  }
+
+  async saveMcpServer(input: SaveMcpServerInput): Promise<McpServerRecord> {
+    const existing = input.id
+      ? await this.repository.getMcpServer(input.id)
+      : undefined
+    if (input.id && !existing) throw new Error('MCP Server 配置不存在。')
+    const previousSecrets = this.readMcpSecrets(existing?.credentialId)
+    const nextSecrets: McpConnectionSecrets = {}
+    if (input.transport === 'stdio') {
+      const environment = input.environment ?? previousSecrets.environment
+      if (environment && Object.keys(environment).length > 0) {
+        nextSecrets.environment = environment
+      }
+    } else {
+      if (input.authType !== 'none') {
+        const token = input.token ?? previousSecrets.token
+        if (!token) throw new Error('远程 MCP Server 缺少鉴权 Token。')
+        nextSecrets.token = token
+      }
+      const headers = input.headers ?? previousSecrets.headers
+      if (headers && Object.keys(headers).length > 0) {
+        nextSecrets.headers = headers
+      }
+    }
+
+    const hasSecrets = Boolean(
+      nextSecrets.token ||
+      Object.keys(nextSecrets.environment ?? {}).length ||
+      Object.keys(nextSecrets.headers ?? {}).length
+    )
+    let credentialId: string | null | undefined
+    if (hasSecrets) {
+      const metadata = this.credentialStore.save({
+        ...(existing?.credentialId ? { id: existing.credentialId } : {}),
+        kind: 'mcp-server-secret',
+        label: `${input.name} MCP Server`,
+        secret: JSON.stringify(nextSecrets)
+      })
+      credentialId = metadata.id
+    } else if (existing?.credentialId) {
+      credentialId = null
+    }
+
+    const riskLabels = new Set(input.riskLabels)
+    riskLabels.add(
+      input.transport === 'stdio' ? 'command-execution' : 'network-access'
+    )
+    if (input.roots.length > 0) riskLabels.add('file-access')
+    const saved = await this.repository.saveMcpServer(
+      {
+        ...(input.id ? { id: input.id } : {}),
+        name: input.name,
+        transport: input.transport,
+        enabled: input.enabled,
+        ...(input.transport === 'stdio' && input.command
+          ? { command: input.command }
+          : {}),
+        args: input.transport === 'stdio' ? input.args : [],
+        ...(input.transport === 'stdio' && input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.transport === 'streamable-http' && input.url
+          ? { url: input.url }
+          : {}),
+        authType: input.transport === 'streamable-http' ? input.authType : 'none',
+        ...(input.transport === 'streamable-http' && input.authHeaderName
+          ? { authHeaderName: input.authHeaderName }
+          : {}),
+        environmentKeys: Object.keys(nextSecrets.environment ?? {}).sort(),
+        headerNames: Object.keys(nextSecrets.headers ?? {}).sort(),
+        timeoutMs: input.timeoutMs,
+        roots: [...new Set(input.roots)],
+        allowedAgentRoles: [...new Set(input.allowedAgentRoles)],
+        riskLabels: [...riskLabels]
+      },
+      credentialId
+    )
+    if (credentialId === null && existing?.credentialId) {
+      this.credentialStore.delete(existing.credentialId)
+    }
+    return saved
+  }
+
+  async deleteMcpServer(id: string): Promise<DeleteResult> {
+    const existing = await this.repository.getMcpServer(id)
+    if (!existing) return { deleted: false }
+    const deleted = await this.repository.deleteMcpServer(id)
+    if (deleted && existing.credentialId) {
+      this.credentialStore.delete(existing.credentialId)
+    }
+    return { deleted }
+  }
+
+  async testMcpServer(id: string): Promise<McpConnectionTestResult> {
+    const server = await this.repository.getMcpServer(id)
+    if (!server) throw new Error('MCP Server 配置不存在。')
+    const result = await this.mcpHub.testConnection(
+      server,
+      this.readMcpSecrets(server.credentialId)
+    )
+    await this.repository.updateMcpServerTestResult(id, result)
+    return result
+  }
+
+  private readMcpSecrets(credentialId?: string): McpConnectionSecrets {
+    if (!credentialId) return {}
+    const serialized = this.credentialStore.get(credentialId)
+    if (!serialized) return {}
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(serialized)
+    } catch {
+      throw new Error('MCP Server 加密凭据格式无效。')
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('MCP Server 加密凭据格式无效。')
+    }
+    const value = parsed as Record<string, unknown>
+    const result: McpConnectionSecrets = {}
+    if (typeof value.token === 'string' && value.token) result.token = value.token
+    for (const field of ['environment', 'headers'] as const) {
+      const candidate = value[field]
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue
+      const entries = Object.entries(candidate).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string'
+      )
+      if (entries.length > 0) result[field] = Object.fromEntries(entries)
+    }
+    return result
+  }
+
   private requireReportService(): ReportService {
     if (!this.reportService) throw new Error('报告服务尚未初始化。')
     return this.reportService
+  }
+
+  private async requireKnowledgeIngestionProfile(
+    id: string,
+    role: 'knowledge' | 'verifier'
+  ): Promise<ModelProfileRecord> {
+    const profile = await this.repository.getModelProfile(id)
+    if (!profile) throw new Error(`模型 Profile 不存在：${id}`)
+    if (profile.agentRole !== role) {
+      throw new Error(
+        role === 'knowledge'
+          ? '情报提取必须使用 KnowledgeAgent Profile。'
+          : '情报复核必须使用 VerifierAgent Profile。'
+      )
+    }
+    if (
+      profile.provider === 'openai-compatible' &&
+      (!profile.credentialId || !this.credentialStore.get(profile.credentialId))
+    ) {
+      throw new Error(`外部模型 Profile “${profile.name}” 缺少可用 API Key。`)
+    }
+    return profile
   }
 
   private async resolveScanModelProfiles(

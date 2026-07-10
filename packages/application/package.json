@@ -16,6 +16,7 @@
     "@agentgo/db": "workspace:*",
     "@agentgo/http-runner": "workspace:*",
     "@agentgo/knowledge-base": "workspace:*",
+    "@agentgo/mcp-hub": "workspace:*",
     "@agentgo/model-gateway": "workspace:*",
     "@agentgo/reporting": "workspace:*",
     "@agentgo/security-policy": "workspace:*",

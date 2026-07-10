@@ -91,7 +91,7 @@ Inconclusive 单独报告，不应为了提高 Recall 强行归入 Confirmed。
 - 请求数、重复请求率；
 - 计划修订次数和循环中止次数；
 - Prompt/Completion Token；
-- 单 Case 费用；
+- 单 Case 输入、输出和总 Token；
 - 检索延迟和 KnowledgePack 大小；
 - 崩溃恢复成功率；
 - 相同 Case 多次运行的 Verdict 一致性。
@@ -117,7 +117,7 @@ Inconclusive 单独报告，不应为了提高 Recall 强行归入 Confirmed。
 - 过期知识比例；
 - Unsafe Recommendation Rate；
 - 无关知识 token 占比；
-- 启用知识库前后的 Precision、请求数和成本变化。
+- 启用知识库前后的 Precision、请求数和 Token 变化。
 
 ## 10. 实验协议
 

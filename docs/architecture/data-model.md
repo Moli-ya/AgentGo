@@ -9,7 +9,8 @@
 - Scan：一次扫描任务及预算快照。
 - Page / Endpoint / Parameter：目标表面目录。
 - Interaction：一次请求、响应和业务状态变化。
-- AgentRun / ModelInvocation：Agent 与模型调用记录。
+- AgentRun / ModelInvocation / ModelProfileUsageEvent：Agent 调用、结构化模型记录和按 Profile 的 Token 用量。
+- McpServer：MCP Transport、非敏感配置、Agent 绑定、风险标签与能力发现结果；敏感值只保存凭据引用。
 - ProbeProposal / PolicyDecision / ToolCall：动作提议、策略决定和实际执行。
 - Signal：值得验证的异常，不等于漏洞。
 - ValidationRun：验证步骤、负对照和结构化结果。
@@ -17,6 +18,7 @@
 - EvidenceItem：不可变证据元数据。
 - Finding：最终三态结论和修复建议。
 - KnowledgeDoc / KnowledgeChunk：知识来源和检索单元。
+- KnowledgeImport / KnowledgeIntelligence / KnowledgeAgentRun：公开情报或 PoC 的脱敏原文、固定结构候选和双 Agent 摄取审计。
 - AuditLog：关键操作与安全事件。
 
 ## 2. 关键关系
@@ -96,15 +98,17 @@ V1 Drizzle schema 至少覆盖：
 - workspaces、targets、target_scopes、identities；
 - scans、pages、endpoints、parameters、interactions；
 - agent_runs、model_invocations；
+- model_profile_usage_events、mcp_servers；
 - probe_proposals、policy_decisions、tool_calls；
 - signals、validation_runs、confirmation_rules；
 - evidence_items、findings、finding_evidence；
-- knowledge_docs、knowledge_chunks；
+- knowledge_docs、knowledge_chunks、knowledge_imports、knowledge_intelligence、knowledge_agent_runs；
 - reports、audit_logs。
 
 ## 6. 数据保护
 
-- API Key 和密码只保存 credentialId。
+- API Key、MCP Token、MCP 环境变量和自定义请求头只保存 credentialId；SQLite 只记录非敏感字段名。
+- 知识导入原文在入库前脱敏；HTTP 请求只保存为 `unsafeToExecute=true` 的惰性模板，凭据值替换为占位符。
 - Cookie、Token 和原始响应按最小必要原则保存，文本证据生成独立脱敏派生；`retentionUntil` 已保留在模型中，自动生命周期清理仍需后续实现。
 - V1 桌面只允许生成和导出脱敏报告，并在报告列表明确标注脱敏状态；未来若开放原始报告导出，必须先增加敏感字段清单和逐项确认。
 - 发送外部模型时只传完成当前任务所需的最小摘要。

@@ -87,6 +87,7 @@ describe('DefaultModelGateway', () => {
 
     expect(result.value.accepted).toBe(true)
     expect(result.provider).toBe('deterministic')
+    expect(invocation?.profileId).toBe(profile.id)
     expect(invocation?.inputHashSource).not.toContain('should-not-leak')
   })
 
@@ -111,7 +112,8 @@ describe('DefaultModelGateway', () => {
         return new Response(
           JSON.stringify({
             model: 'structured-model',
-            choices: [{ message: { content: '{"ok":true}' } }]
+            choices: [{ message: { content: '{"ok":true}' } }],
+            usage: { prompt_tokens: 12, completion_tokens: 3, cost: 99 }
           }),
           { status: 200, headers: { 'content-type': 'application/json' } }
         )
@@ -126,6 +128,7 @@ describe('DefaultModelGateway', () => {
     }
 
     expect(result.ok).toBe(true)
+    expect(result.totalTokens).toBe(15)
     expect(result.message).toContain('真实 chat/completions 调用成功')
     expect(requestedUrl).toBe('https://provider.example.test/v1/chat/completions')
     expect(payload.model).toBe('structured-model')
@@ -135,7 +138,42 @@ describe('DefaultModelGateway', () => {
     )
   })
 
-  it('accumulates provider-reported cost and rejects calls beyond the profile budget', async () => {
+  it('records consumed tokens even when structured output validation fails', async () => {
+    let invocation: ModelInvocationInput | undefined
+    const gateway = new DefaultModelGateway({
+      profiles: { getModelProfile: async () => profile },
+      credentials: { get: () => undefined },
+      prompts: {
+        getPrompt: () => ({
+          id: 'planner',
+          version: '1.0.0',
+          system: 'Return JSON.',
+          deterministic: () => ({ invalid: true })
+        })
+      },
+      invocations: {
+        recordModelInvocation: async (input) => {
+          invocation = input
+        }
+      }
+    })
+
+    await expect(
+      gateway.structuredCompletion({
+        profileId: profile.id,
+        systemPromptId: 'planner',
+        systemPromptVersion: '1.0.0',
+        input: { task: 'safe' },
+        schema: { parse: () => { throw new Error('invalid schema') } },
+        agentRunId: 'failed-run'
+      })
+    ).rejects.toThrow('invalid schema')
+
+    expect(invocation?.profileId).toBe(profile.id)
+    expect((invocation?.promptTokens ?? 0) + (invocation?.completionTokens ?? 0)).toBeGreaterThan(0)
+  })
+
+  it('records provider token usage while ignoring unreliable provider cost fields', async () => {
     const externalProfile: ModelProfile = {
       ...profile,
       id: 'external-planner',
@@ -143,7 +181,7 @@ describe('DefaultModelGateway', () => {
       baseUrl: 'https://provider.example.test/v1/',
       credentialId: 'provider-key',
       model: 'structured-model',
-      costBudget: 0.01
+      costBudget: 0
     }
     const gateway = new DefaultModelGateway({
       profiles: { getModelProfile: async () => externalProfile },
@@ -177,11 +215,11 @@ describe('DefaultModelGateway', () => {
 
     const first = await gateway.structuredCompletion(request)
     const second = await gateway.structuredCompletion(request)
+    const third = await gateway.structuredCompletion(request)
 
-    expect(first.estimatedCost).toBe(0.004)
-    expect(second.estimatedCost).toBe(0.004)
-    await expect(gateway.structuredCompletion(request)).rejects.toThrow(
-      'cost budget is exhausted'
-    )
+    expect(first.promptTokens + first.completionTokens).toBe(15)
+    expect(second.promptTokens + second.completionTokens).toBe(15)
+    expect(third.promptTokens + third.completionTokens).toBe(15)
+    expect(first.estimatedCost).toBe(0)
   })
 })

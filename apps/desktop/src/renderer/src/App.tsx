@@ -9,6 +9,7 @@ import {
   Crosshair,
   Database,
   Download,
+  FileUp,
   FileSearch,
   Gauge,
   KeyRound,
@@ -21,10 +22,12 @@ import {
   Radar,
   RefreshCw,
   Search,
+  Server,
   Settings,
   ShieldCheck,
   Square,
   Trash2,
+  Upload,
   Users,
   type LucideIcon
 } from 'lucide-react'
@@ -35,8 +38,15 @@ import type {
   DashboardSnapshot,
   FindingRecord,
   IdentityAuthType,
+  KnowledgeImportDetail,
+  KnowledgeImportSummary,
+  KnowledgeIntelligenceCandidate,
+  KnowledgeSourceType,
   KnowledgeEntrySummary,
+  McpRiskLabel,
+  McpServerRecord,
   ModelProfileRecord,
+  ModelProfileUsageRecord,
   PolicySelfCheckResult,
   ReportRecord,
   ScanControlAction,
@@ -57,6 +67,7 @@ type ViewId =
   | 'findings'
   | 'audit'
   | 'knowledge'
+  | 'mcp'
   | 'settings'
 
 interface ModelProfileForm {
@@ -70,7 +81,50 @@ interface ModelProfileForm {
   rpmLimit: number
   tpmLimit: number
   tokenBudget: number
-  costBudget: number
+}
+
+interface McpServerForm {
+  id: string
+  name: string
+  transport: McpServerRecord['transport']
+  enabled: boolean
+  command: string
+  args: string
+  cwd: string
+  url: string
+  authType: McpServerRecord['authType']
+  authHeaderName: string
+  token: string
+  environmentJson: string
+  headersJson: string
+  timeoutMs: number
+  roots: string
+  allowedAgentRoles: AgentRole[]
+  riskLabels: McpRiskLabel[]
+}
+
+interface KnowledgeImportForm {
+  sourceType: KnowledgeSourceType
+  title: string
+  sourceUrl: string
+  author: string
+  license: string
+  rawContent: string
+  vendorHint: string
+  productHint: string
+}
+
+function createEmptyKnowledgeImportForm(): KnowledgeImportForm {
+  return {
+    sourceType: 'public-poc',
+    title: '',
+    sourceUrl: '',
+    author: '',
+    license: '',
+    rawContent: '',
+    vendorHint: '',
+    productHint: ''
+  }
 }
 
 interface ScanFormState {
@@ -96,8 +150,29 @@ function createEmptyProfileForm(): ModelProfileForm {
     timeoutMs: 30_000,
     rpmLimit: 30,
     tpmLimit: 100_000,
-    tokenBudget: 1_000_000,
-    costBudget: 20
+    tokenBudget: 1_000_000
+  }
+}
+
+function createEmptyMcpServerForm(): McpServerForm {
+  return {
+    id: '',
+    name: '',
+    transport: 'stdio',
+    enabled: false,
+    command: 'npx',
+    args: '',
+    cwd: '',
+    url: '',
+    authType: 'none',
+    authHeaderName: 'X-API-Key',
+    token: '',
+    environmentJson: '',
+    headersJson: '',
+    timeoutMs: 15_000,
+    roots: '',
+    allowedAgentRoles: [],
+    riskLabels: []
   }
 }
 
@@ -124,6 +199,12 @@ const agentRoleLabels: Record<AgentRole, string> = {
   verifier: 'VerifierAgent'
 }
 
+const mcpRiskLabels: Record<McpRiskLabel, string> = {
+  'file-access': 'File Access',
+  'command-execution': 'Command Execution',
+  'network-access': 'Network Access'
+}
+
 const verdictLabels: Record<FindingRecord['verdict'], string> = {
   confirmed: 'Confirmed',
   'not-confirmed': 'Not Confirmed',
@@ -147,7 +228,8 @@ const navItems: Array<{ id: ViewId; label: string; icon: LucideIcon }> = [
   { id: 'findings', label: 'Findings 与报告', icon: FileSearch },
   { id: 'audit', label: '审计日志', icon: Activity },
   { id: 'knowledge', label: '知识库', icon: BookOpen },
-  { id: 'settings', label: '模型设置', icon: Settings }
+  { id: 'mcp', label: 'MCP Center', icon: Server },
+  { id: 'settings', label: 'Agent 与模型', icon: Settings }
 ]
 
 function splitValues(value: string): string[] {
@@ -155,6 +237,26 @@ function splitValues(value: string): string[] {
     .split(/[\n,，]/)
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+function splitLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function parseStringRecord(value: string, label: string): Record<string, string> | undefined {
+  if (!value.trim()) return undefined
+  const parsed = JSON.parse(value) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${label}必须是 JSON 对象。`)
+  }
+  const entries = Object.entries(parsed)
+  if (entries.some((entry) => typeof entry[1] !== 'string')) {
+    throw new Error(`${label}中的所有值都必须是字符串。`)
+  }
+  return Object.fromEntries(entries) as Record<string, string>
 }
 
 function scopeInput(scope: TargetScopeRecord) {
@@ -228,10 +330,14 @@ export function App(): React.JSX.Element {
   const [findings, setFindings] = useState<FindingRecord[]>([])
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([])
   const [profiles, setProfiles] = useState<ModelProfileRecord[]>([])
+  const [profileUsage, setProfileUsage] = useState<ModelProfileUsageRecord[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([])
   const [selectedTarget, setSelectedTarget] = useState<TargetDetail>()
   const [selectedScan, setSelectedScan] = useState<ScanDetail>()
   const [reports, setReports] = useState<ReportRecord[]>([])
   const [knowledge, setKnowledge] = useState<KnowledgeEntrySummary[]>([])
+  const [knowledgeImports, setKnowledgeImports] = useState<KnowledgeImportSummary[]>([])
+  const [selectedKnowledgeImport, setSelectedKnowledgeImport] = useState<KnowledgeImportDetail>()
   const [selfCheck, setSelfCheck] = useState<PolicySelfCheckResult>()
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState('')
@@ -272,9 +378,13 @@ export function App(): React.JSX.Element {
     maxDurationMinutes: 30
   })
   const [knowledgeQuery, setKnowledgeQuery] = useState('')
+  const [knowledgeImportForm, setKnowledgeImportForm] = useState<KnowledgeImportForm>(
+    createEmptyKnowledgeImportForm
+  )
   const [profileForm, setProfileForm] = useState<ModelProfileForm>(
     createEmptyProfileForm
   )
+  const [mcpForm, setMcpForm] = useState<McpServerForm>(createEmptyMcpServerForm)
 
   const activeWorkspace = workspaces.find((workspace) => workspace.id === workspaceId)
   const runningScan = scans.some((scan) => ['queued', 'running'].includes(scan.status))
@@ -323,13 +433,26 @@ export function App(): React.JSX.Element {
     void Promise.all([
       api.getBootstrapState(),
       api.listWorkspaces(),
-      api.listModelProfiles()
+      api.listModelProfiles(),
+      api.listModelProfileUsage(),
+      api.listMcpServers(),
+      api.listKnowledgeImports()
     ])
-      .then(([state, nextWorkspaces, nextProfiles]) => {
+      .then(([
+        state,
+        nextWorkspaces,
+        nextProfiles,
+        nextProfileUsage,
+        nextMcpServers,
+        nextKnowledgeImports
+      ]) => {
         if (!active) return
         setBootstrap(state)
         setWorkspaces(nextWorkspaces)
         setProfiles(nextProfiles)
+        setProfileUsage(nextProfileUsage)
+        setMcpServers(nextMcpServers)
+        setKnowledgeImports(nextKnowledgeImports)
         setWorkspaceId(nextWorkspaces[0]?.id ?? '')
         api.notifyRendererReady()
       })
@@ -622,6 +745,102 @@ export function App(): React.JSX.Element {
     if (result) setKnowledge(result)
   }
 
+  async function refreshKnowledgeImports(selectedId?: string): Promise<void> {
+    const next = await api.listKnowledgeImports()
+    setKnowledgeImports(next)
+    const id = selectedId ?? selectedKnowledgeImport?.id
+    if (id && next.some((item) => item.id === id)) {
+      setSelectedKnowledgeImport(await api.getKnowledgeImport(id))
+    } else if (id) {
+      setSelectedKnowledgeImport(undefined)
+    }
+  }
+
+  async function selectKnowledgeImport(id: string): Promise<void> {
+    const detail = await runAction('knowledge-import-detail', () => api.getKnowledgeImport(id))
+    if (detail) setSelectedKnowledgeImport(detail)
+  }
+
+  async function createKnowledgeImport(): Promise<void> {
+    const created = await runAction('knowledge-import-create', () =>
+      api.createKnowledgeImport({
+        sourceType: knowledgeImportForm.sourceType,
+        title: knowledgeImportForm.title,
+        rawContent: knowledgeImportForm.rawContent,
+        ...(knowledgeImportForm.sourceUrl.trim()
+          ? { sourceUrl: knowledgeImportForm.sourceUrl.trim() }
+          : {}),
+        ...(knowledgeImportForm.author.trim()
+          ? { author: knowledgeImportForm.author.trim() }
+          : {}),
+        ...(knowledgeImportForm.license.trim()
+          ? { license: knowledgeImportForm.license.trim() }
+          : {}),
+        ...(knowledgeImportForm.vendorHint.trim()
+          ? { vendorHint: knowledgeImportForm.vendorHint.trim() }
+          : {}),
+        ...(knowledgeImportForm.productHint.trim()
+          ? { productHint: knowledgeImportForm.productHint.trim() }
+          : {})
+      })
+    )
+    if (!created) return
+    setSelectedKnowledgeImport(created)
+    setKnowledgeImportForm(createEmptyKnowledgeImportForm())
+    await refreshKnowledgeImports(created.id)
+  }
+
+  async function extractKnowledgeImport(
+    id: string,
+    extractorProfileId: string,
+    reviewerProfileId: string
+  ): Promise<void> {
+    const extracted = await runAction(`knowledge-extract-${id}`, () =>
+      api.extractKnowledgeImport({ id, extractorProfileId, reviewerProfileId })
+    )
+    if (!extracted) {
+      await refreshKnowledgeImports(id)
+      return
+    }
+    setSelectedKnowledgeImport(extracted)
+    await refreshKnowledgeImports(id)
+  }
+
+  async function saveKnowledgeCandidate(
+    id: string,
+    candidate: KnowledgeIntelligenceCandidate
+  ): Promise<void> {
+    const saved = await runAction(`knowledge-candidate-save-${id}`, () =>
+      api.updateKnowledgeCandidate({ id, candidate })
+    )
+    if (!saved) return
+    setSelectedKnowledgeImport(saved)
+    await refreshKnowledgeImports(id)
+  }
+
+  async function reviewKnowledgeImport(
+    id: string,
+    action: 'publish' | 'reject' | 'reopen'
+  ): Promise<void> {
+    const reviewed = await runAction(`knowledge-${action}-${id}`, () =>
+      api.reviewKnowledgeImport({ id, action })
+    )
+    if (!reviewed) return
+    setSelectedKnowledgeImport(reviewed)
+    await refreshKnowledgeImports(id)
+    if (action === 'publish') await searchKnowledge()
+  }
+
+  async function deleteKnowledgeImport(id: string): Promise<void> {
+    if (!window.confirm('删除这条导入记录、原文、候选和 Agent 运行记录？')) return
+    const result = await runAction(`knowledge-delete-${id}`, () =>
+      api.deleteKnowledgeImport(id)
+    )
+    if (!result?.deleted) return
+    setSelectedKnowledgeImport(undefined)
+    await refreshKnowledgeImports()
+  }
+
   async function saveProfile(): Promise<void> {
     const result = await runAction('profile-save', () =>
       api.saveModelProfile({
@@ -636,7 +855,7 @@ export function App(): React.JSX.Element {
         rpmLimit: profileForm.rpmLimit,
         tpmLimit: profileForm.tpmLimit,
         tokenBudget: profileForm.tokenBudget,
-        costBudget: profileForm.costBudget
+        costBudget: 0
       })
     )
     if (!result) return
@@ -656,19 +875,102 @@ export function App(): React.JSX.Element {
       timeoutMs: profile.timeoutMs,
       rpmLimit: profile.rpmLimit,
       tpmLimit: profile.tpmLimit,
-      tokenBudget: profile.tokenBudget,
-      costBudget: profile.costBudget
+      tokenBudget: profile.tokenBudget
     })
   }
 
   async function testProfile(id: string): Promise<void> {
     const result = await runAction(`profile-test-${id}`, () => api.testModelProfile(id))
-    if (result) window.alert(result.message)
+    if (result) {
+      const tokenSummary = result.totalTokens !== undefined
+        ? `\n本次 Token：${result.totalTokens}（输入 ${result.promptTokens ?? 0} / 输出 ${result.completionTokens ?? 0}）`
+        : ''
+      window.alert(`${result.message}${tokenSummary}`)
+      setProfileUsage(await api.listModelProfileUsage())
+    }
   }
 
   async function deleteProfile(id: string): Promise<void> {
     await runAction(`profile-delete-${id}`, () => api.deleteModelProfile(id))
     setProfiles(await api.listModelProfiles())
+    setProfileUsage(await api.listModelProfileUsage())
+  }
+
+  async function saveMcpServer(): Promise<void> {
+    const result = await runAction('mcp-save', () =>
+      api.saveMcpServer({
+        ...(mcpForm.id ? { id: mcpForm.id } : {}),
+        name: mcpForm.name,
+        transport: mcpForm.transport,
+        enabled: mcpForm.enabled,
+        ...(mcpForm.transport === 'stdio'
+          ? {
+              command: mcpForm.command,
+              args: splitLines(mcpForm.args),
+              authType: 'none' as const,
+              ...(mcpForm.cwd ? { cwd: mcpForm.cwd } : {}),
+              ...(parseStringRecord(mcpForm.environmentJson, '环境变量')
+                ? { environment: parseStringRecord(mcpForm.environmentJson, '环境变量') }
+                : {})
+            }
+          : {
+              url: mcpForm.url,
+              args: [],
+              authType: mcpForm.authType,
+              ...(mcpForm.authType === 'header'
+                ? { authHeaderName: mcpForm.authHeaderName }
+                : {}),
+              ...(mcpForm.token ? { token: mcpForm.token } : {}),
+              ...(parseStringRecord(mcpForm.headersJson, '自定义请求头')
+                ? { headers: parseStringRecord(mcpForm.headersJson, '自定义请求头') }
+                : {})
+            }),
+        timeoutMs: mcpForm.timeoutMs,
+        roots: splitValues(mcpForm.roots),
+        allowedAgentRoles: mcpForm.allowedAgentRoles,
+        riskLabels: mcpForm.riskLabels
+      })
+    )
+    if (!result) return
+    setMcpServers(await api.listMcpServers())
+    setMcpForm(createEmptyMcpServerForm())
+  }
+
+  function editMcpServer(server: McpServerRecord): void {
+    setMcpForm({
+      id: server.id,
+      name: server.name,
+      transport: server.transport,
+      enabled: server.enabled,
+      command: server.command ?? 'npx',
+      args: server.args.join('\n'),
+      cwd: server.cwd ?? '',
+      url: server.url ?? '',
+      authType: server.authType,
+      authHeaderName: server.authHeaderName ?? 'X-API-Key',
+      token: '',
+      environmentJson: '',
+      headersJson: '',
+      timeoutMs: server.timeoutMs,
+      roots: server.roots.join('\n'),
+      allowedAgentRoles: server.allowedAgentRoles,
+      riskLabels: server.riskLabels
+    })
+  }
+
+  async function testMcpServer(id: string): Promise<void> {
+    const result = await runAction(`mcp-test-${id}`, () => api.testMcpServer(id))
+    if (result) {
+      window.alert(result.message)
+      setMcpServers(await api.listMcpServers())
+    }
+  }
+
+  async function deleteMcpServer(id: string): Promise<void> {
+    if (!window.confirm('删除 MCP Server 配置及其加密凭据？')) return
+    await runAction(`mcp-delete-${id}`, () => api.deleteMcpServer(id))
+    setMcpServers(await api.listMcpServers())
+    if (mcpForm.id === id) setMcpForm(createEmptyMcpServerForm())
   }
 
   const viewTitle = navItems.find((item) => item.id === view)?.label ?? 'AgentGo'
@@ -771,8 +1073,9 @@ export function App(): React.JSX.Element {
           ) : null}
           {view === 'findings' ? <FindingsView findings={findings} scans={scans} openScan={(id) => { setView('scans'); void selectScan(id) }} /> : null}
           {view === 'audit' ? <AuditView logs={auditLogs} scans={scans} /> : null}
-          {view === 'knowledge' ? <KnowledgeView query={knowledgeQuery} setQuery={setKnowledgeQuery} entries={knowledge} search={searchKnowledge} busy={busy} /> : null}
-          {view === 'settings' ? <SettingsView profiles={profiles} form={profileForm} setForm={setProfileForm} busy={busy} save={saveProfile} test={testProfile} edit={editProfile} remove={deleteProfile} reset={() => setProfileForm(createEmptyProfileForm())} /> : null}
+          {view === 'knowledge' ? <KnowledgeView query={knowledgeQuery} setQuery={setKnowledgeQuery} entries={knowledge} search={searchKnowledge} imports={knowledgeImports} selected={selectedKnowledgeImport} form={knowledgeImportForm} setForm={setKnowledgeImportForm} profiles={profiles} busy={busy} createImport={createKnowledgeImport} selectImport={selectKnowledgeImport} extractImport={extractKnowledgeImport} saveCandidate={saveKnowledgeCandidate} reviewImport={reviewKnowledgeImport} deleteImport={deleteKnowledgeImport} /> : null}
+          {view === 'mcp' ? <McpCenterView servers={mcpServers} form={mcpForm} setForm={setMcpForm} busy={busy} save={saveMcpServer} test={testMcpServer} edit={editMcpServer} remove={deleteMcpServer} reset={() => setMcpForm(createEmptyMcpServerForm())} /> : null}
+          {view === 'settings' ? <SettingsView profiles={profiles} usage={profileUsage} form={profileForm} setForm={setProfileForm} busy={busy} save={saveProfile} test={testProfile} edit={editProfile} remove={deleteProfile} reset={() => setProfileForm(createEmptyProfileForm())} /> : null}
         </div>
       </main>
     </div>
@@ -1190,12 +1493,342 @@ function AuditView(props: { logs: AuditLogRecord[]; scans: ScanRecord[] }): Reac
   )
 }
 
-function KnowledgeView(props: { query: string; setQuery: (value: string) => void; entries: KnowledgeEntrySummary[]; search: () => Promise<void>; busy: string }): React.JSX.Element {
-  return <section className="panel"><div className="panel-header"><div><span className="eyebrow">CURATED KNOWLEDGE</span><h2>V1 知识条目</h2></div></div><div className="search-row"><Search size={18} /><input placeholder="检索适用性、信号或修复建议" value={props.query} onChange={(event) => props.setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void props.search() }} /><ActionButton onClick={props.search} busy={props.busy === 'knowledge-search'}>检索</ActionButton></div>{props.entries.length ? <div className="knowledge-grid">{props.entries.map((entry) => <article key={entry.id}><div><StatusPill value={entry.family} /><code>{entry.version}</code></div><h3>{entry.title}</h3><p>{entry.applicability.join('；')}</p><h4>确认规则</h4><ul>{entry.confirmationRules.map((item) => <li key={item}>{item}</li>)}</ul><h4>来源</h4><small>{entry.sourceTitles.join('、')}</small></article>)}</div> : <EmptyState icon={BookOpen}>输入关键词检索，或留空查看全部内置条目。</EmptyState>}</section>
+function KnowledgeView(props: {
+  query: string
+  setQuery: (value: string) => void
+  entries: KnowledgeEntrySummary[]
+  search: () => Promise<void>
+  imports: KnowledgeImportSummary[]
+  selected?: KnowledgeImportDetail
+  form: KnowledgeImportForm
+  setForm: React.Dispatch<React.SetStateAction<KnowledgeImportForm>>
+  profiles: ModelProfileRecord[]
+  busy: string
+  createImport: () => Promise<void>
+  selectImport: (id: string) => Promise<void>
+  extractImport: (id: string, extractorProfileId: string, reviewerProfileId: string) => Promise<void>
+  saveCandidate: (id: string, candidate: KnowledgeIntelligenceCandidate) => Promise<void>
+  reviewImport: (id: string, action: 'publish' | 'reject' | 'reopen') => Promise<void>
+  deleteImport: (id: string) => Promise<void>
+}): React.JSX.Element {
+  const [tab, setTab] = useState<'library' | 'imports' | 'new'>('imports')
+  const knowledgeProfiles = props.profiles.filter((profile) => profile.agentRole === 'knowledge')
+  const verifierProfiles = props.profiles.filter((profile) => profile.agentRole === 'verifier')
+  const [extractorProfileId, setExtractorProfileId] = useState('')
+  const [reviewerProfileId, setReviewerProfileId] = useState('')
+  const [fileError, setFileError] = useState('')
+
+  useEffect(() => {
+    if (!knowledgeProfiles.some((profile) => profile.id === extractorProfileId)) {
+      setExtractorProfileId(
+        knowledgeProfiles.find((profile) => profile.provider === 'openai-compatible')?.id ??
+          knowledgeProfiles[0]?.id ??
+          ''
+      )
+    }
+    if (!verifierProfiles.some((profile) => profile.id === reviewerProfileId)) {
+      setReviewerProfileId(
+        verifierProfiles.find((profile) => profile.provider === 'openai-compatible')?.id ??
+          verifierProfiles[0]?.id ??
+          ''
+      )
+    }
+  }, [extractorProfileId, knowledgeProfiles, reviewerProfileId, verifierProfiles])
+
+  async function loadFile(file?: File): Promise<void> {
+    if (!file) return
+    if (file.size > 1_000_000) {
+      setFileError('文件超过 1 MB 限制。')
+      return
+    }
+    const rawContent = await file.text()
+    setFileError('')
+    props.setForm((current) => ({
+      ...current,
+      title: current.title || file.name,
+      rawContent
+    }))
+  }
+
+  return (
+    <section className="panel knowledge-center">
+      <div className="panel-header">
+        <div><span className="eyebrow">KNOWLEDGE OPERATIONS</span><h2>知识情报库</h2></div>
+        <span className="count">{props.imports.length}</span>
+      </div>
+      <div className="tab-row">
+        <button className={tab === 'library' ? 'active' : ''} onClick={() => setTab('library')}>知识检索</button>
+        <button className={tab === 'imports' ? 'active' : ''} onClick={() => setTab('imports')}>导入队列</button>
+        <button className={tab === 'new' ? 'active' : ''} onClick={() => setTab('new')}>新建导入</button>
+      </div>
+
+      {tab === 'library' ? (
+        <div className="knowledge-library">
+          <div className="search-row">
+            <Search size={18} />
+            <input placeholder="检索厂商、产品、适用性或确认规则" value={props.query} onChange={(event) => props.setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void props.search() }} />
+            <ActionButton icon={Search} onClick={props.search} busy={props.busy === 'knowledge-search'}>检索</ActionButton>
+          </div>
+          {props.entries.length ? (
+            <div className="knowledge-grid">
+              {props.entries.map((entry) => (
+                <article key={entry.id}>
+                  <div><StatusPill value={entry.family ?? 'intel'} /><code>{entry.version}</code></div>
+                  <h3>{entry.title}</h3>
+                  {entry.vendor || entry.product ? <p><strong>{entry.vendor}</strong> / {entry.product}</p> : null}
+                  <p>{entry.applicability.join('；') || '未记录适用条件'}</p>
+                  <h4>确认规则</h4>
+                  <ul>{entry.confirmationRules.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <h4>来源</h4>
+                  <small>{entry.sourceTitles.join('、')} · {entry.sourceType ?? 'unknown'}</small>
+                </article>
+              ))}
+            </div>
+          ) : <EmptyState icon={BookOpen}>尚未执行检索。</EmptyState>}
+        </div>
+      ) : null}
+
+      {tab === 'new' ? (
+        <div className="knowledge-import-form">
+          <div className="form-grid two">
+            <label>来源类型<select value={props.form.sourceType} onChange={(event) => props.setForm((current) => ({ ...current, sourceType: event.target.value as KnowledgeSourceType }))}><option value="vendor-advisory">厂商公告</option><option value="public-poc">公开 PoC</option><option value="research">安全研究</option><option value="repository">代码仓库</option><option value="other">其他</option></select></label>
+            <label>标题<input value={props.form.title} onChange={(event) => props.setForm((current) => ({ ...current, title: event.target.value }))} /></label>
+            <label>来源 URL<input value={props.form.sourceUrl} onChange={(event) => props.setForm((current) => ({ ...current, sourceUrl: event.target.value }))} /></label>
+            <label>作者<input value={props.form.author} onChange={(event) => props.setForm((current) => ({ ...current, author: event.target.value }))} /></label>
+            <label>许可证<input value={props.form.license} onChange={(event) => props.setForm((current) => ({ ...current, license: event.target.value }))} /></label>
+            <label>厂商提示<input value={props.form.vendorHint} onChange={(event) => props.setForm((current) => ({ ...current, vendorHint: event.target.value }))} /></label>
+            <label>产品提示<input value={props.form.productHint} onChange={(event) => props.setForm((current) => ({ ...current, productHint: event.target.value }))} /></label>
+            <label>本地文本文件<input type="file" accept=".txt,.md,.json,.yaml,.yml,.py,.js,.ts,.java,.go,.rb,.php,.xml" onChange={(event) => void loadFile(event.target.files?.[0])} /></label>
+            <label className="span-2">情报或 PoC 原文<textarea rows={18} value={props.form.rawContent} onChange={(event) => props.setForm((current) => ({ ...current, rawContent: event.target.value }))} /></label>
+          </div>
+          {fileError ? <div className="alert error compact"><CircleAlert size={15} />{fileError}</div> : null}
+          <div className="panel-actions">
+            <ActionButton icon={Upload} kind="primary" onClick={async () => { await props.createImport(); setTab('imports') }} busy={props.busy === 'knowledge-import-create'} disabled={!props.form.title.trim() || !props.form.rawContent.trim()}>保存到导入队列</ActionButton>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === 'imports' ? (
+        <div className="knowledge-import-layout">
+          <div className="knowledge-import-list">
+            {props.imports.length ? props.imports.map((item) => (
+              <button key={item.id} className={props.selected?.id === item.id ? 'selected' : ''} onClick={() => props.selectImport(item.id)}>
+                <div><strong>{item.title}</strong><StatusPill value={item.status} /></div>
+                <span>{item.candidate ? `${item.candidate.vendor} / ${item.candidate.product}` : item.sourceType}</span>
+                <small>{new Date(item.updatedAt).toLocaleString()}</small>
+              </button>
+            )) : <EmptyState icon={FileUp}>尚无导入记录。</EmptyState>}
+          </div>
+
+          <div className="knowledge-import-detail">
+            {props.selected ? (
+              <>
+                <div className="panel-header compact">
+                  <div><span className="eyebrow">IMPORT DETAIL</span><h3>{props.selected.title}</h3></div>
+                  <StatusPill value={props.selected.status} />
+                </div>
+                <div className="form-grid two compact">
+                  <label>Extractor Profile<select value={extractorProfileId} onChange={(event) => setExtractorProfileId(event.target.value)}>{knowledgeProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.provider}</option>)}</select></label>
+                  <label>Reviewer Profile<select value={reviewerProfileId} onChange={(event) => setReviewerProfileId(event.target.value)}>{verifierProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.provider}</option>)}</select></label>
+                </div>
+                <div className="row-actions">
+                  <ActionButton icon={Bot} kind="primary" onClick={() => props.extractImport(props.selected!.id, extractorProfileId, reviewerProfileId)} busy={props.busy === `knowledge-extract-${props.selected.id}`} disabled={!extractorProfileId || !reviewerProfileId || props.selected.status === 'extracting' || props.selected.status === 'published'}>提取并复核</ActionButton>
+                  {props.selected.status === 'published' ? <ActionButton icon={RefreshCw} onClick={() => props.reviewImport(props.selected!.id, 'reopen')} busy={props.busy === `knowledge-reopen-${props.selected.id}`}>重新审核</ActionButton> : null}
+                  {props.selected.candidate && props.selected.status !== 'published' ? <ActionButton icon={CheckCircle2} onClick={() => props.reviewImport(props.selected!.id, 'publish')} busy={props.busy === `knowledge-publish-${props.selected.id}`}>发布</ActionButton> : null}
+                  {props.selected.status !== 'published' ? <ActionButton icon={Square} kind="quiet" onClick={() => props.reviewImport(props.selected!.id, 'reject')} busy={props.busy === `knowledge-reject-${props.selected.id}`}>驳回</ActionButton> : null}
+                  {props.selected.status !== 'published' ? <ActionButton icon={Trash2} kind="danger" onClick={() => props.deleteImport(props.selected!.id)} busy={props.busy === `knowledge-delete-${props.selected.id}`}>删除</ActionButton> : null}
+                </div>
+                {props.selected.lastError ? <div className="alert error compact"><CircleAlert size={15} />{props.selected.lastError}</div> : null}
+                {props.selected.reviewIssues.length ? <div className="knowledge-review-issues">{props.selected.reviewIssues.map((issue, index) => <div key={`${issue.field}-${index}`} className={`alert compact ${issue.severity === 'error' ? 'error' : ''}`}><CircleAlert size={15} /><strong>{issue.field}</strong><span>{issue.message}</span></div>)}</div> : null}
+                {props.selected.candidate && props.selected.status !== 'published' ? <KnowledgeCandidateEditor key={`${props.selected.id}-${props.selected.updatedAt}`} importId={props.selected.id} candidate={props.selected.candidate} busy={props.busy} save={props.saveCandidate} /> : null}
+                {props.selected.candidate && props.selected.status === 'published' ? <details open><summary>已发布结构化记录</summary><pre className="source-preview">{JSON.stringify(props.selected.candidate, null, 2)}</pre></details> : null}
+                <details><summary>原始来源</summary><pre className="source-preview">{props.selected.rawContent}</pre></details>
+                <details open><summary>Agent 运行记录（{props.selected.runs.length}）</summary><div className="agent-run-list">{props.selected.runs.map((run) => <div key={run.id}><StatusPill value={run.status} /><strong>{run.role}</strong><span>{run.provider ?? '-'} / {run.model ?? '-'}</span><code>{run.promptId}@{run.promptVersion}</code><small>Token {run.promptTokens + run.completionTokens}</small></div>)}</div></details>
+              </>
+            ) : <EmptyState icon={FileSearch}>选择一条导入记录。</EmptyState>}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function KnowledgeCandidateEditor(props: {
+  importId: string
+  candidate: KnowledgeIntelligenceCandidate
+  busy: string
+  save: (id: string, candidate: KnowledgeIntelligenceCandidate) => Promise<void>
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(props.candidate)
+  const [endpointJson, setEndpointJson] = useState(
+    JSON.stringify(props.candidate.affectedEndpoints, null, 2)
+  )
+  const [localError, setLocalError] = useState('')
+
+  function updateLines(
+    field: 'affectedVersions' | 'preconditions' | 'signals' | 'confirmationRules' | 'remediation' | 'forbiddenActions',
+    value: string
+  ): void {
+    setDraft((current) => ({ ...current, [field]: splitLines(value) }))
+  }
+
+  async function save(): Promise<void> {
+    try {
+      const parsedEndpoints = JSON.parse(endpointJson) as unknown
+      if (!Array.isArray(parsedEndpoints)) throw new Error('HTTP 请求模板必须是 JSON 数组。')
+      setLocalError('')
+      await props.save(props.importId, {
+        ...draft,
+        affectedEndpoints: parsedEndpoints as KnowledgeIntelligenceCandidate['affectedEndpoints']
+      })
+    } catch (reason) {
+      setLocalError(errorText(reason))
+    }
+  }
+
+  return (
+    <div className="knowledge-candidate-editor">
+      <h3>结构化候选</h3>
+      <div className="form-grid two compact">
+        <label className="span-2">标题<input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} /></label>
+        <label>厂商<input value={draft.vendor} onChange={(event) => setDraft((current) => ({ ...current, vendor: event.target.value }))} /></label>
+        <label>产品<input value={draft.product} onChange={(event) => setDraft((current) => ({ ...current, product: event.target.value }))} /></label>
+        <label>漏洞类型<input value={draft.vulnerabilityType} onChange={(event) => setDraft((current) => ({ ...current, vulnerabilityType: event.target.value }))} /></label>
+        <label>扫描族<select value={draft.family ?? ''} onChange={(event) => setDraft((current) => ({ ...current, ...(event.target.value ? { family: event.target.value as VulnerabilityFamily } : { family: undefined }) }))}><option value="">不映射</option><option value="sqli">SQLi</option><option value="xss">XSS</option><option value="ssrf">SSRF</option><option value="idor">IDOR</option></select></label>
+        <label>CVE（每行一个）<textarea rows={3} value={draft.identifiers.cve.join('\n')} onChange={(event) => setDraft((current) => ({ ...current, identifiers: { ...current.identifiers, cve: splitLines(event.target.value) } }))} /></label>
+        <label>CWE（每行一个）<textarea rows={3} value={draft.identifiers.cwe.join('\n')} onChange={(event) => setDraft((current) => ({ ...current, identifiers: { ...current.identifiers, cwe: splitLines(event.target.value) } }))} /></label>
+        <label>影响版本<textarea rows={4} value={draft.affectedVersions.join('\n')} onChange={(event) => updateLines('affectedVersions', event.target.value)} /></label>
+        <label>前置条件<textarea rows={4} value={draft.preconditions.join('\n')} onChange={(event) => updateLines('preconditions', event.target.value)} /></label>
+        <label>信号<textarea rows={4} value={draft.signals.join('\n')} onChange={(event) => updateLines('signals', event.target.value)} /></label>
+        <label>确认规则<textarea rows={4} value={draft.confirmationRules.join('\n')} onChange={(event) => updateLines('confirmationRules', event.target.value)} /></label>
+        <label>修复建议<textarea rows={4} value={draft.remediation.join('\n')} onChange={(event) => updateLines('remediation', event.target.value)} /></label>
+        <label>禁止动作<textarea rows={4} value={draft.forbiddenActions.join('\n')} onChange={(event) => updateLines('forbiddenActions', event.target.value)} /></label>
+        <label className="span-2">HTTP 请求模板（JSON）<textarea className="code-input" rows={12} value={endpointJson} onChange={(event) => setEndpointJson(event.target.value)} /></label>
+      </div>
+      {localError ? <div className="alert error compact"><CircleAlert size={15} />{localError}</div> : null}
+      <div className="panel-actions"><ActionButton icon={Pencil} kind="primary" onClick={save} busy={props.busy === `knowledge-candidate-save-${props.importId}`}>保存人工修订</ActionButton></div>
+      {draft.fieldEvidence.length ? <details><summary>字段来源证据（{draft.fieldEvidence.length}）</summary><div className="field-evidence-list">{draft.fieldEvidence.map((evidence, index) => <div key={`${evidence.field}-${index}`}><strong>{evidence.field}</strong><span>{Math.round(evidence.confidence * 100)}%</span><blockquote>{evidence.quote}</blockquote></div>)}</div></details> : null}
+    </div>
+  )
+}
+
+function McpCenterView(props: {
+  servers: McpServerRecord[]
+  form: McpServerForm
+  setForm: React.Dispatch<React.SetStateAction<McpServerForm>>
+  busy: string
+  save: () => Promise<void>
+  test: (id: string) => Promise<void>
+  edit: (server: McpServerRecord) => void
+  remove: (id: string) => Promise<void>
+  reset: () => void
+}): React.JSX.Element {
+  const editing = props.servers.find((server) => server.id === props.form.id)
+  const toggleRole = (role: AgentRole, checked: boolean): void => {
+    props.setForm((current) => ({
+      ...current,
+      allowedAgentRoles: checked
+        ? uniqueValues([...current.allowedAgentRoles, role])
+        : current.allowedAgentRoles.filter((item) => item !== role)
+    }))
+  }
+  const toggleRisk = (risk: McpRiskLabel, checked: boolean): void => {
+    props.setForm((current) => ({
+      ...current,
+      riskLabels: checked
+        ? uniqueValues([...current.riskLabels, risk])
+        : current.riskLabels.filter((item) => item !== risk)
+    }))
+  }
+
+  return (
+    <div className="two-column mcp-center-layout">
+      <section className="panel">
+        <div className="panel-header">
+          <div><span className="eyebrow">MCP HOST</span><h2>MCP Servers</h2></div>
+          <span className="count">{props.servers.length}</span>
+        </div>
+        <p className="muted">新 Server 默认禁用。只有手动点击“测试连接”才会启动本地命令或连接远程 URL；当前版本只做配置与能力发现，不会让 Agent 自动调用 MCP 工具。</p>
+        {props.servers.length ? (
+          <div className="mcp-server-list">
+            {props.servers.map((server) => (
+              <article key={server.id}>
+                <div className="mcp-server-heading">
+                  <Server size={19} />
+                  <div>
+                    <strong>{server.name}</strong>
+                    <span>{server.transport === 'stdio' ? '本地 STDIO' : 'Streamable HTTP'} · {server.serverName ?? '未发现 Server 信息'} {server.serverVersion ?? ''}</span>
+                  </div>
+                  <StatusPill value={server.enabled ? server.status : 'disabled'} />
+                </div>
+                <code className="mcp-endpoint">{server.transport === 'stdio' ? [server.command, ...server.args].filter(Boolean).join(' ') : server.url}</code>
+                <div className="mcp-risk-list">
+                  {server.riskLabels.map((risk) => <span key={risk}>{mcpRiskLabels[risk]}</span>)}
+                </div>
+                <div className="mini-stats mcp-capability-stats">
+                  <div><strong>{server.tools.length}</strong><span>Tools</span></div>
+                  <div><strong>{server.resources.length}</strong><span>Resources</span></div>
+                  <div><strong>{server.prompts.length}</strong><span>Prompts</span></div>
+                </div>
+                <small>允许 Agent：{server.allowedAgentRoles.map((role) => agentRoleLabels[role]).join('、') || '尚未绑定'}</small>
+                {server.environmentKeys.length ? <small>加密环境变量：{server.environmentKeys.join('、')}</small> : null}
+                {server.headerNames.length ? <small>加密请求头：{server.headerNames.join('、')}</small> : null}
+                {server.lastError ? <div className="alert error compact"><CircleAlert size={15} />{server.lastError}</div> : null}
+                <div className="row-actions mcp-actions">
+                  <ActionButton icon={Gauge} kind="quiet" onClick={() => props.test(server.id)} busy={props.busy === `mcp-test-${server.id}`}>测试连接</ActionButton>
+                  <ActionButton icon={Pencil} kind="quiet" onClick={() => props.edit(server)}>编辑</ActionButton>
+                  <ActionButton icon={Trash2} kind="danger" onClick={() => props.remove(server.id)} busy={props.busy === `mcp-delete-${server.id}`}>删除</ActionButton>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : <EmptyState icon={Server}>尚未配置 MCP Server。</EmptyState>}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div><span className="eyebrow">SERVER CONFIGURATION</span><h2>{props.form.id ? '编辑 MCP Server' : '添加 MCP Server'}</h2></div>
+        </div>
+        <div className="form-grid two">
+          <label>名称<input value={props.form.name} onChange={(event) => props.setForm((current) => ({ ...current, name: event.target.value }))} /></label>
+          <label>Transport<select value={props.form.transport} onChange={(event) => props.setForm((current) => ({ ...current, transport: event.target.value as McpServerRecord['transport'] }))}><option value="stdio">本地 STDIO</option><option value="streamable-http">远程 Streamable HTTP</option></select></label>
+          <label className="check-row span-2"><input type="checkbox" checked={props.form.enabled} onChange={(event) => props.setForm((current) => ({ ...current, enabled: event.target.checked }))} />标记为启用（当前仅记录配置状态；Agent 自动调用尚未开放）</label>
+          {props.form.transport === 'stdio' ? (
+            <>
+              <label>启动命令<input placeholder="例如 npx、node、python 或绝对可执行文件路径" value={props.form.command} onChange={(event) => props.setForm((current) => ({ ...current, command: event.target.value }))} /></label>
+              <label>工作目录<input placeholder="可选；不会自动暴露为 root" value={props.form.cwd} onChange={(event) => props.setForm((current) => ({ ...current, cwd: event.target.value }))} /></label>
+              <label className="span-2">参数（每行一个）<textarea rows={4} value={props.form.args} onChange={(event) => props.setForm((current) => ({ ...current, args: event.target.value }))} /></label>
+              <label className="span-2">环境变量 JSON（加密保存）<textarea rows={4} placeholder={'例如 {"API_TOKEN":"..."}；编辑时留空保留已有值'} value={props.form.environmentJson} onChange={(event) => props.setForm((current) => ({ ...current, environmentJson: event.target.value }))} /></label>
+              {editing?.environmentKeys.length ? <span className="muted span-2">已有加密环境变量：{editing.environmentKeys.join('、')}</span> : null}
+            </>
+          ) : (
+            <>
+              <label className="span-2">Server URL<input placeholder="https://mcp.example.com/mcp" value={props.form.url} onChange={(event) => props.setForm((current) => ({ ...current, url: event.target.value }))} /></label>
+              <label>鉴权方式<select value={props.form.authType} onChange={(event) => props.setForm((current) => ({ ...current, authType: event.target.value as McpServerRecord['authType'] }))}><option value="none">无</option><option value="bearer">Bearer Token</option><option value="header">自定义 Header</option></select></label>
+              {props.form.authType === 'header' ? <label>Header 名称<input value={props.form.authHeaderName} onChange={(event) => props.setForm((current) => ({ ...current, authHeaderName: event.target.value }))} /></label> : <span />}
+              {props.form.authType !== 'none' ? <label className="span-2">Token（safeStorage）<input type="password" placeholder={editing?.credentialId ? '留空保留已有 Token' : '输入 MCP 鉴权 Token'} value={props.form.token} onChange={(event) => props.setForm((current) => ({ ...current, token: event.target.value }))} /></label> : null}
+              <label className="span-2">额外请求头 JSON（加密保存）<textarea rows={4} placeholder={'例如 {"X-Tenant":"lab"}；编辑时留空保留已有值'} value={props.form.headersJson} onChange={(event) => props.setForm((current) => ({ ...current, headersJson: event.target.value }))} /></label>
+              {editing?.headerNames.length ? <span className="muted span-2">已有加密请求头：{editing.headerNames.join('、')}</span> : null}
+            </>
+          )}
+          <label>连接超时（毫秒）<input type="number" min="1000" max="120000" value={props.form.timeoutMs} onChange={(event) => props.setForm((current) => ({ ...current, timeoutMs: Number(event.target.value) }))} /></label>
+          <label className="span-2">Roots（每行或逗号分隔）<textarea rows={3} placeholder="仅作为 MCP 协作边界提示，不是操作系统沙箱" value={props.form.roots} onChange={(event) => props.setForm((current) => ({ ...current, roots: event.target.value }))} /></label>
+          <fieldset className="span-2"><legend>允许使用的 Agent</legend><div className="check-group">{agentRoles.map((role) => <label key={role}><input type="checkbox" checked={props.form.allowedAgentRoles.includes(role)} onChange={(event) => toggleRole(role, event.target.checked)} />{agentRoleLabels[role]}</label>)}</div></fieldset>
+          <fieldset className="span-2"><legend>额外风险标签</legend><div className="check-group">{(Object.keys(mcpRiskLabels) as McpRiskLabel[]).map((risk) => <label key={risk}><input type="checkbox" checked={props.form.riskLabels.includes(risk)} onChange={(event) => toggleRisk(risk, event.target.checked)} />{mcpRiskLabels[risk]}</label>)}</div></fieldset>
+          <div className="model-routing-note external span-2"><ShieldCheck size={17} /><div><strong>MCP 输出始终是不可信内容</strong><span>保存配置不会连接 Server。连接测试仅由你手动触发；本地 STDIO 会启动指定进程，远程连接会访问填写的 URL。云元数据地址被永久拒绝。</span></div></div>
+        </div>
+        <div className="panel-actions">
+          {props.form.id ? <ActionButton onClick={props.reset}>取消编辑</ActionButton> : null}
+          <ActionButton icon={props.form.id ? Pencil : Plus} kind="primary" onClick={props.save} busy={props.busy === 'mcp-save'} disabled={!props.form.name.trim() || (props.form.transport === 'stdio' ? !props.form.command.trim() : !props.form.url.trim())}>保存配置</ActionButton>
+        </div>
+      </section>
+    </div>
+  )
 }
 
 function SettingsView(props: {
   profiles: ModelProfileRecord[]
+  usage: ModelProfileUsageRecord[]
   form: ModelProfileForm
   setForm: React.Dispatch<React.SetStateAction<ModelProfileForm>>
   busy: string
@@ -1206,23 +1839,25 @@ function SettingsView(props: {
   reset: () => void
 }): React.JSX.Element {
   const setNumber = (
-    field: 'timeoutMs' | 'rpmLimit' | 'tpmLimit' | 'tokenBudget' | 'costBudget',
+    field: 'timeoutMs' | 'rpmLimit' | 'tpmLimit' | 'tokenBudget',
     value: string
   ): void => props.setForm((current) => ({ ...current, [field]: Number(value) }))
 
   return (
     <div className="two-column">
       <section className="panel">
-        <div className="panel-header"><div><span className="eyebrow">MODEL GATEWAY</span><h2>模型 Profiles</h2></div></div>
+        <div className="panel-header"><div><span className="eyebrow">AGENT MODEL ROUTING</span><h2>Agent 模型 Profiles</h2></div></div>
         <div className="profile-list">
-          {props.profiles.map((profile) => (
-            <article key={profile.id}>
+          {props.profiles.map((profile) => {
+            const usage = props.usage.find((item) => item.profileId === profile.id)
+            return <article key={profile.id}>
               <Bot size={19} />
               <div>
                 <strong>{profile.name}</strong>
                 <span>{profile.agentRole} · {profile.provider} · {profile.model}</span>
                 <small>{profile.baseUrl ?? '本地确定性规则'} · Key {profile.credentialId ? '已安全保存' : '不需要'}</small>
-                <small>{profile.timeoutMs / 1000}s · {profile.rpmLimit} RPM · {profile.tpmLimit} TPM · Token {profile.tokenBudget} · 费用 {profile.costBudget}</small>
+                <small>{profile.timeoutMs / 1000}s · {profile.rpmLimit} RPM · {profile.tpmLimit} TPM · Token 预算 {profile.tokenBudget}</small>
+                <small>已用 Token {usage?.totalTokens ?? 0}（输入 {usage?.promptTokens ?? 0} / 输出 {usage?.completionTokens ?? 0} / {usage?.invocationCount ?? 0} 次）</small>
               </div>
               <div className="row-actions">
                 <button title="连接测试" onClick={() => props.test(profile.id)}><Gauge size={16} /></button>
@@ -1234,14 +1869,14 @@ function SettingsView(props: {
                 ) : null}
               </div>
             </article>
-          ))}
+          })}
         </div>
       </section>
       <section className="panel">
         <div className="panel-header">
           <div><span className="eyebrow">OPENAI-COMPATIBLE</span><h2>{props.form.id ? '编辑 Provider' : '添加 Provider'}</h2></div>
         </div>
-        <p className="muted">API Key 仅写入 Electron safeStorage 加密凭据文件；编辑时留空会保留已有凭据。</p>
+        <p className="muted">API Key 仅写入 Electron safeStorage；这里只统计输入、输出和总 Token，不记录或估算费用。编辑时 Key 留空会保留已有凭据。</p>
         <div className="form-grid two">
           <label>名称<input value={props.form.name} onChange={(event) => props.setForm((current) => ({ ...current, name: event.target.value }))} /></label>
           <label>Agent 角色<select value={props.form.agentRole} onChange={(event) => props.setForm((current) => ({ ...current, agentRole: event.target.value as ModelProfileRecord['agentRole'] }))}>{['planner', 'knowledge', 'strategy', 'analysis', 'verifier'].map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
@@ -1252,7 +1887,6 @@ function SettingsView(props: {
           <label>RPM 上限<input type="number" min="1" max="10000" value={props.form.rpmLimit} onChange={(event) => setNumber('rpmLimit', event.target.value)} /></label>
           <label>TPM 上限<input type="number" min="1" max="10000000" value={props.form.tpmLimit} onChange={(event) => setNumber('tpmLimit', event.target.value)} /></label>
           <label>Token 总预算<input type="number" min="1" value={props.form.tokenBudget} onChange={(event) => setNumber('tokenBudget', event.target.value)} /></label>
-          <label>费用预算<input type="number" min="0" step="0.01" value={props.form.costBudget} onChange={(event) => setNumber('costBudget', event.target.value)} /></label>
         </div>
         <div className="panel-actions">
           {props.form.id ? <ActionButton onClick={props.reset}>取消编辑</ActionButton> : null}

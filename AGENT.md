@@ -44,7 +44,7 @@ AgentGo 是“基于 Multi-Agent 协作的授权 Web 漏洞挖掘与验证系统
 | SSRF | 仅访问受控回连端点或明确授权的测试服务 | 禁止访问云元数据、未授权内网、回环地址和越界目标 |
 | 越权 / IDOR | 使用两个授权测试身份进行只读差异验证 | 禁止修改、删除或公开其他真实用户数据 |
 
-文件上传、OAuth/JWT、业务逻辑、GraphQL 等作为后续扩展。通用 MCP、Kali 工具服务器和 Rust sidecar 是增强项，不能阻塞 V1 核心闭环。
+文件上传、OAuth/JWT、业务逻辑、GraphQL 等作为后续扩展。MCP Server 配置、连接测试和能力发现已经接入；Agent 自动调用、Kali 工具服务器和 Rust sidecar 仍是增强项，不能绕过或阻塞 V1 核心闭环。
 
 ## 4. Agent 与确定性服务边界
 

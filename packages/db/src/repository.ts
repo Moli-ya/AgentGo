@@ -12,6 +12,7 @@ import {
 import type {
   AuditLogRecord,
   AgentRole,
+  CreateKnowledgeImportInput,
   CreateScanInput,
   CreateTargetInput,
   CreateWorkspaceInput,
@@ -19,7 +20,16 @@ import type {
   FindingRecord,
   IdentityRecord,
   InventoryEndpoint,
+  KnowledgeAgentRunRecord,
+  KnowledgeImportDetail,
+  KnowledgeImportStatus,
+  KnowledgeImportSummary,
+  KnowledgeIntelligenceCandidate,
+  KnowledgeReviewIssue,
+  McpConnectionTestResult,
+  McpServerRecord,
   ModelProfileRecord,
+  ModelProfileUsageRecord,
   PolicyDecision,
   ProbeAction,
   ReportRecord,
@@ -43,10 +53,15 @@ import {
   findings,
   identities,
   interactions,
+  knowledgeAgentRuns,
   knowledgeChunks,
   knowledgeDocs,
+  knowledgeImports,
+  knowledgeIntelligence,
   modelInvocations,
+  modelProfileUsageEvents,
   modelProfiles,
+  mcpServers,
   pages,
   parameters,
   policyDecisions,
@@ -69,6 +84,9 @@ type WorkspaceRow = typeof workspaces.$inferSelect
 type TargetRow = typeof targets.$inferSelect
 type TargetScopeRow = typeof targetScopes.$inferSelect
 type IdentityRow = typeof identities.$inferSelect
+type KnowledgeImportRow = typeof knowledgeImports.$inferSelect
+type KnowledgeDocumentRow = typeof knowledgeDocs.$inferSelect
+type KnowledgeIntelligenceRow = typeof knowledgeIntelligence.$inferSelect
 type ScanRow = typeof scans.$inferSelect
 type ScanEventRow = typeof scanEvents.$inferSelect
 type AuditRow = typeof auditLogs.$inferSelect
@@ -94,6 +112,13 @@ export interface KnowledgeIndexEntryInput {
   applicability: string[]
   sourceUrl?: string
   license?: string
+}
+
+export interface PublishedKnowledgeEntryRecord {
+  chunkId: string
+  candidate: KnowledgeIntelligenceCandidate
+  sourceTitle: string
+  sourceType: string
 }
 
 export interface StoredSignalRecord {
@@ -330,6 +355,79 @@ function mapAudit(row: AuditRow): AuditLogRecord {
   }
 }
 
+function mapKnowledgeCandidate(
+  row: KnowledgeIntelligenceRow
+): KnowledgeIntelligenceCandidate {
+  return {
+    schemaVersion: 'vulnerability-intel.v1',
+    title: row.title,
+    vendor: row.vendor,
+    product: row.product,
+    vulnerabilityType: row.vulnerabilityType,
+    ...(row.family ? { family: row.family } : {}),
+    identifiers: row.identifiers,
+    affectedVersions: row.affectedVersions,
+    preconditions: row.preconditions,
+    affectedEndpoints: row.affectedEndpoints,
+    signals: row.signals,
+    confirmationRules: row.confirmationRules,
+    remediation: row.remediation,
+    forbiddenActions: row.forbiddenActions,
+    fieldEvidence: row.fieldEvidence,
+    extractionConfidence: row.extractionConfidence / 10_000
+  }
+}
+
+function mapKnowledgeImportSummary(
+  row: KnowledgeImportRow,
+  document: KnowledgeDocumentRow,
+  intelligence?: KnowledgeIntelligenceRow
+): KnowledgeImportSummary {
+  return {
+    id: row.id,
+    documentId: row.documentId,
+    sourceType: row.sourceType,
+    title: document.title,
+    ...(document.sourceUrl ? { sourceUrl: document.sourceUrl } : {}),
+    ...(document.author ? { author: document.author } : {}),
+    ...(document.license ? { license: document.license } : {}),
+    status: row.status,
+    instructionFlags: row.instructionFlags,
+    rawContentSha256: row.rawContentSha256,
+    sourceExcerpt: row.rawContent.slice(0, 1_200),
+    ...(row.extractorProfileId ? { extractorProfileId: row.extractorProfileId } : {}),
+    ...(row.reviewerProfileId ? { reviewerProfileId: row.reviewerProfileId } : {}),
+    reviewIssues: row.reviewIssues,
+    ...(intelligence ? { candidate: mapKnowledgeCandidate(intelligence) } : {}),
+    ...(row.lastError ? { lastError: row.lastError } : {}),
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt)
+  }
+}
+
+function mapKnowledgeAgentRun(
+  row: typeof knowledgeAgentRuns.$inferSelect
+): KnowledgeAgentRunRecord {
+  return {
+    id: row.id,
+    importId: row.importId,
+    ...(row.parentRunId ? { parentRunId: row.parentRunId } : {}),
+    role: row.role as KnowledgeAgentRunRecord['role'],
+    promptId: row.promptId,
+    promptVersion: row.promptVersion,
+    modelProfileId: row.modelProfileId,
+    ...(row.provider ? { provider: row.provider } : {}),
+    ...(row.model ? { model: row.model } : {}),
+    status: row.status as KnowledgeAgentRunRecord['status'],
+    promptTokens: row.promptTokens,
+    completionTokens: row.completionTokens,
+    durationMs: row.durationMs,
+    ...(row.error ? { error: row.error } : {}),
+    startedAt: toIso(row.startedAt),
+    ...(row.finishedAt !== null ? { finishedAt: toIso(row.finishedAt) } : {})
+  }
+}
+
 function mapAgentRun(row: typeof agentRuns.$inferSelect): AgentRunRecord {
   return {
     id: row.id,
@@ -475,6 +573,47 @@ function mapModelProfile(row: typeof modelProfiles.$inferSelect): ModelProfileRe
   }
 }
 
+function mapMcpServer(row: typeof mcpServers.$inferSelect): McpServerRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    transport: row.transport,
+    enabled: row.enabled,
+    ...(row.configJson.command ? { command: row.configJson.command } : {}),
+    args: row.configJson.args,
+    ...(row.configJson.cwd ? { cwd: row.configJson.cwd } : {}),
+    ...(row.configJson.url ? { url: row.configJson.url } : {}),
+    authType: row.configJson.authType,
+    ...(row.configJson.authHeaderName
+      ? { authHeaderName: row.configJson.authHeaderName }
+      : {}),
+    ...(row.credentialId ? { credentialId: row.credentialId } : {}),
+    environmentKeys: row.configJson.environmentKeys,
+    headerNames: row.configJson.headerNames,
+    timeoutMs: row.configJson.timeoutMs,
+    roots: row.configJson.roots,
+    allowedAgentRoles: row.allowedAgentRoles,
+    riskLabels: row.riskLabels,
+    status: row.status,
+    ...(row.discoveryJson.protocolVersion
+      ? { protocolVersion: row.discoveryJson.protocolVersion }
+      : {}),
+    ...(row.discoveryJson.serverName
+      ? { serverName: row.discoveryJson.serverName }
+      : {}),
+    ...(row.discoveryJson.serverVersion
+      ? { serverVersion: row.discoveryJson.serverVersion }
+      : {}),
+    tools: row.discoveryJson.tools,
+    resources: row.discoveryJson.resources,
+    prompts: row.discoveryJson.prompts,
+    ...(optionalIso(row.lastTestedAt) ? { lastTestedAt: optionalIso(row.lastTestedAt) } : {}),
+    ...(row.lastError ? { lastError: row.lastError } : {}),
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt)
+  }
+}
+
 function mapReport(row: typeof reports.$inferSelect): StoredReportRecord {
   return {
     id: row.id,
@@ -599,6 +738,445 @@ export class AgentGoRepository {
           })
       }
     })
+  }
+
+  async createKnowledgeImport(
+    input: CreateKnowledgeImportInput,
+    instructionFlags: string[]
+  ): Promise<KnowledgeImportDetail> {
+    const id = randomUUID()
+    const documentId = `import:${id}`
+    const now = Date.now()
+    const contentHash = sha256Text(input.rawContent)
+    await this.database.orm.transaction(async (transaction) => {
+      await transaction.insert(knowledgeDocs).values({
+        id: documentId,
+        title: input.title,
+        sourceType: input.sourceType,
+        sourceUrl: input.sourceUrl?.trim() || null,
+        author: input.author?.trim() || null,
+        license: input.license?.trim() || null,
+        trustLevel: 'user-imported',
+        reviewStatus: 'draft',
+        sha256: contentHash,
+        publishedAt: null,
+        ingestedAt: now
+      })
+      await transaction.insert(knowledgeImports).values({
+        id,
+        documentId,
+        sourceType: input.sourceType,
+        rawContent: input.rawContent,
+        rawContentSha256: contentHash,
+        vendorHint: input.vendorHint?.trim() || null,
+        productHint: input.productHint?.trim() || null,
+        instructionFlags,
+        status: instructionFlags.length > 0 ? 'needs-review' : 'draft',
+        extractorProfileId: null,
+        reviewerProfileId: null,
+        reviewIssues: instructionFlags.map((flag) => ({
+          severity: flag === 'sensitive-data-redacted' ? 'info' as const : 'warning' as const,
+          field: 'rawContent',
+          message: flag === 'sensitive-data-redacted'
+            ? '原文中的敏感凭据模式已在入库前脱敏。'
+            : `检测到不可信命令式内容：${flag}`
+        })),
+        lastError: null,
+        createdAt: now,
+        updatedAt: now
+      })
+    })
+    const created = await this.getKnowledgeImport(id)
+    if (!created) throw new Error('知识导入记录创建失败。')
+    return created
+  }
+
+  async listKnowledgeImports(): Promise<KnowledgeImportSummary[]> {
+    const rows = await this.database.orm
+      .select()
+      .from(knowledgeImports)
+      .orderBy(desc(knowledgeImports.updatedAt))
+    return Promise.all(
+      rows.map(async (row) => {
+        const [document] = await this.database.orm
+          .select()
+          .from(knowledgeDocs)
+          .where(eq(knowledgeDocs.id, row.documentId))
+          .limit(1)
+        if (!document) throw new Error(`知识来源文档不存在：${row.documentId}`)
+        const [intelligence] = await this.database.orm
+          .select()
+          .from(knowledgeIntelligence)
+          .where(eq(knowledgeIntelligence.importId, row.id))
+          .limit(1)
+        return mapKnowledgeImportSummary(row, document, intelligence)
+      })
+    )
+  }
+
+  async getKnowledgeImport(id: string): Promise<KnowledgeImportDetail | undefined> {
+    const [row] = await this.database.orm
+      .select()
+      .from(knowledgeImports)
+      .where(eq(knowledgeImports.id, id))
+      .limit(1)
+    if (!row) return undefined
+    const [document] = await this.database.orm
+      .select()
+      .from(knowledgeDocs)
+      .where(eq(knowledgeDocs.id, row.documentId))
+      .limit(1)
+    if (!document) throw new Error(`知识来源文档不存在：${row.documentId}`)
+    const [intelligence] = await this.database.orm
+      .select()
+      .from(knowledgeIntelligence)
+      .where(eq(knowledgeIntelligence.importId, row.id))
+      .limit(1)
+    const runRows = await this.database.orm
+      .select()
+      .from(knowledgeAgentRuns)
+      .where(eq(knowledgeAgentRuns.importId, row.id))
+      .orderBy(asc(knowledgeAgentRuns.startedAt))
+    return {
+      ...mapKnowledgeImportSummary(row, document, intelligence),
+      rawContent: row.rawContent,
+      runs: runRows.map(mapKnowledgeAgentRun)
+    }
+  }
+
+  async getKnowledgeImportHints(id: string): Promise<{
+    vendorHint?: string
+    productHint?: string
+  }> {
+    const [row] = await this.database.orm
+      .select({
+        vendorHint: knowledgeImports.vendorHint,
+        productHint: knowledgeImports.productHint
+      })
+      .from(knowledgeImports)
+      .where(eq(knowledgeImports.id, id))
+      .limit(1)
+    if (!row) throw new Error('知识导入记录不存在。')
+    return {
+      ...(row.vendorHint ? { vendorHint: row.vendorHint } : {}),
+      ...(row.productHint ? { productHint: row.productHint } : {})
+    }
+  }
+
+  async updateKnowledgeImportState(input: {
+    id: string
+    status: KnowledgeImportStatus
+    extractorProfileId?: string
+    reviewerProfileId?: string
+    reviewIssues?: KnowledgeReviewIssue[]
+    lastError?: string | null
+  }): Promise<KnowledgeImportDetail> {
+    const existing = await this.getKnowledgeImport(input.id)
+    if (!existing) throw new Error('知识导入记录不存在。')
+    const now = Date.now()
+    await this.database.orm.transaction(async (transaction) => {
+      await transaction
+        .update(knowledgeImports)
+        .set({
+          status: input.status,
+          ...(input.extractorProfileId
+            ? { extractorProfileId: input.extractorProfileId }
+            : {}),
+          ...(input.reviewerProfileId
+            ? { reviewerProfileId: input.reviewerProfileId }
+            : {}),
+          ...(input.reviewIssues ? { reviewIssues: input.reviewIssues } : {}),
+          ...(input.lastError !== undefined ? { lastError: input.lastError } : {}),
+          updatedAt: now
+        })
+        .where(eq(knowledgeImports.id, input.id))
+      await transaction
+        .update(knowledgeDocs)
+        .set({ reviewStatus: input.status })
+        .where(eq(knowledgeDocs.id, existing.documentId))
+    })
+    return (await this.getKnowledgeImport(input.id))!
+  }
+
+  async saveKnowledgeCandidate(
+    importId: string,
+    candidate: KnowledgeIntelligenceCandidate,
+    reviewIssues: KnowledgeReviewIssue[],
+    status: KnowledgeImportStatus
+  ): Promise<KnowledgeImportDetail> {
+    const existing = await this.getKnowledgeImport(importId)
+    if (!existing) throw new Error('知识导入记录不存在。')
+    const now = Date.now()
+    const values = {
+      schemaVersion: candidate.schemaVersion,
+      title: candidate.title,
+      vendor: candidate.vendor,
+      product: candidate.product,
+      vulnerabilityType: candidate.vulnerabilityType,
+      family: candidate.family ?? null,
+      identifiers: candidate.identifiers,
+      affectedVersions: candidate.affectedVersions,
+      preconditions: candidate.preconditions,
+      affectedEndpoints: candidate.affectedEndpoints,
+      signals: candidate.signals,
+      confirmationRules: candidate.confirmationRules,
+      remediation: candidate.remediation,
+      forbiddenActions: candidate.forbiddenActions,
+      fieldEvidence: candidate.fieldEvidence,
+      extractionConfidence: Math.round(candidate.extractionConfidence * 10_000),
+      updatedAt: now
+    }
+    await this.database.orm.transaction(async (transaction) => {
+      await transaction
+        .insert(knowledgeIntelligence)
+        .values({
+          id: randomUUID(),
+          importId,
+          ...values,
+          publishedChunkId: null,
+          createdAt: now
+        })
+        .onConflictDoUpdate({
+          target: knowledgeIntelligence.importId,
+          set: values
+        })
+      await transaction
+        .update(knowledgeImports)
+        .set({ status, reviewIssues, lastError: null, updatedAt: now })
+        .where(eq(knowledgeImports.id, importId))
+      await transaction
+        .update(knowledgeDocs)
+        .set({ title: candidate.title, reviewStatus: status })
+        .where(eq(knowledgeDocs.id, existing.documentId))
+    })
+    return (await this.getKnowledgeImport(importId))!
+  }
+
+  async createKnowledgeAgentRun(input: {
+    importId: string
+    parentRunId?: string
+    role: KnowledgeAgentRunRecord['role']
+    promptId: string
+    promptVersion: string
+    modelProfileId: string
+    inputHashSource: string
+  }): Promise<KnowledgeAgentRunRecord> {
+    const row: typeof knowledgeAgentRuns.$inferSelect = {
+      id: randomUUID(),
+      importId: input.importId,
+      parentRunId: input.parentRunId ?? null,
+      role: input.role,
+      promptId: input.promptId,
+      promptVersion: input.promptVersion,
+      promptHash: sha256Text(`${input.promptId}@${input.promptVersion}`),
+      modelProfileId: input.modelProfileId,
+      provider: null,
+      model: null,
+      status: 'running',
+      inputHash: sha256Text(input.inputHashSource),
+      outputHash: null,
+      promptTokens: 0,
+      completionTokens: 0,
+      durationMs: 0,
+      error: null,
+      startedAt: Date.now(),
+      finishedAt: null
+    }
+    await this.database.orm.insert(knowledgeAgentRuns).values(row)
+    return mapKnowledgeAgentRun(row)
+  }
+
+  async finishKnowledgeAgentRun(input: {
+    id: string
+    status: 'completed' | 'failed'
+    provider?: string
+    model?: string
+    outputHashSource?: string
+    promptTokens?: number
+    completionTokens?: number
+    durationMs?: number
+    error?: string
+  }): Promise<KnowledgeAgentRunRecord> {
+    await this.database.orm
+      .update(knowledgeAgentRuns)
+      .set({
+        status: input.status,
+        provider: input.provider ?? null,
+        model: input.model ?? null,
+        outputHash: input.outputHashSource ? sha256Text(input.outputHashSource) : null,
+        promptTokens: input.promptTokens ?? 0,
+        completionTokens: input.completionTokens ?? 0,
+        durationMs: input.durationMs ?? 0,
+        error: input.error ?? null,
+        finishedAt: Date.now()
+      })
+      .where(eq(knowledgeAgentRuns.id, input.id))
+    const [row] = await this.database.orm
+      .select()
+      .from(knowledgeAgentRuns)
+      .where(eq(knowledgeAgentRuns.id, input.id))
+      .limit(1)
+    if (!row) throw new Error('知识 Agent 运行记录不存在。')
+    return mapKnowledgeAgentRun(row)
+  }
+
+  async reviewKnowledgeImport(
+    id: string,
+    action: 'publish' | 'reject' | 'reopen'
+  ): Promise<KnowledgeImportDetail> {
+    const existing = await this.getKnowledgeImport(id)
+    if (!existing) throw new Error('知识导入记录不存在。')
+    if (existing.status === 'published' && action !== 'reopen') {
+      throw new Error('已发布知识必须先重新打开审核。')
+    }
+    const now = Date.now()
+    const [intelligence] = await this.database.orm
+      .select()
+      .from(knowledgeIntelligence)
+      .where(eq(knowledgeIntelligence.importId, id))
+      .limit(1)
+
+    if (action === 'publish') {
+      if (!intelligence) throw new Error('当前导入尚未形成结构化候选。')
+      if (existing.reviewIssues.some((issue) => issue.severity === 'error')) {
+        throw new Error('当前候选仍有错误级复核问题，不能发布。')
+      }
+      const candidate = mapKnowledgeCandidate(intelligence)
+      const chunkId = `intel:${intelligence.id}`
+      const content = [
+        `厂商：${candidate.vendor}`,
+        `产品：${candidate.product}`,
+        `漏洞类型：${candidate.vulnerabilityType}`,
+        `标识：${[...candidate.identifiers.cve, ...candidate.identifiers.cwe, ...candidate.identifiers.other].join('、') || '未识别'}`,
+        `影响版本：${candidate.affectedVersions.join('；') || '未识别'}`,
+        `前置条件：${candidate.preconditions.join('；') || '未识别'}`,
+        `影响端点：${candidate.affectedEndpoints.map((endpoint) => `${endpoint.method} ${endpoint.pathTemplate}`).join('；') || '未识别'}`,
+        `信号：${candidate.signals.join('；') || '未识别'}`,
+        `确认规则：${candidate.confirmationRules.join('；') || '未识别'}`,
+        `修复建议：${candidate.remediation.join('；') || '未识别'}`,
+        `禁止动作：${candidate.forbiddenActions.join('；') || '无'}`
+      ].join('\n')
+      await this.database.orm.transaction(async (transaction) => {
+        await transaction
+          .insert(knowledgeChunks)
+          .values({
+            id: chunkId,
+            docId: existing.documentId,
+            family: candidate.family ?? null,
+            title: candidate.title,
+            content,
+            tags: [
+              candidate.vendor,
+              candidate.product,
+              candidate.vulnerabilityType,
+              ...candidate.identifiers.cve,
+              ...candidate.identifiers.cwe
+            ],
+            applicability: [...candidate.affectedVersions, ...candidate.preconditions],
+            tokenEstimate: Math.max(1, Math.ceil(content.length / 4)),
+            contentHash: sha256Text(content),
+            createdAt: now
+          })
+          .onConflictDoUpdate({
+            target: knowledgeChunks.id,
+            set: {
+              family: candidate.family ?? null,
+              title: candidate.title,
+              content,
+              tags: [
+                candidate.vendor,
+                candidate.product,
+                candidate.vulnerabilityType,
+                ...candidate.identifiers.cve,
+                ...candidate.identifiers.cwe
+              ],
+              applicability: [...candidate.affectedVersions, ...candidate.preconditions],
+              tokenEstimate: Math.max(1, Math.ceil(content.length / 4)),
+              contentHash: sha256Text(content),
+              createdAt: now
+            }
+          })
+        await transaction
+          .update(knowledgeIntelligence)
+          .set({ publishedChunkId: chunkId, updatedAt: now })
+          .where(eq(knowledgeIntelligence.importId, id))
+        await transaction
+          .update(knowledgeImports)
+          .set({ status: 'published', lastError: null, updatedAt: now })
+          .where(eq(knowledgeImports.id, id))
+        await transaction
+          .update(knowledgeDocs)
+          .set({ reviewStatus: 'published', publishedAt: now })
+          .where(eq(knowledgeDocs.id, existing.documentId))
+      })
+    } else {
+      await this.database.orm.transaction(async (transaction) => {
+        if (action === 'reopen' && intelligence?.publishedChunkId) {
+          await transaction
+            .delete(knowledgeChunks)
+            .where(eq(knowledgeChunks.id, intelligence.publishedChunkId))
+          await transaction
+            .update(knowledgeIntelligence)
+            .set({ publishedChunkId: null, updatedAt: now })
+            .where(eq(knowledgeIntelligence.importId, id))
+        }
+        const status = action === 'reject' ? 'rejected' : 'needs-review'
+        await transaction
+          .update(knowledgeImports)
+          .set({ status, updatedAt: now })
+          .where(eq(knowledgeImports.id, id))
+        await transaction
+          .update(knowledgeDocs)
+          .set({ reviewStatus: status, publishedAt: null })
+          .where(eq(knowledgeDocs.id, existing.documentId))
+      })
+    }
+    return (await this.getKnowledgeImport(id))!
+  }
+
+  async deleteKnowledgeImport(id: string): Promise<boolean> {
+    const existing = await this.getKnowledgeImport(id)
+    if (!existing) return false
+    if (existing.status === 'published') {
+      throw new Error('已发布知识必须先重新打开审核，才能删除。')
+    }
+    const result = await this.database.orm
+      .delete(knowledgeDocs)
+      .where(eq(knowledgeDocs.id, existing.documentId))
+      .returning({ id: knowledgeDocs.id })
+    return result.length > 0
+  }
+
+  async listPublishedKnowledgeEntries(
+    chunkIds: string[]
+  ): Promise<PublishedKnowledgeEntryRecord[]> {
+    if (chunkIds.length === 0) return []
+    const rows = await this.database.orm
+      .select()
+      .from(knowledgeIntelligence)
+      .where(inArray(knowledgeIntelligence.publishedChunkId, chunkIds))
+    return Promise.all(
+      rows.map(async (row) => {
+        const [knowledgeImport] = await this.database.orm
+          .select()
+          .from(knowledgeImports)
+          .where(eq(knowledgeImports.id, row.importId))
+          .limit(1)
+        if (!knowledgeImport) throw new Error(`知识导入记录不存在：${row.importId}`)
+        const [document] = await this.database.orm
+          .select()
+          .from(knowledgeDocs)
+          .where(eq(knowledgeDocs.id, knowledgeImport.documentId))
+          .limit(1)
+        if (!document) throw new Error(`知识来源文档不存在：${knowledgeImport.documentId}`)
+        return {
+          chunkId: row.publishedChunkId!,
+          candidate: mapKnowledgeCandidate(row),
+          sourceTitle: document.title,
+          sourceType: document.sourceType
+        }
+      })
+    )
   }
 
   searchKnowledgeEntryIds(input: {
@@ -1938,6 +2516,7 @@ export class AgentGoRepository {
 
   async recordModelInvocation(input: {
     agentRunId: string
+    profileId: string
     provider: string
     model: string
     promptVersion: string
@@ -1948,21 +2527,110 @@ export class AgentGoRepository {
     estimatedCost: number
     durationMs: number
     redactionStatus: string
+    source?: 'agent-run' | 'knowledge-extraction' | 'knowledge-review'
   }): Promise<void> {
-    await this.database.orm.insert(modelInvocations).values({
+    const id = randomUUID()
+    const createdAt = Date.now()
+    await this.database.orm.transaction(async (transaction) => {
+      await transaction.insert(modelInvocations).values({
+        id,
+        agentRunId: input.agentRunId,
+        provider: input.provider,
+        model: input.model,
+        promptVersion: input.promptVersion,
+        inputHash: sha256Text(input.inputHashSource),
+        outputHash: sha256Text(input.outputHashSource),
+        promptTokens: input.promptTokens,
+        completionTokens: input.completionTokens,
+        estimatedCostMicros: 0,
+        durationMs: input.durationMs,
+        redactionStatus: input.redactionStatus,
+        createdAt
+      })
+      await transaction.insert(modelProfileUsageEvents).values({
+        id,
+        profileId: input.profileId,
+        source: input.source ?? 'agent-run',
+        promptTokens: input.promptTokens,
+        completionTokens: input.completionTokens,
+        createdAt
+      })
+    })
+  }
+
+  async recordKnowledgeModelInvocation(input: {
+    runId: string
+    profileId: string
+    provider: string
+    model: string
+    outputHashSource: string
+    promptTokens: number
+    completionTokens: number
+    durationMs: number
+    source: 'knowledge-extraction' | 'knowledge-review'
+  }): Promise<void> {
+    const createdAt = Date.now()
+    await this.database.orm.transaction(async (transaction) => {
+      await transaction
+        .update(knowledgeAgentRuns)
+        .set({
+          provider: input.provider,
+          model: input.model,
+          outputHash: sha256Text(input.outputHashSource),
+          promptTokens: input.promptTokens,
+          completionTokens: input.completionTokens,
+          durationMs: input.durationMs
+        })
+        .where(eq(knowledgeAgentRuns.id, input.runId))
+      await transaction.insert(modelProfileUsageEvents).values({
+        id: randomUUID(),
+        profileId: input.profileId,
+        source: input.source,
+        promptTokens: input.promptTokens,
+        completionTokens: input.completionTokens,
+        createdAt
+      })
+    })
+  }
+
+  async recordModelProfileUsage(input: {
+    profileId: string
+    source: 'agent-run' | 'connection-test' | 'knowledge-extraction' | 'knowledge-review'
+    promptTokens: number
+    completionTokens: number
+  }): Promise<void> {
+    await this.database.orm.insert(modelProfileUsageEvents).values({
       id: randomUUID(),
-      agentRunId: input.agentRunId,
-      provider: input.provider,
-      model: input.model,
-      promptVersion: input.promptVersion,
-      inputHash: sha256Text(input.inputHashSource),
-      outputHash: sha256Text(input.outputHashSource),
+      profileId: input.profileId,
+      source: input.source,
       promptTokens: input.promptTokens,
       completionTokens: input.completionTokens,
-      estimatedCostMicros: Math.round(input.estimatedCost * 1_000_000),
-      durationMs: input.durationMs,
-      redactionStatus: input.redactionStatus,
       createdAt: Date.now()
+    })
+  }
+
+  async listModelProfileUsage(): Promise<ModelProfileUsageRecord[]> {
+    const rows = await this.database.orm
+      .select({
+        profileId: modelProfileUsageEvents.profileId,
+        invocationCount: sql<number>`count(*)`,
+        promptTokens: sql<number>`coalesce(sum(${modelProfileUsageEvents.promptTokens}), 0)`,
+        completionTokens: sql<number>`coalesce(sum(${modelProfileUsageEvents.completionTokens}), 0)`,
+        lastUsedAt: sql<number | null>`max(${modelProfileUsageEvents.createdAt})`
+      })
+      .from(modelProfileUsageEvents)
+      .groupBy(modelProfileUsageEvents.profileId)
+    return rows.map((row) => {
+      const promptTokens = Number(row.promptTokens)
+      const completionTokens = Number(row.completionTokens)
+      return {
+        profileId: row.profileId,
+        invocationCount: Number(row.invocationCount),
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens,
+        ...(row.lastUsedAt ? { lastUsedAt: toIso(Number(row.lastUsedAt)) } : {})
+      }
     })
   }
 
@@ -2050,6 +2718,142 @@ export class AgentGoRepository {
       .delete(modelProfiles)
       .where(eq(modelProfiles.id, id))
       .returning({ id: modelProfiles.id })
+    return result.length > 0
+  }
+
+  async listMcpServers(): Promise<McpServerRecord[]> {
+    const rows = await this.database.orm
+      .select()
+      .from(mcpServers)
+      .orderBy(desc(mcpServers.enabled), asc(mcpServers.name))
+    return rows.map(mapMcpServer)
+  }
+
+  async getMcpServer(id: string): Promise<McpServerRecord | undefined> {
+    const [row] = await this.database.orm
+      .select()
+      .from(mcpServers)
+      .where(eq(mcpServers.id, id))
+      .limit(1)
+    return row ? mapMcpServer(row) : undefined
+  }
+
+  async saveMcpServer(
+    input: {
+      id?: string
+      name: string
+      transport: McpServerRecord['transport']
+      enabled: boolean
+      command?: string
+      args: string[]
+      cwd?: string
+      url?: string
+      authType: McpServerRecord['authType']
+      authHeaderName?: string
+      environmentKeys: string[]
+      headerNames: string[]
+      timeoutMs: number
+      roots: string[]
+      allowedAgentRoles: AgentRole[]
+      riskLabels: McpServerRecord['riskLabels']
+    },
+    credentialId?: string | null
+  ): Promise<McpServerRecord> {
+    const now = Date.now()
+    const configJson = {
+      ...(input.command ? { command: input.command } : {}),
+      args: input.args,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(input.url ? { url: input.url } : {}),
+      authType: input.authType,
+      ...(input.authHeaderName ? { authHeaderName: input.authHeaderName } : {}),
+      environmentKeys: input.environmentKeys,
+      headerNames: input.headerNames,
+      timeoutMs: input.timeoutMs,
+      roots: input.roots
+    }
+    const discoveryJson = { tools: [], resources: [], prompts: [] }
+    if (input.id) {
+      const [existing] = await this.database.orm
+        .select()
+        .from(mcpServers)
+        .where(eq(mcpServers.id, input.id))
+        .limit(1)
+      if (!existing) throw new Error('MCP Server 配置不存在。')
+      await this.database.orm
+        .update(mcpServers)
+        .set({
+          name: input.name,
+          transport: input.transport,
+          enabled: input.enabled,
+          credentialId: credentialId === undefined ? existing.credentialId : credentialId,
+          configJson,
+          allowedAgentRoles: input.allowedAgentRoles,
+          riskLabels: input.riskLabels,
+          status: input.enabled ? 'untested' : 'disabled',
+          discoveryJson,
+          lastTestedAt: null,
+          lastError: null,
+          updatedAt: now
+        })
+        .where(eq(mcpServers.id, input.id))
+      const updated = await this.getMcpServer(input.id)
+      if (!updated) throw new Error('MCP Server 配置更新后无法读取。')
+      return updated
+    }
+
+    const id = randomUUID()
+    const row: typeof mcpServers.$inferSelect = {
+      id,
+      name: input.name,
+      transport: input.transport,
+      enabled: input.enabled,
+      credentialId: credentialId ?? null,
+      configJson,
+      allowedAgentRoles: input.allowedAgentRoles,
+      riskLabels: input.riskLabels,
+      status: input.enabled ? 'untested' : 'disabled',
+      discoveryJson,
+      lastTestedAt: null,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    await this.database.orm.insert(mcpServers).values(row)
+    return mapMcpServer(row)
+  }
+
+  async updateMcpServerTestResult(
+    id: string,
+    result: McpConnectionTestResult
+  ): Promise<McpServerRecord> {
+    await this.database.orm
+      .update(mcpServers)
+      .set({
+        status: result.ok ? 'ready' : 'error',
+        discoveryJson: {
+          ...(result.protocolVersion ? { protocolVersion: result.protocolVersion } : {}),
+          ...(result.serverName ? { serverName: result.serverName } : {}),
+          ...(result.serverVersion ? { serverVersion: result.serverVersion } : {}),
+          tools: result.tools,
+          resources: result.resources,
+          prompts: result.prompts
+        },
+        lastTestedAt: Date.now(),
+        lastError: result.ok ? null : result.message,
+        updatedAt: Date.now()
+      })
+      .where(eq(mcpServers.id, id))
+    const updated = await this.getMcpServer(id)
+    if (!updated) throw new Error('MCP Server 配置不存在。')
+    return updated
+  }
+
+  async deleteMcpServer(id: string): Promise<boolean> {
+    const result = await this.database.orm
+      .delete(mcpServers)
+      .where(eq(mcpServers.id, id))
+      .returning({ id: mcpServers.id })
     return result.length > 0
   }
 

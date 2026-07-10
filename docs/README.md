@@ -2,7 +2,7 @@
 
 ## 使用与交付
 
-- [user-guide.md](user-guide.md)：安装、授权 Scope、身份、扫描控制、报告和数据安全
+- [user-guide.md](user-guide.md)：安装、Agent 模型、MCP Server、授权 Scope、身份、扫描控制、报告和数据安全
 - [development-environment.md](development-environment.md)：开发、测试、评测和 Windows 打包环境
 - [../benchmarks/README.md](../benchmarks/README.md)：固定靶场与 40 Case 基准运行说明
 

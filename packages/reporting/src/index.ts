@@ -132,7 +132,6 @@ function renderJson(context: ReportContext, generatedAt: string): string {
         modelProfileIds: context.scan.modelProfileIds,
         requestCount: context.scan.requestCount,
         modelTokens: context.scan.modelTokens,
-        estimatedCost: context.scan.estimatedCost,
         startedAt: context.scan.startedAt,
         completedAt: context.scan.completedAt
       },

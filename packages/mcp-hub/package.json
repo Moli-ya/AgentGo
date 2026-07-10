@@ -8,5 +8,12 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agentgo/contracts": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1"
   }
 }

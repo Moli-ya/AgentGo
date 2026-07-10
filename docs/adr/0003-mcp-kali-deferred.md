@@ -1,6 +1,6 @@
 # ADR-0003：通用 MCP 与 Kali 集成延后
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0004
 - 日期：2026-07-10
 
 ## 背景

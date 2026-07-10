@@ -117,7 +117,7 @@ Workspace
 - 最大计划修订次数；
 - 最大请求数和每分钟速率；
 - 最大并发；
-- 最大模型 Token 和费用；
+- 最大模型 Token；
 - 最大总时长；
 - 相同动作指纹去重；
 - 连续无新证据次数；
@@ -145,4 +145,4 @@ Workspace
 
 Prompt 视为代码，至少记录 id、version、hash、适用 Agent、输入输出 schema 和变更说明。当前五个 V1 Agent Prompt 版本为 `1.1.0`，均向外部模型提供明确 JSON 输出契约。
 
-不同 Agent 可以使用不同 Provider、Base URL、模型和预算，但都必须通过 ModelGateway。创建扫描时必须解析并冻结五个角色的 Profile ID；Coordinator 按扫描配置路由，只有兼容旧记录缺少该字段时才回退到角色默认 Profile。模型调用记录应保存模型标识、Prompt 版本、Token、耗时、费用估算、输入输出摘要和脱敏结果。OpenAI-compatible 连接测试必须真实调用 `chat/completions` 并完成结构化响应校验。
+不同 Agent 可以使用不同 Provider、Base URL、模型和 Token 预算，但都必须通过 ModelGateway。创建扫描时必须解析并冻结五个角色的 Profile ID；Coordinator 按扫描配置路由，只有兼容旧记录缺少该字段时才回退到角色默认 Profile。模型调用记录保存模型标识、Prompt 版本、输入/输出 Token、耗时、输入输出摘要和脱敏结果；不记录或估算费用。OpenAI-compatible 连接测试必须真实调用 `chat/completions` 并完成结构化响应校验，其 Token 也计入对应 Profile。

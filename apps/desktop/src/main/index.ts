@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import {
   AgentGoApplicationService,
@@ -15,23 +16,29 @@ import { PlaywrightBrowserRunner } from '@agentgo/browser-runner'
 import {
   AuditFilterSchema,
   ControlScanInputSchema,
+  CreateKnowledgeImportInputSchema,
   CreateScanInputSchema,
   CreateTargetInputSchema,
   CreateWorkspaceInputSchema,
   DeleteByIdInputSchema,
   DesktopOutputSchemas,
   ExportReportInputSchema,
+  ExtractKnowledgeImportInputSchema,
   FindingFilterSchema,
   GenerateReportInputSchema,
   IPC_CHANNELS,
   KnowledgeSearchInputSchema,
+  McpServerFilterSchema,
   ModelProfileFilterSchema,
   OptionalWorkspaceFilterSchema,
   ReportFilterSchema,
+  ReviewKnowledgeImportInputSchema,
   SaveModelProfileInputSchema,
+  SaveMcpServerInputSchema,
   SaveIdentityInputSchema,
   ScanFilterSchema,
   TargetFilterSchema,
+  UpdateKnowledgeCandidateInputSchema,
   UpdateTargetInputSchema,
   WorkspaceFilterSchema,
   type BootstrapState,
@@ -53,6 +60,7 @@ import { evaluateProbe } from '@agentgo/security-policy'
 
 const plan = createDefaultScanPlan()
 const isSmokeTest = process.env.AGENTGO_SMOKE_TEST === '1'
+const mainDirectory = dirname(fileURLToPath(import.meta.url))
 
 interface Parser<T> {
   parse(value: unknown): T
@@ -72,7 +80,7 @@ function getBootstrapState(): BootstrapState {
   return {
     appVersion: app.getVersion(),
     milestone: 'V1',
-    projectStatus: '四类漏洞的授权验证、证据、复核与报告闭环已接入',
+    projectStatus: '四类漏洞闭环、真实模型路由与 MCP 配置/能力发现已接入',
     dataDirectory: infrastructure?.dataDirectory ?? '',
     databaseReady: Boolean(infrastructure),
     agents: ['planner', 'knowledge', 'strategy', 'analysis', 'verifier'],
@@ -267,6 +275,47 @@ function registerIpcHandlers(service: AgentGoApplicationService): void {
     DesktopOutputSchemas.knowledgeEntries,
     (input) => service.searchKnowledge(input)
   )
+  handleNoInput(
+    IPC_CHANNELS.listKnowledgeImports,
+    DesktopOutputSchemas.knowledgeImports,
+    () => service.listKnowledgeImports()
+  )
+  handle(
+    IPC_CHANNELS.getKnowledgeImport,
+    DeleteByIdInputSchema,
+    DesktopOutputSchemas.knowledgeImport,
+    (input) => service.getKnowledgeImport(input.id)
+  )
+  handle(
+    IPC_CHANNELS.createKnowledgeImport,
+    CreateKnowledgeImportInputSchema,
+    DesktopOutputSchemas.knowledgeImport,
+    (input) => service.createKnowledgeImport(input)
+  )
+  handle(
+    IPC_CHANNELS.extractKnowledgeImport,
+    ExtractKnowledgeImportInputSchema,
+    DesktopOutputSchemas.knowledgeImport,
+    (input) => service.extractKnowledgeImport(input)
+  )
+  handle(
+    IPC_CHANNELS.updateKnowledgeCandidate,
+    UpdateKnowledgeCandidateInputSchema,
+    DesktopOutputSchemas.knowledgeImport,
+    (input) => service.updateKnowledgeCandidate(input)
+  )
+  handle(
+    IPC_CHANNELS.reviewKnowledgeImport,
+    ReviewKnowledgeImportInputSchema,
+    DesktopOutputSchemas.knowledgeImport,
+    (input) => service.reviewKnowledgeImport(input)
+  )
+  handle(
+    IPC_CHANNELS.deleteKnowledgeImport,
+    DeleteByIdInputSchema,
+    DesktopOutputSchemas.deleteResult,
+    (input) => service.deleteKnowledgeImport(input.id)
+  )
   handle(
     IPC_CHANNELS.listFindings,
     FindingFilterSchema,
@@ -320,6 +369,11 @@ function registerIpcHandlers(service: AgentGoApplicationService): void {
     DesktopOutputSchemas.modelProfiles,
     () => service.listModelProfiles()
   )
+  handleNoInput(
+    IPC_CHANNELS.listModelProfileUsage,
+    DesktopOutputSchemas.modelProfileUsage,
+    () => service.listModelProfileUsage()
+  )
   handle(
     IPC_CHANNELS.saveModelProfile,
     SaveModelProfileInputSchema,
@@ -337,6 +391,29 @@ function registerIpcHandlers(service: AgentGoApplicationService): void {
     ModelProfileFilterSchema,
     DesktopOutputSchemas.connectionTest,
     (input) => service.testModelProfile(input.id)
+  )
+  handleNoInput(
+    IPC_CHANNELS.listMcpServers,
+    DesktopOutputSchemas.mcpServers,
+    () => service.listMcpServers()
+  )
+  handle(
+    IPC_CHANNELS.saveMcpServer,
+    SaveMcpServerInputSchema,
+    DesktopOutputSchemas.mcpServer,
+    (input) => service.saveMcpServer(input)
+  )
+  handle(
+    IPC_CHANNELS.deleteMcpServer,
+    McpServerFilterSchema,
+    DesktopOutputSchemas.deleteResult,
+    (input) => service.deleteMcpServer(input.id)
+  )
+  handle(
+    IPC_CHANNELS.testMcpServer,
+    McpServerFilterSchema,
+    DesktopOutputSchemas.mcpConnectionTest,
+    (input) => service.testMcpServer(input.id)
   )
   handle(
     IPC_CHANNELS.listAuditLogs,
@@ -441,7 +518,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#f5f7fb',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(mainDirectory, '../preload/index.js'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -470,7 +547,7 @@ function createWindow(): void {
   if (devUrl) {
     void window.loadURL(devUrl)
   } else {
-    void window.loadFile(join(__dirname, '../renderer/index.html'))
+    void window.loadFile(join(mainDirectory, '../renderer/index.html'))
   }
 }
 

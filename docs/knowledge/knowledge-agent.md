@@ -50,6 +50,10 @@ Acquire
 
 网页或文档中的命令式文本只能作为引用内容，不得进入 system prompt 或工具权限。
 
+当前桌面实现使用两段式 Agent 摄取：IntelligenceExtractorAgent 通过 Knowledge Profile 生成 `vulnerability-intel.v1` 候选，IntelligenceReviewerAgent 通过 Verifier Profile 独立输出字段问题。两次调用均记录 Prompt 版本、模型 Profile、Token、哈希、耗时和父运行关系。候选必须人工发布后才进入 FTS5；待审核内容不会进入扫描 KnowledgePack。
+
+固定候选至少包含 vendor、product、vulnerabilityType、CVE/CWE、affectedVersions、preconditions、affectedEndpoints、signals、confirmationRules、remediation、forbiddenActions 和字段级原文引文。HTTP 请求模板强制标记 `unsafeToExecute=true`，不代表可执行 ProbeProposal。
+
 ## 5. 检索流程
 
 V1：

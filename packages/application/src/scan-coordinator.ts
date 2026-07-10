@@ -436,7 +436,7 @@ export class DefaultScanCoordinator {
           '获得满足确认规则的最小证据',
           '离开授权范围',
           '出现非预期副作用',
-          '达到请求、时间或费用预算',
+          '达到请求、时间或模型 Token 预算',
           '连续重复且无新证据'
         ]
       }
@@ -597,7 +597,7 @@ export class DefaultScanCoordinator {
     const endpointParameterNames = unique(
       endpoints.flatMap((endpoint) => endpoint.parameters.map((parameter) => parameter.name))
     )
-    const knowledgeOutput = this.buildKnowledgeOutput(
+    const knowledgeOutput = await this.buildKnowledgeOutput(
       context.scan.families,
       endpointParameterNames
     )
@@ -1459,10 +1459,10 @@ export class DefaultScanCoordinator {
     return headers
   }
 
-  private buildKnowledgeOutput(
+  private async buildKnowledgeOutput(
     families: VulnerabilityFamily[],
     signalTerms: string[]
-  ): KnowledgeAgentOutput {
+  ): Promise<KnowledgeAgentOutput> {
     const matchedIds = unique(
       families.flatMap((family) =>
         this.repository.searchKnowledgeEntryIds({
@@ -1476,19 +1476,46 @@ export class DefaultScanCoordinator {
     const entries = matchedIds
       .map((entryId) => entryById.get(entryId))
       .filter((entry): entry is (typeof V1_KNOWLEDGE_ENTRIES)[number] => Boolean(entry))
+    const importedEntries = (await this.repository.listPublishedKnowledgeEntries(matchedIds))
+      .filter((entry) => entry.candidate.family !== undefined)
     return {
-      matchedEntryIds: entries.map((entry) => entry.id),
-      guidance: entries.map((entry) => ({
-        family: entry.family,
-        applicability: entry.applicability,
-        safeProbePrinciples: entry.safeProbePrinciples,
-        confirmationRules: entry.confirmationRules,
-        falsePositivePatterns: entry.falsePositivePatterns,
-        remediationHints: entry.remediationHints
-      })),
-      sourceRefs: unique(entries.flatMap((entry) => entry.sourceRefs)),
-      policyConstraints: unique(entries.flatMap((entry) => entry.forbiddenActions)),
-      ...(entries.length === 0
+      matchedEntryIds: [
+        ...entries.map((entry) => entry.id),
+        ...importedEntries.map((entry) => entry.chunkId)
+      ],
+      guidance: [
+        ...entries.map((entry) => ({
+          family: entry.family,
+          applicability: entry.applicability,
+          safeProbePrinciples: entry.safeProbePrinciples,
+          confirmationRules: entry.confirmationRules,
+          falsePositivePatterns: entry.falsePositivePatterns,
+          remediationHints: entry.remediationHints
+        })),
+        ...importedEntries.map((entry) => ({
+          family: entry.candidate.family!,
+          applicability: [
+            ...entry.candidate.affectedVersions,
+            ...entry.candidate.preconditions
+          ],
+          safeProbePrinciples: [
+            '导入请求模板仅用于形成假设，执行前必须重新经过 SecurityPolicy。',
+            '不得直接执行原始 PoC，必须使用低影响、带负对照的验证动作。'
+          ],
+          confirmationRules: entry.candidate.confirmationRules,
+          falsePositivePatterns: [],
+          remediationHints: entry.candidate.remediation
+        }))
+      ],
+      sourceRefs: unique([
+        ...entries.flatMap((entry) => entry.sourceRefs),
+        ...importedEntries.map((entry) => entry.chunkId)
+      ]),
+      policyConstraints: unique([
+        ...entries.flatMap((entry) => entry.forbiddenActions),
+        ...importedEntries.flatMap((entry) => entry.candidate.forbiddenActions)
+      ]),
+      ...(entries.length === 0 && importedEntries.length === 0
         ? {
             sourceRefs: [],
             policyConstraints: [
@@ -1572,12 +1599,6 @@ export class DefaultScanCoordinator {
     }
     if (scan.modelTokens >= scan.budget.maxModelTokens) {
       throw new Error('扫描模型 Token 预算已耗尽。')
-    }
-    if (
-      scan.estimatedCost > 0 &&
-      scan.estimatedCost >= scan.budget.maxEstimatedCost
-    ) {
-      throw new Error('扫描模型费用预算已耗尽。')
     }
     const startedAt = runtime.runStartedAt ?? Date.parse(scan.startedAt ?? scan.createdAt)
     if (Date.now() - startedAt > scan.budget.maxDurationMinutes * 60_000) {

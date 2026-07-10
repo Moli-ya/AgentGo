@@ -186,4 +186,128 @@ describe('AgentGo SQLite repository', () => {
 
     database.close()
   })
+
+  it('persists MCP configuration and aggregates per-profile token usage', async () => {
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+    const workspace = await repository.createWorkspace({ name: 'MCP', description: '' })
+    const target = await repository.createTarget({
+      workspaceId: workspace.id,
+      name: 'Token fixture',
+      baseUrl: 'https://lab.example.test',
+      description: '',
+      authorizationReference: 'test-authorization',
+      scope: {
+        allowedOrigins: ['https://lab.example.test'],
+        allowedPathPrefixes: ['/'],
+        deniedPathPrefixes: [],
+        allowedPorts: [443],
+        allowedIdentityIds: [],
+        allowActiveProbing: true,
+        allowSensitiveProbing: false,
+        allowPrivateNetworkTargets: false,
+        allowLoopbackTargets: false,
+        maxRequestsPerMinute: 10,
+        maxConcurrency: 1
+      }
+    })
+    const profile = await repository.saveModelProfile({
+      name: 'Token planner',
+      agentRole: 'planner',
+      provider: 'deterministic',
+      model: 'rules',
+      timeoutMs: 5_000,
+      rpmLimit: 10,
+      tpmLimit: 10_000,
+      tokenBudget: 100_000,
+      costBudget: 0
+    })
+    const plan = createDefaultScanPlan()
+    const scan = await repository.createScan(
+      {
+        targetId: target.target.id,
+        name: 'Token scan',
+        description: 'Token usage persistence fixture.',
+        families: ['sqli'],
+        identityIds: [],
+        modelProfileIds: { planner: profile.id },
+        budget: plan.budget
+      },
+      { ...plan },
+      { ...createRuntimeState() }
+    )
+    const run = await repository.createAgentRun({
+      scanId: scan.id,
+      role: 'planner',
+      promptId: 'planner',
+      promptVersion: '1.0.0',
+      promptHash: 'hash',
+      modelProfileId: profile.id
+    })
+    await repository.recordModelInvocation({
+      agentRunId: run.id,
+      profileId: profile.id,
+      provider: 'deterministic',
+      model: 'rules',
+      promptVersion: '1.0.0',
+      inputHashSource: 'input',
+      outputHashSource: 'output',
+      promptTokens: 12,
+      completionTokens: 4,
+      estimatedCost: 99,
+      durationMs: 1,
+      redactionStatus: 'redacted'
+    })
+    await repository.recordModelProfileUsage({
+      profileId: profile.id,
+      source: 'connection-test',
+      promptTokens: 3,
+      completionTokens: 1
+    })
+    expect(await repository.listModelProfileUsage()).toMatchObject([
+      {
+        profileId: profile.id,
+        invocationCount: 2,
+        promptTokens: 15,
+        completionTokens: 5,
+        totalTokens: 20
+      }
+    ])
+
+    const mcp = await repository.saveMcpServer(
+      {
+        name: 'Local MCP',
+        transport: 'stdio',
+        enabled: false,
+        command: 'node',
+        args: ['server.mjs'],
+        authType: 'none',
+        environmentKeys: ['MCP_TOKEN'],
+        headerNames: [],
+        timeoutMs: 5_000,
+        roots: ['F:\\Agentgo'],
+        allowedAgentRoles: ['strategy'],
+        riskLabels: ['command-execution', 'file-access']
+      },
+      'credential-mcp'
+    )
+    expect(mcp).toMatchObject({
+      status: 'disabled',
+      credentialId: 'credential-mcp',
+      environmentKeys: ['MCP_TOKEN']
+    })
+    const tested = await repository.updateMcpServerTestResult(mcp.id, {
+      ok: true,
+      message: 'ready',
+      durationMs: 10,
+      serverName: 'fixture',
+      serverVersion: '1.0.0',
+      tools: [{ name: 'ping' }],
+      resources: [],
+      prompts: []
+    })
+    expect(tested.status).toBe('ready')
+    expect(tested.tools).toEqual([{ name: 'ping' }])
+    database.close()
+  })
 })

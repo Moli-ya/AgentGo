@@ -66,7 +66,7 @@ Renderer 只展示数据和发起用户意图；Main 负责生命周期、双向
 - packages/browser-runner：Playwright 封装，不包含策略判断。
 - packages/http-runner：HTTP 请求执行、重放和响应差异采集。
 - packages/reporting：Findings、证据和修复建议的模板化输出。
-- packages/mcp-hub：后续可选工具协议层，不属于 V1 阻塞项。
+- packages/mcp-hub：官方 MCP SDK 封装，负责 STDIO / Streamable HTTP 连接测试和能力发现。
 
 ## 6. 依赖方向
 
@@ -74,6 +74,7 @@ Renderer 只展示数据和发起用户意图；Main 负责生命周期、双向
 renderer -> contracts
 main -> contracts + security-policy + application services
 agent-runtime -> contracts + domain + model-gateway + knowledge-base
+application -> contracts + db + model-gateway + mcp-hub + deterministic services
 runners -> contracts
 infrastructure -> domain ports
 domain -> no Electron / no provider SDK / no Playwright
@@ -90,7 +91,7 @@ domain -> no Electron / no provider SDK / no Playwright
 - 模型名称；
 - API Key 凭据引用；
 - 超时、RPM/TPM；
-- Token 和费用预算；
+- Token 预算与按 Profile 持久用量；
 - 连接测试；
 - 推理、抽取、验证等模型 Profile。
 
@@ -107,9 +108,9 @@ domain -> no Electron / no provider SDK / no Playwright
 
 ## 9. MCP 与 Kali 的定位
 
-MCP Hub 是可替换的工具协议扩展层。核心 Runner 和 ToolBroker 先以内部接口跑通，之后才接入本地 STDIO 或远程 Streamable HTTP Server。
+MCP Hub 是可替换的工具协议扩展层。桌面端现已支持本地 STDIO 和远程 Streamable HTTP Server 的配置、加密凭据引用、手动连接测试，以及 tools / resources / prompts 能力发现。新 Server 默认禁用，MCP 输出视为不可信内容。
 
-Kali 工具服务器、SSH 维护和高自由度工具编排属于 Stretch Goal。即使未来接入，也必须经过同一 SecurityPolicy、目标范围、人工审批和证据映射，不得获得绕过策略的特殊通道。
+Agent 自动调用 MCP 工具、逐次权限审批、Evidence 映射、Kali 工具服务器、SSH 维护和高自由度工具编排仍属于后续阶段。即使接入，也必须经过同一 SecurityPolicy、目标范围、人工审批和证据映射，不得获得绕过策略的特殊通道。
 
 ## 10. 技术验证状态
 

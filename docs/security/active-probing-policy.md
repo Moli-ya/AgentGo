@@ -157,7 +157,7 @@ SecurityPolicy 返回 allow、deny 或 approval_required，并生成 policyDecis
 - 发现真实用户或生产数据可能受影响；
 - 清理失败；
 - 连续重复且无新证据；
-- 达到请求、时间、费用或速率预算；
+- 达到请求、时间、模型 Token 或速率预算；
 - 会话或授权状态不明确；
 - WAF/防护阻断且没有单独批准继续研究。
 

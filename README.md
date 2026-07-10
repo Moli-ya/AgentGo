@@ -19,7 +19,7 @@ V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、�
 - 凭据与证据：Electron `safeStorage`、内容寻址证据、SHA-256 完整性校验、脱敏派生。
 - 扫描控制：启动、暂停、恢复、取消；异常退出后的未完成任务在下次启动时安全恢复为暂停。
 - 结论与报告：Confirmed、Not Confirmed、Inconclusive；Markdown、JSON、HTML 脱敏报告。
-- 知识库：四类内置知识、来源/许可证元数据、SQLite FTS5 与中文子串回退检索。
+- 知识库：四类内置知识、公开情报/PoC 文本导入、Extractor/Reviewer 双 Agent 结构化复核、人工发布、来源/许可证元数据、SQLite FTS5 与中文子串回退检索。
 - 桌面边界：Renderer 通过双向 Zod 校验的 IPC 使用应用服务，不能直接访问数据库、文件、凭据或执行器。
 - 评测：固定版本本地靶场、40 个正负 Case、指标计算和六项安全硬门禁。
 
@@ -47,16 +47,21 @@ pnpm dev
 1. 在“工作台”创建或选择工作区，并运行安全门禁自检。
 2. 在“目标与身份”填写授权依据、Base URL 和最小允许 Scope。
 3. IDOR 测试需配置两个明确授权的测试身份及各自已知资源 ID。
-4. 在“扫描与 Agent”填写任务与授权背景，选择漏洞族、身份、预算，并为五个 Agent 明确选择模型 Profile；SSRF 回调 URL 也必须位于 Scope 内。
-5. 启动任务，查看阶段事件、接口、证据和 Findings；完成后生成并导出脱敏报告。
+4. 可选：在“MCP Center”添加本地 STDIO 或远程 Streamable HTTP Server，手动测试连接并检查能力清单。
+5. 在“扫描与 Agent”填写任务与授权背景，选择漏洞族、身份、预算，并为五个 Agent 明确选择模型 Profile；SSRF 回调 URL 也必须位于 Scope 内。
+6. 启动任务，查看阶段事件、接口、证据和 Findings；完成后生成并导出脱敏报告。
 
 完整操作说明见 [docs/user-guide.md](docs/user-guide.md)。
 
 ## 模型配置
 
-应用首次启动会为五个角色创建本地确定性 Profile，因此无需外部 API 即可运行固定流程和基准。也可以在“模型设置”中添加 OpenAI-compatible Provider，填写 Base URL、模型和 API Key 后执行连接测试。连接测试会真实调用该 Profile 的 `chat/completions` 并校验最小 JSON 响应，不再只检查 `/models` 列表。
+应用首次启动会为五个角色创建本地确定性 Profile，因此无需外部 API 即可运行固定流程和基准。也可以在“Agent 与模型”中添加 OpenAI-compatible Provider，填写 Base URL、模型和 API Key 后执行连接测试。连接测试会真实调用该 Profile 的 `chat/completions` 并校验最小 JSON 响应，不再只检查 `/models` 列表。
 
-创建扫描时会把 Planner、Knowledge、Strategy、Analysis、Verifier 的 Profile ID 固定到任务配置中，运行期间不会因为全局 Profile 顺序变化而悄然换模型。API Key 只进入操作系统加密凭据文件，SQLite 仅保存 `credentialId`。外部模型输入会先脱敏，创建页会明确显示任务描述和结构化上下文将发往哪些 Provider；输出必须通过角色对应的结构化 Schema。模型不能直接调用执行器或改变安全策略。费用预算使用兼容 Provider 返回的费用字段，未报告费用时记录为 0。
+创建扫描时会把 Planner、Knowledge、Strategy、Analysis、Verifier 的 Profile ID 固定到任务配置中，运行期间不会因为全局 Profile 顺序变化而悄然换模型。API Key 只进入操作系统加密凭据文件，SQLite 仅保存 `credentialId`。外部模型输入会先脱敏，创建页会明确显示任务描述和结构化上下文将发往哪些 Provider；输出必须通过角色对应的结构化 Schema。模型不能直接调用执行器或改变安全策略。模型管理只累计每个 Profile 的输入、输出和总 Token，不记录或估算费用。
+
+## MCP Server 配置
+
+“MCP Center”支持本地 STDIO 与远程 Streamable HTTP Server。配置保存不会自动连接；只有用户点击“测试连接”才会启动本地命令或访问远程 URL。测试成功后展示 Server 信息及 tools、resources、prompts 清单。MCP Token、环境变量和自定义请求头通过 `safeStorage` 加密，SQLite 只保存字段名和 `credentialId`。新 Server 默认禁用，Agent 自动调用 MCP 工具尚未开放。
 
 ## 质量检查
 

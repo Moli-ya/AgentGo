@@ -10,7 +10,7 @@ export interface SecretProtector {
 
 export interface CredentialMetadata {
   id: string
-  kind: 'identity' | 'model-api-key'
+  kind: 'identity' | 'model-api-key' | 'mcp-server-secret'
   label: string
   createdAt: string
   updatedAt: string

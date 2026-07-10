@@ -289,6 +289,12 @@ describe('DefaultScanCoordinator V1 vertical loop', () => {
       expect(plannerInput?.content).toContain(
         '验证授权本地靶场的四类漏洞，并优先关注只读、低影响证据链。'
       )
+      const plannerUsage = (await application.listModelProfileUsage()).find(
+        (item) => item.profileId === externalPlannerProfile.id
+      )
+      expect(plannerUsage?.promptTokens).toBe(120)
+      expect(plannerUsage?.completionTokens).toBe(60)
+      expect(plannerUsage?.totalTokens).toBe(180)
 
       const runs = await database.orm.select().from(agentRuns)
       const plannerRun = runs.find((run) => run.role === 'planner')

@@ -517,5 +517,132 @@ CREATE INDEX audit_logs_workspace_idx ON audit_logs(workspace_id, created_at);
     sql: `
 ALTER TABLE identities ADD COLUMN owned_resource_ids TEXT NOT NULL DEFAULT '[]';
 `
+  },
+  {
+    id: '0003_mcp_servers_and_token_usage',
+    sql: `
+CREATE TABLE model_profile_usage_events (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  prompt_tokens INTEGER NOT NULL,
+  completion_tokens INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX model_profile_usage_profile_idx
+  ON model_profile_usage_events(profile_id, created_at);
+
+INSERT INTO model_profile_usage_events (
+  id,
+  profile_id,
+  source,
+  prompt_tokens,
+  completion_tokens,
+  created_at
+)
+SELECT
+  model_invocations.id,
+  agent_runs.model_profile_id,
+  'agent-run',
+  model_invocations.prompt_tokens,
+  model_invocations.completion_tokens,
+  model_invocations.created_at
+FROM model_invocations
+INNER JOIN agent_runs ON agent_runs.id = model_invocations.agent_run_id;
+
+CREATE TABLE mcp_servers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  transport TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  credential_id TEXT,
+  config_json TEXT NOT NULL,
+  allowed_agent_roles TEXT NOT NULL,
+  risk_labels TEXT NOT NULL,
+  status TEXT NOT NULL,
+  discovery_json TEXT NOT NULL,
+  last_tested_at INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX mcp_servers_name_uq ON mcp_servers(name);
+CREATE INDEX mcp_servers_status_idx ON mcp_servers(status, updated_at);
+`
+  },
+  {
+    id: '0004_knowledge_intelligence_ingestion',
+    sql: `
+CREATE TABLE knowledge_imports (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES knowledge_docs(id) ON DELETE CASCADE,
+  source_type TEXT NOT NULL,
+  raw_content TEXT NOT NULL,
+  raw_content_sha256 TEXT NOT NULL,
+  vendor_hint TEXT,
+  product_hint TEXT,
+  instruction_flags TEXT NOT NULL,
+  status TEXT NOT NULL,
+  extractor_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+  reviewer_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+  review_issues TEXT NOT NULL,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX knowledge_imports_document_uq ON knowledge_imports(document_id);
+CREATE INDEX knowledge_imports_status_idx ON knowledge_imports(status, updated_at);
+
+CREATE TABLE knowledge_intelligence (
+  id TEXT PRIMARY KEY,
+  import_id TEXT NOT NULL REFERENCES knowledge_imports(id) ON DELETE CASCADE,
+  schema_version TEXT NOT NULL,
+  title TEXT NOT NULL,
+  vendor TEXT NOT NULL,
+  product TEXT NOT NULL,
+  vulnerability_type TEXT NOT NULL,
+  family TEXT,
+  identifiers_json TEXT NOT NULL,
+  affected_versions TEXT NOT NULL,
+  preconditions TEXT NOT NULL,
+  affected_endpoints TEXT NOT NULL,
+  signals TEXT NOT NULL,
+  confirmation_rules TEXT NOT NULL,
+  remediation TEXT NOT NULL,
+  forbidden_actions TEXT NOT NULL,
+  field_evidence TEXT NOT NULL,
+  extraction_confidence INTEGER NOT NULL,
+  published_chunk_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX knowledge_intelligence_import_uq ON knowledge_intelligence(import_id);
+CREATE INDEX knowledge_intelligence_product_idx ON knowledge_intelligence(vendor, product);
+CREATE INDEX knowledge_intelligence_family_idx ON knowledge_intelligence(family);
+
+CREATE TABLE knowledge_agent_runs (
+  id TEXT PRIMARY KEY,
+  import_id TEXT NOT NULL REFERENCES knowledge_imports(id) ON DELETE CASCADE,
+  parent_run_id TEXT REFERENCES knowledge_agent_runs(id) ON DELETE SET NULL,
+  role TEXT NOT NULL,
+  prompt_id TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  prompt_hash TEXT NOT NULL,
+  model_profile_id TEXT NOT NULL REFERENCES model_profiles(id),
+  provider TEXT,
+  model TEXT,
+  status TEXT NOT NULL,
+  input_hash TEXT NOT NULL,
+  output_hash TEXT,
+  prompt_tokens INTEGER NOT NULL,
+  completion_tokens INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  error TEXT,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER
+);
+CREATE INDEX knowledge_agent_runs_import_idx
+  ON knowledge_agent_runs(import_id, started_at);
+`
   }
 ]

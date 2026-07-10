@@ -5,6 +5,7 @@ import {
   type AuditLogRecord,
   type BootstrapState,
   type ConnectionTestResult,
+  type CreateKnowledgeImportInput,
   type CreateScanInput,
   type CreateTargetInput,
   type CreateWorkspaceInput,
@@ -15,12 +16,20 @@ import {
   type FindingRecord,
   type GenerateReportInput,
   type IdentityRecord,
+  type ExtractKnowledgeImportInput,
   type KnowledgeEntrySummary,
+  type KnowledgeImportDetail,
+  type KnowledgeImportSummary,
   type KnowledgeSearchInput,
+  type McpConnectionTestResult,
+  type McpServerRecord,
   type ModelProfileRecord,
+  type ModelProfileUsageRecord,
   type PolicySelfCheckResult,
   type ReportRecord,
+  type ReviewKnowledgeImportInput,
   type SaveIdentityInput,
+  type SaveMcpServerInput,
   type SaveModelProfileInput,
   type ScanControlAction,
   type ScanDetail,
@@ -29,6 +38,7 @@ import {
   type TargetDetail,
   type TargetRecord,
   type UpdateTargetInput,
+  type UpdateKnowledgeCandidateInput,
   type WorkspaceRecord
 } from '@agentgo/contracts'
 
@@ -76,6 +86,20 @@ const api: AgentGoDesktopApi = {
   },
   searchKnowledge: (input: KnowledgeSearchInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.searchKnowledge, input) as Promise<KnowledgeEntrySummary[]>,
+  listKnowledgeImports: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.listKnowledgeImports) as Promise<KnowledgeImportSummary[]>,
+  getKnowledgeImport: (id) =>
+    ipcRenderer.invoke(IPC_CHANNELS.getKnowledgeImport, { id }) as Promise<KnowledgeImportDetail>,
+  createKnowledgeImport: (input: CreateKnowledgeImportInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.createKnowledgeImport, input) as Promise<KnowledgeImportDetail>,
+  extractKnowledgeImport: (input: ExtractKnowledgeImportInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.extractKnowledgeImport, input) as Promise<KnowledgeImportDetail>,
+  updateKnowledgeCandidate: (input: UpdateKnowledgeCandidateInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.updateKnowledgeCandidate, input) as Promise<KnowledgeImportDetail>,
+  reviewKnowledgeImport: (input: ReviewKnowledgeImportInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.reviewKnowledgeImport, input) as Promise<KnowledgeImportDetail>,
+  deleteKnowledgeImport: (id) =>
+    ipcRenderer.invoke(IPC_CHANNELS.deleteKnowledgeImport, { id }) as Promise<DeleteResult>,
   listFindings: (input) =>
     ipcRenderer.invoke(IPC_CHANNELS.listFindings, input ?? {}) as Promise<FindingRecord[]>,
   listReports: (scanId) =>
@@ -86,12 +110,22 @@ const api: AgentGoDesktopApi = {
     ipcRenderer.invoke(IPC_CHANNELS.exportReport, input) as Promise<ExportReportResult>,
   listModelProfiles: () =>
     ipcRenderer.invoke(IPC_CHANNELS.listModelProfiles) as Promise<ModelProfileRecord[]>,
+  listModelProfileUsage: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.listModelProfileUsage) as Promise<ModelProfileUsageRecord[]>,
   saveModelProfile: (input: SaveModelProfileInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.saveModelProfile, input) as Promise<ModelProfileRecord>,
   deleteModelProfile: (id) =>
     ipcRenderer.invoke(IPC_CHANNELS.deleteModelProfile, { id }) as Promise<DeleteResult>,
   testModelProfile: (id) =>
     ipcRenderer.invoke(IPC_CHANNELS.testModelProfile, { id }) as Promise<ConnectionTestResult>,
+  listMcpServers: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.listMcpServers) as Promise<McpServerRecord[]>,
+  saveMcpServer: (input: SaveMcpServerInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.saveMcpServer, input) as Promise<McpServerRecord>,
+  deleteMcpServer: (id) =>
+    ipcRenderer.invoke(IPC_CHANNELS.deleteMcpServer, { id }) as Promise<DeleteResult>,
+  testMcpServer: (id) =>
+    ipcRenderer.invoke(IPC_CHANNELS.testMcpServer, { id }) as Promise<McpConnectionTestResult>,
   listAuditLogs: (workspaceId, scanId) =>
     ipcRenderer.invoke(IPC_CHANNELS.listAuditLogs, {
       workspaceId,

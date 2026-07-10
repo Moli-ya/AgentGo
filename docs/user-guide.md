@@ -59,13 +59,30 @@ pnpm dev
 
 IDOR 验证至少需要两个均获授权的测试身份，并为每个身份填写“已知归属测试资源 ID”。系统只做读取对照，不修改或删除资源。
 
-## 6. 配置模型
+## 6. 配置 Agent 模型
 
-“模型设置”默认包含 Planner、Knowledge、Strategy、Analysis、Verifier 的本地确定性 Profile，可直接运行 V1。
+“Agent 与模型”默认包含 Planner、Knowledge、Strategy、Analysis、Verifier 的本地确定性 Profile，可直接运行 V1。
 
-添加外部模型时选择 Agent 角色，填写 OpenAI-compatible Base URL、模型名和 API Key，再点击连接测试。连接测试会真实 POST 到 `chat/completions`，要求模型返回并通过 `{"ok":true}` 的结构化校验；成功只代表该 Profile 的实际推理路径可调用，不代表扫描目标或其他 Provider 已验证。所有调用都经过 `ModelGateway`，执行输入脱敏、结构化输出校验、超时、RPM/TPM、Token 和费用预算以及审计。费用累计使用 Provider 返回的 `usage.cost` 或 `usage.total_cost`；Provider 不报告费用时会记为 0，不能把该数字当作真实账单。模型输出只是建议或分析，不能直接绕过 `SecurityPolicy` 执行动作。
+添加外部模型时选择 Agent 角色，填写 OpenAI-compatible Base URL、模型名和 API Key，再点击连接测试。连接测试会真实 POST 到 `chat/completions`，要求模型返回并通过 `{"ok":true}` 的结构化校验；成功只代表该 Profile 的实际推理路径可调用，不代表扫描目标或其他 Provider 已验证。所有调用都经过 `ModelGateway`，执行输入脱敏、结构化输出校验、超时、RPM/TPM、Token 预算和审计。界面只累计输入 Token、输出 Token、总 Token 和调用次数，不记录或估算费用。模型输出只是建议或分析，不能直接绕过 `SecurityPolicy` 执行动作。
 
-## 7. 创建和控制扫描
+## 7. 配置 MCP Server
+
+“MCP Center”支持两种 Transport：
+
+- 本地 STDIO：填写启动命令、逐行参数、工作目录和加密环境变量；
+- 远程 Streamable HTTP：填写 HTTP(S) URL、鉴权方式、Token 和加密自定义请求头。
+
+新 Server 默认禁用，保存配置不会连接。点击“测试连接”后，应用才会执行 MCP 初始化握手并发现 tools、resources 和 prompts。本地 STDIO 测试会启动指定进程；远程测试会访问指定 URL，因此必须先核对命令、主机和权限。云元数据地址永久拒绝。
+
+MCP Token、环境变量和自定义请求头只进入 `safeStorage`，SQLite 只保存字段名与凭据引用。可以为 Server 绑定允许使用的 Agent 和 roots；roots 只是协议协作边界，不是操作系统沙箱。当前版本完成配置、连接测试和能力发现，尚不允许 Agent 自动调用 MCP 工具。
+
+## 8. 导入和发布知识情报
+
+“知识库”包含知识检索、导入队列和新建导入。新建时可以粘贴公开情报/PoC 文本，或由用户主动选择不超过 1 MB 的文本、Markdown、JSON、YAML 或源代码文件；来源 URL 只记录元数据，应用不会自动访问。
+
+保存后，在导入详情选择 Knowledge Profile 作为 Extractor、Verifier Profile 作为 Reviewer，再执行“提取并复核”。原文中的 Authorization、Cookie、Token、密码等模式会在入库前脱敏；模型只能生成固定结构候选，不能执行 PoC。检查厂商、产品、漏洞类型、影响版本、HTTP 请求模板、确认规则、修复建议和字段来源后，可以人工修订并发布。只有 `published` 记录会进入知识检索和扫描期 KnowledgeAgent，驳回或待审核记录不会参与扫描。
+
+## 9. 创建和控制扫描
 
 在“扫描与 Agent”中选择：
 
@@ -88,7 +105,7 @@ IDOR 验证至少需要两个均获授权的测试身份，并为每个身份填
 
 任务支持暂停、恢复和取消。暂停会中止当前执行并保存 Checkpoint；恢复从已保存状态继续。若应用异常退出，下次启动会将 queued/running 任务恢复为 paused，并记录恢复 Checkpoint 和警告事件，由用户确认后再恢复。
 
-## 8. 理解结论和证据
+## 10. 理解结论和证据
 
 - `Confirmed`：满足版本化确认规则，且具有所需证据和负对照。
 - `Not Confirmed`：已经执行安全验证，但未达到确认标准。
@@ -96,13 +113,13 @@ IDOR 验证至少需要两个均获授权的测试身份，并为每个身份填
 
 扫描详情显示阶段事件、发现的接口、证据数量和 Findings。原始证据采用内容寻址和 SHA-256 完整性校验；文本、JSON 和请求响应会生成脱敏派生。任何单次异常都只能形成 Signal，不能直接成为 Confirmed。
 
-## 9. 生成和导出报告
+## 11. 生成和导出报告
 
 扫描完成后可生成 Markdown、JSON 或 HTML 报告。桌面界面只生成脱敏版本；HTML 报告会转义不可信内容并带严格 CSP。导出时选择本地路径，应用会记录报告已导出，但不会自动上传或发送给第三方。
 
 报告应由测试人员复核后再提交，尤其要检查授权引用、复现条件、身份、证据引用、影响范围和修复建议。
 
-## 10. 本地数据与备份
+## 12. 本地数据与备份
 
 生产运行数据位于 Electron 的 `userData` 目录，Windows 通常为 `%APPDATA%\AgentGo`，主要包括：
 
@@ -112,7 +129,7 @@ IDOR 验证至少需要两个均获授权的测试身份，并为每个身份填
 
 删除 Target 会清理其数据库记录、未被其他扫描引用的证据文件和测试身份凭据；删除 Workspace 会清理整个工作区目录。运行中任务必须先暂停或取消。安装器配置为卸载时保留应用数据，升级、卸载或迁移前仍建议在应用退出后备份整个目录。不要把这些运行数据、`benchmark-results/`、`release/` 或原始计划书提交到代码仓库。
 
-## 11. 常见问题
+## 13. 常见问题
 
 ### XSS 验证提示 browser-unavailable
 

@@ -8,6 +8,19 @@ import {
 } from 'drizzle-orm/sqlite-core'
 import type {
   AgentModelProfileSelection,
+  AgentRole,
+  KnowledgeFieldEvidence,
+  KnowledgeHttpRequestTemplate,
+  KnowledgeImportStatus,
+  KnowledgeReviewIssue,
+  KnowledgeSourceType,
+  McpAuthType,
+  McpPromptSummary,
+  McpResourceSummary,
+  McpRiskLabel,
+  McpServerStatus,
+  McpToolSummary,
+  McpTransport,
   ScanBudget,
   VulnerabilityFamily
 } from '@agentgo/contracts'
@@ -108,6 +121,28 @@ export interface ScanConfiguration {
   identityIds: string[]
   callbackUrl?: string
   modelProfileIds: AgentModelProfileSelection
+}
+
+export interface McpServerConfiguration {
+  command?: string
+  args: string[]
+  cwd?: string
+  url?: string
+  authType: McpAuthType
+  authHeaderName?: string
+  environmentKeys: string[]
+  headerNames: string[]
+  timeoutMs: number
+  roots: string[]
+}
+
+export interface McpServerDiscovery {
+  protocolVersion?: string
+  serverName?: string
+  serverVersion?: string
+  tools: McpToolSummary[]
+  resources: McpResourceSummary[]
+  prompts: McpPromptSummary[]
 }
 
 export const scans = sqliteTable(
@@ -310,6 +345,19 @@ export const modelInvocations = sqliteTable(
     createdAt: integer('created_at').notNull()
   },
   (table) => [index('model_invocations_agent_run_idx').on(table.agentRunId)]
+)
+
+export const modelProfileUsageEvents = sqliteTable(
+  'model_profile_usage_events',
+  {
+    id: text('id').primaryKey(),
+    profileId: text('profile_id').notNull(),
+    source: text('source').notNull(),
+    promptTokens: integer('prompt_tokens').notNull(),
+    completionTokens: integer('completion_tokens').notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('model_profile_usage_profile_idx').on(table.profileId, table.createdAt)]
 )
 
 export const probeProposals = sqliteTable(
@@ -539,6 +587,105 @@ export const knowledgeChunks = sqliteTable(
   ]
 )
 
+export const knowledgeImports = sqliteTable(
+  'knowledge_imports',
+  {
+    id: text('id').primaryKey(),
+    documentId: text('document_id').notNull(),
+    sourceType: text('source_type').$type<KnowledgeSourceType>().notNull(),
+    rawContent: text('raw_content').notNull(),
+    rawContentSha256: text('raw_content_sha256').notNull(),
+    vendorHint: text('vendor_hint'),
+    productHint: text('product_hint'),
+    instructionFlags: text('instruction_flags', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    status: text('status').$type<KnowledgeImportStatus>().notNull(),
+    extractorProfileId: text('extractor_profile_id'),
+    reviewerProfileId: text('reviewer_profile_id'),
+    reviewIssues: text('review_issues', { mode: 'json' })
+      .$type<KnowledgeReviewIssue[]>()
+      .notNull(),
+    lastError: text('last_error'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('knowledge_imports_document_uq').on(table.documentId),
+    index('knowledge_imports_status_idx').on(table.status, table.updatedAt)
+  ]
+)
+
+export const knowledgeIntelligence = sqliteTable(
+  'knowledge_intelligence',
+  {
+    id: text('id').primaryKey(),
+    importId: text('import_id').notNull(),
+    schemaVersion: text('schema_version').notNull(),
+    title: text('title').notNull(),
+    vendor: text('vendor').notNull(),
+    product: text('product').notNull(),
+    vulnerabilityType: text('vulnerability_type').notNull(),
+    family: text('family').$type<VulnerabilityFamily>(),
+    identifiers: text('identifiers_json', { mode: 'json' })
+      .$type<{ cve: string[]; cwe: string[]; other: string[] }>()
+      .notNull(),
+    affectedVersions: text('affected_versions', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    preconditions: text('preconditions', { mode: 'json' }).$type<string[]>().notNull(),
+    affectedEndpoints: text('affected_endpoints', { mode: 'json' })
+      .$type<KnowledgeHttpRequestTemplate[]>()
+      .notNull(),
+    signals: text('signals', { mode: 'json' }).$type<string[]>().notNull(),
+    confirmationRules: text('confirmation_rules', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    remediation: text('remediation', { mode: 'json' }).$type<string[]>().notNull(),
+    forbiddenActions: text('forbidden_actions', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    fieldEvidence: text('field_evidence', { mode: 'json' })
+      .$type<KnowledgeFieldEvidence[]>()
+      .notNull(),
+    extractionConfidence: integer('extraction_confidence').notNull(),
+    publishedChunkId: text('published_chunk_id'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('knowledge_intelligence_import_uq').on(table.importId),
+    index('knowledge_intelligence_product_idx').on(table.vendor, table.product),
+    index('knowledge_intelligence_family_idx').on(table.family)
+  ]
+)
+
+export const knowledgeAgentRuns = sqliteTable(
+  'knowledge_agent_runs',
+  {
+    id: text('id').primaryKey(),
+    importId: text('import_id').notNull(),
+    parentRunId: text('parent_run_id'),
+    role: text('role').notNull(),
+    promptId: text('prompt_id').notNull(),
+    promptVersion: text('prompt_version').notNull(),
+    promptHash: text('prompt_hash').notNull(),
+    modelProfileId: text('model_profile_id').notNull(),
+    provider: text('provider'),
+    model: text('model'),
+    status: text('status').notNull(),
+    inputHash: text('input_hash').notNull(),
+    outputHash: text('output_hash'),
+    promptTokens: integer('prompt_tokens').notNull(),
+    completionTokens: integer('completion_tokens').notNull(),
+    durationMs: integer('duration_ms').notNull(),
+    error: text('error'),
+    startedAt: integer('started_at').notNull(),
+    finishedAt: integer('finished_at')
+  },
+  (table) => [index('knowledge_agent_runs_import_idx').on(table.importId, table.startedAt)]
+)
+
 export const reports = sqliteTable(
   'reports',
   {
@@ -576,6 +723,38 @@ export const modelProfiles = sqliteTable(
   (table) => [
     index('model_profiles_role_idx').on(table.agentRole),
     uniqueIndex('model_profiles_name_uq').on(table.name)
+  ]
+)
+
+export const mcpServers = sqliteTable(
+  'mcp_servers',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    transport: text('transport').$type<McpTransport>().notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+    credentialId: text('credential_id'),
+    configJson: text('config_json', { mode: 'json' })
+      .$type<McpServerConfiguration>()
+      .notNull(),
+    allowedAgentRoles: text('allowed_agent_roles', { mode: 'json' })
+      .$type<AgentRole[]>()
+      .notNull(),
+    riskLabels: text('risk_labels', { mode: 'json' })
+      .$type<McpRiskLabel[]>()
+      .notNull(),
+    status: text('status').$type<McpServerStatus>().notNull(),
+    discoveryJson: text('discovery_json', { mode: 'json' })
+      .$type<McpServerDiscovery>()
+      .notNull(),
+    lastTestedAt: integer('last_tested_at'),
+    lastError: text('last_error'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('mcp_servers_name_uq').on(table.name),
+    index('mcp_servers_status_idx').on(table.status, table.updatedAt)
   ]
 )
 
