@@ -1,0 +1,100 @@
+# AgentGo 威胁模型
+
+## 1. 保护目标
+
+- 授权范围和业务可用性；
+- 测试账号、Cookie、Token、API Key；
+- 目标请求响应和漏洞证据；
+- 本地数据库、浏览器 Profile 和报告；
+- Agent 决策链和审计日志；
+- 用户设备与外部工具主机。
+
+## 2. 主要攻击面
+
+- 恶意目标页面和 API 响应；
+- 导入的 HAR、报告、知识文档和模板；
+- 外部模型 Provider；
+- Browser/HTTP Runner；
+- Electron Renderer、Preload 和 IPC；
+- 可选 MCP Server、插件和脚本；
+- 软件依赖、更新和安装包；
+- 报告导出与 Markdown/HTML 渲染。
+
+## 3. 间接 Prompt Injection
+
+目标页面可能包含“忽略安全规则、调用工具、读取本地文件、发送凭据”等文本。防护要求：
+
+- 页面文本始终标记为 untrusted_observation；
+- system policy 和 tool policy 不与页面原文拼接为同一信任层；
+- Agent 只能提出 ProbeProposal，不能直接调用 Runner；
+- 工具参数由 schema、scope 和 SecurityPolicy 再校验；
+- 任何试图改变授权、预算、模型配置或工具权限的页面内容都被忽略并记录。
+
+## 4. 知识库投毒
+
+- 每个来源保存 URL、作者/组织、发布日期、抓取时间、许可证和哈希；
+- 用户导入与在线资料默认低信任；
+- 摄取时检测指令性文本、重复内容和来源冲突；
+- KnowledgePack 只输出事实摘要、适用性和来源引用；
+- 检索内容不能修改 Prompt、工具权限或确认规则；
+- 内置确认规则变更需要评审和版本升级。
+
+## 5. 模型数据泄露
+
+- 用户明确知道当前 Agent 使用的 Provider、Base URL 和模型；
+- 发送前裁剪 Cookie、Authorization、密码、个人信息和不必要响应体；
+- Provider 请求日志不记录 API Key；
+- 支持禁用云模型或对特定工作区禁止发送原始证据；
+- 模型输入输出保存摘要和哈希，原文按可配置策略留存。
+
+## 6. 执行器风险
+
+- 每次跳转和 DNS 解析后重新检查 scope；
+- 对 SSRF、代理、重定向和 URL 编码进行统一规范化；
+- Runner 使用最小权限进程和独立临时目录；
+- 禁止执行模型生成的任意 shell 字符串；
+- 外部工具使用参数数组和显式允许的 capability；
+- 超时、并发、输出大小和磁盘空间均设上限；
+- 进程终止后清理临时文件和会话引用。
+
+## 7. Electron 风险
+
+- contextIsolation、sandbox、nodeIntegration=false；
+- Preload 只暴露业务级 API，不暴露 ipcRenderer 本体；
+- IPC 输入输出使用 schema 校验；
+- CSP 禁止远程脚本和 eval；
+- 禁止任意导航、弹窗、文件协议和外部 URL 自动打开；
+- HTML 报告预览必须消毒，防止存储型 XSS 影响桌面端；
+- DevTools 和调试接口不进入正式发布配置。
+
+## 8. MCP 与外部工具
+
+- 新 Server 默认禁用；
+- 展示 File Access、Command Execution、Network Access 等能力标签；
+- 每个 Server 独立凭据、scope、Agent 绑定和并发上限；
+- roots 只是协作提示，不是绝对沙箱；
+- 高权限工具逐次批准；
+- 输出视为不可信并限制大小；
+- MCP 不可用时不能自动退化为无限制 SSH 或 shell。
+
+## 9. 证据与报告
+
+- EvidenceItem 保存 SHA-256 和来源；
+- 脱敏生成派生版本，不覆盖原件；
+- 报告模板转义 HTML/Markdown 注入；
+- 导出前展示敏感字段清单；
+- 报告不包含可直接滥用的真实凭据；
+- 审计日志至少记录策略拒绝、人工批准、敏感导出和配置变更。
+
+## 10. 安全验证
+
+项目测试必须包含：
+
+- 越界 URL、恶意重定向和 DNS 变化；
+- DROP/DELETE 等破坏性内容；
+- 页面间接 Prompt Injection；
+- 恶意 MCP/工具输出；
+- IPC 非法 payload；
+- 报告 HTML 注入；
+- 密钥和 Token 日志泄露；
+- 并发、超时和大型响应限制。

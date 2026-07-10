@@ -1,0 +1,25 @@
+{
+  "name": "agentgo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @agentgo/desktop dev",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "pnpm --filter @agentgo/desktop build",
+    "smoke:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-desktop.ps1",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

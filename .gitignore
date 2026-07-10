@@ -9,6 +9,10 @@ out/
 release/
 .vite/
 .turbo/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
 
 # Runtime data
 *.log
@@ -21,6 +25,10 @@ browser-profiles/
 .env
 .env.*
 !.env.example
+
+# Local application data
+.agentgo/
+data/
 
 # OS / editor noise
 Thumbs.db
