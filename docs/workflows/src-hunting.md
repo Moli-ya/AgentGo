@@ -56,6 +56,8 @@
 Page -> Endpoint -> Method -> Parameter -> Identity -> State -> Baseline
 ```
 
+实现状态：V1 已自动完成低速链接/表单盘点与 GET 查询参数基线；JS 运行期 XHR、复杂 SPA 路由、浏览器登录编排以及 POST/JSON Body/路径/Header 参数目前只记录为资产信息，不能自动进入漏洞验证。需要相应执行器、确认规则和安全回归用例后，才能升级为主动验证能力。
+
 本阶段不发送漏洞验证 payload，不做路径爆破式高频枚举。
 
 ## 5. Phase 3：Hypothesis 与知识检索

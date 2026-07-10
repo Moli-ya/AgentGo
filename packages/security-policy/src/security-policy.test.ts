@@ -101,6 +101,23 @@ describe('evaluateProbe', () => {
     })
   })
 
+  it('does not allow POST to masquerade as an L1 read-only probe', () => {
+    expect(
+      evaluateProbe(
+        action({
+          method: 'POST',
+          probeLevel: 'active-safe',
+          sideEffect: 'none'
+        }),
+        scope
+      )
+    ).toMatchObject({
+      allowed: false,
+      requiresApproval: true,
+      code: 'mutating-method-requires-l2'
+    })
+  })
+
   it('allows an explicitly approved reversible L2 probe with cleanup', () => {
     expect(
       evaluateProbe(

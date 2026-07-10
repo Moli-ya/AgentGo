@@ -4,11 +4,15 @@
 
 > 当前状态：V1 可运行原型。SQL 注入、XSS、SSRF、越权/IDOR 已接入 `Signal -> Validation -> Verdict -> Evidence -> Report` 完整闭环，并具备本地持久化、异常恢复、评测靶场和 Windows 打包能力。
 
+> 自动验证边界：当前运行器只自动验证授权范围内的 **GET 查询参数**。表单、POST/PUT/PATCH、JSON Body、Header、Cookie、路径参数、复杂 SPA 交互和盲回连场景会被盘点或标记为 `Inconclusive`，不会被静默扩展为真实业务写操作。
+
 ## 使用边界
 
 AgentGo 只允许用于教学靶场、自有系统和有明确书面授权的目标。所有主动请求必须同时满足不可变 Scope、身份范围、网络边界、速率/并发预算和 `SecurityPolicy` 决策。
 
 V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、云元数据访问、持久化、横向移动、凭据喷洒和高强度 DoS。证据充分后立即停止验证，不扩大影响。
+
+`POST`、`PUT` 和 `PATCH` 默认不是 L1 自动动作。只有专用测试对象、可验证清理方案和逐次人工批准同时具备时，才可能作为 L2 动作执行；否则系统拒绝执行。
 
 ## 已实现功能
 
@@ -110,6 +114,7 @@ pnpm dist:win
 - [docs/architecture/overview.md](docs/architecture/overview.md)：进程和模块边界
 - [docs/knowledge/knowledge-agent.md](docs/knowledge/knowledge-agent.md)：知识链路
 - [docs/evaluation/benchmark-plan.md](docs/evaluation/benchmark-plan.md)：研究评测计划
+- [docs/audits/v1-current-capability-audit.md](docs/audits/v1-current-capability-audit.md)：当前代码与计划书的核查结论
 - [docs/roadmap.md](docs/roadmap.md)：已完成项与后续研究工作
 
 原始大创申报材料包含个人信息，不作为公开仓库文档发布。

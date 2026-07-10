@@ -56,13 +56,15 @@ Acquire
 
 ## 5. 检索流程
 
-V1：
+V1 当前实现：
 
-1. 根据 family、技术栈、method、content-type、参数位置、身份和信号做结构化过滤；
-2. 使用 SQLite FTS5 和别名词典召回；
-3. 规则加权排序；
-4. 过滤过期、低信任和不适用条目；
-5. 组装受 token 预算限制的 KnowledgePack。
+1. 按启用的漏洞 family 注入已审查的内置安全基线；即使参数名称或路由词没有命中 FTS5，也不会丢失确认规则、误报模式、禁止动作和修复提示；
+2. 使用不含查询值的 endpoint 路径词与参数名称进行 SQLite FTS5/中文子串检索，并补充已人工发布的导入情报；
+3. 按 family、匹配词和来源状态排序；待审核、带错误级问题或未发布内容不会进入扫描；
+4. 组装受 token 预算限制的 KnowledgePack，并把来源、适用性和安全约束一起交给 StrategyAgent；
+5. 执行器仍只接受经 SecurityPolicy 重新批准的结构化 Proposal，KnowledgePack 或原始 PoC 不能直接触发请求。
+
+技术栈指纹、method/content-type、参数位置、身份、响应特征和业务状态过滤属于下一轮检索增强；在这些字段有可靠采集和评测前，不得写成 V1 已支持能力。
 
 研究实验中加入 embedding/hybrid retrieval，与纯 FTS5 做对照；向量检索不是 V1 桌面运行的前置条件。
 

@@ -202,8 +202,12 @@ export function evaluateProbe(
     )
   }
 
+  // POST is not inherently destructive at the HTTP layer, but on a real Web
+  // application it commonly creates state.  Treat it like PUT/PATCH unless an
+  // explicitly approved L2 proposal declares a reversible test object and a
+  // cleanup plan.  V1 automatic validation stays on the safer GET/HEAD path.
   if (
-    ['PUT', 'PATCH'].includes(method) &&
+    ['POST', 'PUT', 'PATCH'].includes(method) &&
     action.probeLevel !== 'active-sensitive'
   ) {
     return deny(

@@ -597,9 +597,20 @@ export class DefaultScanCoordinator {
     const endpointParameterNames = unique(
       endpoints.flatMap((endpoint) => endpoint.parameters.map((parameter) => parameter.name))
     )
+    // Retrieval may use stable endpoint semantics, but never raw query values
+    // or credentials.  This gives KnowledgeAgent useful context for routes
+    // such as /search, /redirect and /resource without exporting user data.
+    const endpointPathTerms = unique(
+      endpoints.flatMap((endpoint) =>
+        new URL(endpoint.url).pathname
+          .split(/[/. _-]+/)
+          .map((term) => term.trim())
+          .filter((term) => term.length >= 2)
+      )
+    )
     const knowledgeOutput = await this.buildKnowledgeOutput(
       context.scan.families,
-      endpointParameterNames
+      unique([...endpointParameterNames, ...endpointPathTerms])
     )
     const knowledge = await this.runAgent({
       scanId,
@@ -1463,16 +1474,24 @@ export class DefaultScanCoordinator {
     families: VulnerabilityFamily[],
     signalTerms: string[]
   ): Promise<KnowledgeAgentOutput> {
-    const matchedIds = unique(
-      families.flatMap((family) =>
+    const entryById = new Map(V1_KNOWLEDGE_ENTRIES.map((entry) => [entry.id, entry]))
+    // Every enabled V1 family receives its vetted built-in safety and
+    // confirmation baseline even when endpoint naming gives the search index
+    // no useful lexical match.  Search results can add reviewed imported
+    // intelligence, but cannot replace this policy baseline.
+    const baselineIds = families.flatMap((family) =>
+      V1_KNOWLEDGE_ENTRIES.filter((entry) => entry.family === family).map((entry) => entry.id)
+    )
+    const matchedIds = unique([
+      ...baselineIds,
+      ...families.flatMap((family) =>
         this.repository.searchKnowledgeEntryIds({
           query: signalTerms.join(' '),
           families: [family],
           limit: 5
         })
       )
-    )
-    const entryById = new Map(V1_KNOWLEDGE_ENTRIES.map((entry) => [entry.id, entry]))
+    ])
     const entries = matchedIds
       .map((entryId) => entryById.get(entryId))
       .filter((entry): entry is (typeof V1_KNOWLEDGE_ENTRIES)[number] => Boolean(entry))

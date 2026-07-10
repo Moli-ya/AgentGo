@@ -46,6 +46,12 @@ AgentGo 是“基于 Multi-Agent 协作的授权 Web 漏洞挖掘与验证系统
 
 文件上传、OAuth/JWT、业务逻辑、GraphQL 等作为后续扩展。MCP Server 配置、连接测试和能力发现已经接入；Agent 自动调用、Kali 工具服务器和 Rust sidecar 仍是增强项，不能绕过或阻塞 V1 核心闭环。
 
+### V1 自动化能力的明确边界
+
+当前自动验证器只对**授权范围内的 GET 查询参数**执行 L1 低影响验证；它会建立链接、表单和参数清单，但不会自动对 POST、PUT、PATCH、JSON Body、Header、Cookie 或路径参数发起验证。任何可能改变业务状态的请求都必须作为 L2 提案，绑定专用测试对象、清理方案和逐次人工批准。
+
+因此，V1 已证明的是“固定本地靶场上的四类漏洞闭环”，不是对复杂 SPA、登录流程、业务工作流或任意 API 形态的完整覆盖。盲 SSRF、存储型/复杂 DOM XSS、路径/Body 型 IDOR 和复杂业务逻辑仍应保持 `Inconclusive`，直到相应的证据采集与确认规则实现并通过评测。
+
 ## 4. Agent 与确定性服务边界
 
 V1 的模型型 Agent：
@@ -70,8 +76,8 @@ V1 的模型型 Agent：
 
 - Electron + React + TypeScript + Vite
 - pnpm workspace monorepo
-- Playwright（后续接入 BrowserRunner）
-- undici（后续接入 HttpRunner）
+- Playwright Core 隔离 BrowserRunner（已接入 DOM、表单、链接和惰性 XSS 标记验证）
+- undici HttpRunner（已接入 DNS 固定、逐跳重定向复检和响应证据采集）
 - SQLite + Drizzle ORM
 - Zod 作为配置、IPC 和 Agent 输出校验层
 - Vitest 作为单元和集成测试框架
@@ -90,6 +96,7 @@ V1 的模型型 Agent：
 - docs/workflows/src-hunting.md：授权 SRC 漏洞挖掘阶段门禁
 - docs/knowledge/knowledge-agent.md：知识库、检索、KnowledgePack 和质量评估
 - docs/evaluation/benchmark-plan.md：基准、对照实验和指标
+- docs/audits/v1-current-capability-audit.md：当前实现与计划书的可验证满足度及缺口
 - docs/roadmap.md：与大创计划对应的阶段安排
 - docs/research/related-work.md：开源同类项目研究记录
 

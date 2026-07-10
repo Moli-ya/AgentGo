@@ -19,6 +19,7 @@
 - [security/threat-model.md](security/threat-model.md)：恶意页面、外部模型、Electron、MCP 和执行器威胁
 - [workflows/src-hunting.md](workflows/src-hunting.md)：授权 SRC 阶段门禁和证据纪律
 - [evaluation/benchmark-plan.md](evaluation/benchmark-plan.md)：固定靶场、Ground Truth、指标和消融实验
+- [audits/v1-current-capability-audit.md](audits/v1-current-capability-audit.md)：当前代码与计划书功能满足度核查
 
 ## 知识与研究
 
