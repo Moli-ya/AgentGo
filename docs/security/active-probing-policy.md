@@ -17,6 +17,8 @@ AgentGo 必须具备主动探测能力。只做被动观察通常只能产生“
 
 ## 2. 探测等级
 
+漏洞名称不能直接决定探测等级。同一个 Family 中，不同 Technique 可能分别属于 L1、L2、Signal 或 fixture-only。V2 Module 只能声明所需 Capability；SecurityPolicy 根据实际 method、transport、body、环境、身份、对象和副作用取风险上界，模块和 Agent 都不能降级。
+
 ### L0：被动
 
 不向目标新增请求，例如分析用户导入的 HAR、历史响应、公开文档和已有扫描记录。
@@ -60,7 +62,7 @@ L1 仍必须经过 scope、预算、方法和 payload 摘要检查。
 
 - DROP、TRUNCATE、ALTER DATABASE/TABLE；
 - DELETE FROM、UPDATE、INSERT INTO 等生产数据写操作；
-- HTTP DELETE 或对真实业务对象的不可逆修改；
+- 通用/未绑定 HTTP DELETE，或对生产、未知归属及真实业务对象的不可逆修改；
 - 删除文件、格式化磁盘、停止关键服务；
 - WebShell、恶意宏、持久化、计划任务、后门；
 - 真实账号接管、密码修改、凭据喷洒；
@@ -70,6 +72,8 @@ L1 仍必须经过 scope、预算、方法和 payload 摘要检查。
 - 绕过 scope、审计、速率或人工批准。
 
 SecurityPolicy 对 L3 返回不可覆盖的 DENY。
+
+这里的 HTTP DELETE 指通用/未绑定删除、删除生产或未知归属对象，以及把删除本身作为漏洞证明。唯一窄例外是专用 `cleanup` capability：仅对 AgentGo 创建、所有权已证明且标记 disposable 的 TestObject，调用目标事先声明的精确 delete/revoke/reset 协议；它必须绑定原 L2 bundle、批准、scope、identity/session generation 和资源 ID，禁止枚举删除，执行后必须终态复核。该能力只能恢复测试状态，不能由漏洞模块当作探测步骤；目标没有安全清理协议时，对应 L2 Technique 不得激活。
 
 ## 3. Scope 强制执行
 
@@ -140,7 +144,8 @@ SQL 注入验证只允许使用非写入式、低影响差异策略：
 任何主动动作执行前必须形成结构化 Proposal：
 
 - targetUrl、method、identityId；
-- vulnerabilityFamily、hypothesis；
+- familyId、techniqueId、module/strategy version、SubjectRefs 和 hypothesis；
+- capabilityIds、transport、body codec 和运行环境；
 - probeLevel、sideEffect；
 - payloadSummary，不保存不必要的敏感原文；
 - expectedEvidence；
@@ -148,6 +153,8 @@ SQL 注入验证只允许使用非写入式、低影响差异策略：
 - stopConditions；
 - cleanupPlan；
 - scopeSnapshotId。
+
+V2 目标要求 Proposal 引用 TemplateIntentHash 和 ResolvedIntentHash；Runner 发送前使用单次 ExecutionLease 复核最终 WireRequestHash、identity/session generation、TestObject 和 stepId。仅有 `policyDecisionId` 或 `userApproved=true` 不能授权执行。当前 V1 尚未完整实现三阶段哈希、Lease、可信 ApprovalPort 和 TestObject 状态机，因此这些能力完成前，产品环境 L2 保持禁用，只能在明确标识的 loopback fixture 中测试协议。
 
 SecurityPolicy 返回 allow、deny 或 approval_required，并生成 policyDecisionId。Runner 只接受带有效 decisionId 的动作。
 

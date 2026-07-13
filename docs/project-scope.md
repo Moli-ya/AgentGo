@@ -42,6 +42,14 @@ RQ5：统一上下文和检查点能否提升多身份、跨页面和多请求�
 
 V1 必须让四类漏洞都能走通 Signal -> Validation -> Verdict -> Report，而不是只完成 UI 或通用 Agent 框架。
 
+### 4.1 V2 完整 Web 分类目标
+
+V1 四类仍是已经实现的研究基线，不是项目长期上限。V2 计划采用开放式 Family/Technique DefinitionRegistry 与独立 ActivationCatalog，把 WSTG、ASVS、API Security Top 10 和授权 SRC 场景纳入 [Web 漏洞覆盖矩阵](planning/web-vulnerability-coverage-matrix.md)，包括配置/泄漏、认证/会话/授权、各类注入、文件/XML/服务器解析、客户端、REST/GraphQL/WebSocket、业务逻辑/竞态、协议/缓存、组件情报和 LLM Web。注册只说明定义完整，不能替代评测资格或主动执行授权。
+
+“纳入”必须有明确状态：`active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 或 `forbidden`。项目不承诺自动发现所有未知漏洞，也不通过高风险利用证明追求表面覆盖；无法在真实业务中安全确认的类别保持 Signal、Inconclusive 或专用 fixture。
+
+20 个近期工作包先交付通用后端和四个参考主动模块，随后按 [七波后端路线](planning/post-20-day-vulnerability-roadmap.md) 逐类完成 Module DoD。当前前端仅维持可构建、可启动和既有流程可用，后端合同稳定后再统一重建。
+
 ## 5. 主动探测定位
 
 主动探测不是可选装饰，而是形成明确结论的必要能力。系统默认允许范围内、低影响、非破坏的 L1 主动探测；对需要创建临时测试对象、受控上传或回连的 L2 动作要求人工确认、专用测试数据和清理记录；L3 破坏性动作永久拒绝。
@@ -66,6 +74,13 @@ V1 必须让四类漏洞都能走通 Signal -> Validation -> Verdict -> Report�
 - 固定版本靶场上的基准、对照和消融结果；
 - 结构化 Findings、证据包和修复建议；
 - 项目研究总结、使用说明和软件著作权申报材料。
+
+V2 增量交付还必须包含：
+
+- 版本化 Vulnerability DefinitionRegistry/ActivationCatalog、通用 Subject/ValidationPlan/Capability 和角色化 Evidence；
+- 完整 Web 漏洞覆盖矩阵及每项真实成熟度；
+- 每个 Active Technique 的 Detector、确认规则、修复建议、正负/Inconclusive/安全 Case；
+- 20 天后的七波纯后端覆盖路线和后端稳定后的前端重建输入合同。
 
 ## 8. 成功定义
 

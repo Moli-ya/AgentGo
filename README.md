@@ -12,12 +12,12 @@ AgentGo 只允许用于教学靶场、自有系统和有明确书面授权的目
 
 V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、云元数据访问、持久化、横向移动、凭据喷洒和高强度 DoS。证据充分后立即停止验证，不扩大影响。
 
-`POST`、`PUT` 和 `PATCH` 默认不是 L1 自动动作。只有专用测试对象、可验证清理方案和逐次人工批准同时具备时，才可能作为 L2 动作执行；否则系统拒绝执行。
+`POST`、`PUT` 和 `PATCH` 默认不是 L1 自动动作。只有专用测试对象、可验证清理方案和可信逐次人工批准同时具备时，才可能作为 L2 动作执行；当前 V1 尚无完整 TestObject/Approval/Cleanup 闭环，因此产品环境 L2 保持禁用，相关能力属于后端 V2 计划。
 
 ## 已实现功能
 
 - 五 Agent：Planner、Knowledge、Strategy、Analysis、Verifier；所有模型调用统一经过 `ModelGateway`。
-- 四类漏洞：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 受控回调、IDOR 双授权身份只读对照。
+- 四类漏洞：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 目标响应内的受控 proof（非真实 OOB Collector）、IDOR 双授权身份只读对照。
 - 确定性执行边界：HTTP DNS/重定向逐跳复检，浏览器断网渲染，L3 动作永久拒绝。
 - 本地数据层：SQLite、迁移、不可变 Scope 快照、Checkpoint、审计和扫描事件。
 - 凭据与证据：Electron `safeStorage`、内容寻址证据、SHA-256 完整性校验、脱敏派生。
@@ -91,6 +91,8 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 
 这只是自建、固定、同分布靶场的回归基线，用于证明闭环和防止代码回退；不能据此推断真实互联网或复杂业务系统上的检测效果。Ground Truth 人工复核、第三方靶场、重复稳定性和消融实验仍需按研究计划继续完成。运行结果默认写入被 Git 忽略的 `benchmark-results/`。
 
+2026-07-13 DAY0 复验还发现一个必须先修复的稳定性问题：Scope 创建和更新落在同一毫秒时，`getLatestScope()` 可能读到旧的空身份快照，导致一次 40 Case 运行在第 5 Case 初始化失败，而新目录重跑 40/40 通过。该问题已记录到 [DAY0](docs/planning/Day0.md) 并列为 Day1 硬门禁；在单调 Scope revision/显式 snapshot 绑定完成前，不把单次成功运行称为稳定基线。
+
 ## Windows 打包
 
 ```powershell
@@ -115,7 +117,9 @@ pnpm dist:win
 - [docs/knowledge/knowledge-agent.md](docs/knowledge/knowledge-agent.md)：知识链路
 - [docs/evaluation/benchmark-plan.md](docs/evaluation/benchmark-plan.md)：研究评测计划
 - [docs/audits/v1-current-capability-audit.md](docs/audits/v1-current-capability-audit.md)：当前代码与计划书的核查结论
-- [docs/roadmap.md](docs/roadmap.md)：已完成项与后续研究工作
+- [docs/planning/Day0.md](docs/planning/Day0.md)：当前实况、Day1/Day2 撤销、二十个工作包依赖复审
+- [docs/planning/README.md](docs/planning/README.md)：后端 V2 顺序工作包、漏洞覆盖与复杂接口能力矩阵
+- [docs/roadmap.md](docs/roadmap.md)：当前事实与后续研究工作
 
 原始大创申报材料包含个人信息，不作为公开仓库文档发布。
 

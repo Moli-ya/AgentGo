@@ -29,4 +29,11 @@
 ## 计划与决策
 
 - [roadmap.md](roadmap.md)：当前实现状态、后续研究任务和里程碑
+- [planning/README.md](planning/README.md)：后端优先的 20 个顺序工作包、测试与验收索引
+- [planning/Day0.md](planning/Day0.md)：当前实况、Day1/Day2 撤销、依赖复审和规划完成记录
+- [planning/complex-web-20-day-plan.md](planning/complex-web-20-day-plan.md)：20 个工作包的共同边界、顺序依赖和最终验收
+- [planning/backend-v2-architecture.md](planning/backend-v2-architecture.md)：开放式漏洞模块、ValidationPlan、执行与证据架构
+- [planning/web-vulnerability-coverage-matrix.md](planning/web-vulnerability-coverage-matrix.md)：完整 Web 漏洞目录、当前成熟度、允许环境和实施波次
+- [planning/complex-web-interface-capability-matrix.md](planning/complex-web-interface-capability-matrix.md)：复杂 Web/API 协议的解析、盘点、重放、主动验证与安全边界
+- [planning/post-20-day-vulnerability-roadmap.md](planning/post-20-day-vulnerability-roadmap.md)：20 天后的七波纯后端覆盖路线
 - [adr/](adr/)：重大技术与安全决策记录

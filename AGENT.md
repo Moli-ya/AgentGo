@@ -1,7 +1,7 @@
 # AgentGo 项目设计入口
 
 > 文档状态：当前有效
-> 基线日期：2026-07-10
+> 基线日期：2026-07-13
 > 项目周期：2026-06 至 2027-06
 
 ## 1. 项目定位
@@ -33,7 +33,9 @@ AgentGo 是“基于 Multi-Agent 协作的授权 Web 漏洞挖掘与验证系统
 - 最终结论遵循 Signal -> Validation -> Verdict，并使用 Confirmed / Not Confirmed / Inconclusive 三态协议。
 - 所有 Confirmed Finding 必须绑定可复现证据和修复建议。
 
-## 3. V1 研究范围
+## 3. V1 基线与 V2 覆盖目标
+
+V1 是已经存在的历史基线，必须准确保留，不能因为 V2 计划扩大而改写为不存在的能力。
 
 一期优先跑通以下四类漏洞的端到端闭环：
 
@@ -44,13 +46,31 @@ AgentGo 是“基于 Multi-Agent 协作的授权 Web 漏洞挖掘与验证系统
 | SSRF | 仅访问受控回连端点或明确授权的测试服务 | 禁止访问云元数据、未授权内网、回环地址和越界目标 |
 | 越权 / IDOR | 使用两个授权测试身份进行只读差异验证 | 禁止修改、删除或公开其他真实用户数据 |
 
-文件上传、OAuth/JWT、业务逻辑、GraphQL 等作为后续扩展。MCP Server 配置、连接测试和能力发现已经接入；Agent 自动调用、Kali 工具服务器和 Rust sidecar 仍是增强项，不能绕过或阻塞 V1 核心闭环。
+文件上传、OAuth/JWT、业务逻辑、GraphQL 等没有进入 V1。它们在 V2 中不再被笼统归为可有可无的 Stretch Goal，而是进入版本化 Web 漏洞覆盖矩阵和后续实现波次。MCP Server 配置、连接测试和能力发现已经接入；Agent 自动调用、Kali 工具服务器和 Rust sidecar 仍是增强项，不能绕过 SecurityPolicy、Module Registry 或确定性执行链。
 
 ### V1 自动化能力的明确边界
 
 当前自动验证器只对**授权范围内的 GET 查询参数**执行 L1 低影响验证；它会建立链接、表单和参数清单，但不会自动对 POST、PUT、PATCH、JSON Body、Header、Cookie 或路径参数发起验证。任何可能改变业务状态的请求都必须作为 L2 提案，绑定专用测试对象、清理方案和逐次人工批准。
 
 因此，V1 已证明的是“固定本地靶场上的四类漏洞闭环”，不是对复杂 SPA、登录流程、业务工作流或任意 API 形态的完整覆盖。盲 SSRF、存储型/复杂 DOM XSS、路径/Body 型 IDOR 和复杂业务逻辑仍应保持 `Inconclusive`，直到相应的证据采集与确认规则实现并通过评测。
+
+### V2 后端目标（规划中，尚未实现）
+
+V2 的长期目标是覆盖已知 Web 漏洞分类并可持续接入新类别，而不是把几十个名字继续追加到四值枚举。工程实现必须遵守：
+
+- 使用稳定字符串 `familyId` 和 `techniqueId`，由可信、冻结的 DefinitionRegistry 原子注册完整 Module Bundle，再由独立 qualification record/ActivationCatalog 决定执行资格；注册本身不等于允许主动探测；
+- 每个 Technique 明确 Subject、协议、Selector、环境、Capability、成熟度、Detector、ValidationPlan、ConfirmationRule、EvidenceProfile、Remediation、Knowledge 和 Benchmark；
+- 成熟度只能是 `active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 或 `forbidden`；
+- 模块只能输出经过 schema 校验的候选和受限 ValidationPlan，不能持有 Runner、Repository、凭据或任意网络回调；
+- Coordinator 只负责 phase、队列、checkpoint、awaiting-user 和恢复，不包含具体漏洞分支；
+- 无法在真实业务中安全确认的 RCE、反序列化、协议差异、DoS 或业务逻辑场景必须保持 Signal、Fixture 或 Inconclusive，不能为追求“覆盖率”执行破坏性证明；
+- “覆盖完整分类”表示每类都有可审计状态和交付路径，不表示保证发现所有未知漏洞或所有目标特有业务缺陷。
+
+V2 的详细架构、逐类状态和实施顺序见 `docs/planning/Day0.md`、`docs/planning/backend-v2-architecture.md`、`docs/planning/web-vulnerability-coverage-matrix.md`、`docs/planning/complex-web-interface-capability-matrix.md` 与 Day1～Day20。Day1、Day2 当前均为 pending，文档名称不能作为已实现证据。
+
+### 当前前端边界
+
+当前 Renderer 保持可用即可。后端计划期间原则上冻结 `apps/desktop/src/renderer/**`，不新增临时审批、会话、导入、清理或证据 View；只允许修复 contracts 兼容、编译和启动回归。新后端能力先通过 Application integration tests、fixture CLI、benchmark 和报告 JSON 验收，后端合同稳定后再统一重建前端。
 
 ## 4. Agent 与确定性服务边界
 
@@ -62,13 +82,19 @@ V1 的模型型 Agent：
 - AnalysisAgent：比较基线与测试结果，生成 Signal。
 - VerifierAgent：依据版本化确认规则给出 Verdict。
 
-确定性服务：
+当前已存在的确定性服务：
 
 - SecurityPolicy：授权范围、速率、并发、方法和破坏性动作硬门禁。
 - BrowserRunner / HttpRunner：执行获批动作并采集证据。
 - EvidenceStore：不可变证据、哈希、脱敏和来源管理。
 - Reporting：模板化输出报告、复现步骤和修复建议。
 - AgentRuntime：状态机、预算、重试、检查点和结构化消息路由。
+
+V2 计划新增或重构、当前不能按已存在使用的确定性服务：
+
+- DefinitionRegistry / ActivationCatalog / CandidateCompiler：验证模块完整性、资格记录、冻结版本、Subject、能力和执行资格；
+- ValidationPlanExecutor / 通用 ConfirmationEngine：解释受限步骤、组织角色化 Observation，并用版本化纯规则给出三态结论；
+- ExecutionGrant / Lease、原子预算、SessionVault、TestObject/L2 状态机、可信 ApprovalPort，以及受策略代理的 BrowserNetworkBroker。
 
 模型可以提出动作，但不能自行扩大授权范围，也不能覆盖 SecurityPolicy 的拒绝结果。
 
@@ -97,6 +123,12 @@ V1 的模型型 Agent：
 - docs/knowledge/knowledge-agent.md：知识库、检索、KnowledgePack 和质量评估
 - docs/evaluation/benchmark-plan.md：基准、对照实验和指标
 - docs/audits/v1-current-capability-audit.md：当前实现与计划书的可验证满足度及缺口
+- docs/planning/README.md：后端优先 20 个顺序工作包索引
+- docs/planning/Day0.md：本轮现状复核、Day1/Day2 撤销与计划重排记录
+- docs/planning/backend-v2-architecture.md：可扩展漏洞模块、ValidationPlan 和证据架构
+- docs/planning/web-vulnerability-coverage-matrix.md：完整 Web 漏洞目录、当前成熟度与安全验证方式
+- docs/planning/complex-web-interface-capability-matrix.md：复杂协议/接口的解析、盘点、重放和主动验证能力边界
+- docs/planning/post-20-day-vulnerability-roadmap.md：20 天后的七波后端覆盖路线
 - docs/roadmap.md：与大创计划对应的阶段安排
 - docs/research/related-work.md：开源同类项目研究记录
 

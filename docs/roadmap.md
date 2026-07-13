@@ -1,143 +1,104 @@
 # 2026—2027 项目路线图
 
-## 当前状态
+> 复审日期：2026-07-13
 
-截至 2026-07-10，V1 可运行原型和固定靶场回归基线已经完成，功能实现进度早于原路线图日期。当前代码已覆盖五 Agent、四类漏洞、统一上下文、知识索引、低影响主动验证、独立复核、证据/报告、暂停恢复、审计、Windows 打包，以及 MCP Server 配置、连接测试和能力发现。
+## 当前事实
 
-已经验证：
+AgentGo 已有可运行 V1 原型：五个结构化 Agent、不可变 Scope、SecurityPolicy、HTTP/离线 Browser Runner、SQLite、Evidence、三态 Finding、报告、暂停恢复、知识摄取与 40 Case 固定靶场均已实现。2026-07-13 DAY0 复验中，typecheck、19 文件/72 项测试、production build、benchmark manifest 校验和桌面 smoke 均通过；不得引用已撤销的 Day1 完成记录。
 
-- `pnpm check` 全量通过；
-- 开发态与打包态桌面冒烟测试通过；
-- 固定版本自建靶场 40 Case 全部给出预期结论；
-- 六项安全硬门禁在该次运行中全部为 0。
+V1 的真实主动覆盖仍是四类 GET query 场景：SQLi 布尔差异、反射 XSS 离线 marker、目标响应回显式 SSRF proof、两个测试身份的只读 IDOR。它不是复杂真实 Web 的全覆盖平台，以下内容尚未实现：
 
-尚未完成、不得写成既有成果：
+- scan-scoped RequestVariant、多来源 Inventory、OpenAPI/HAR 导入和 SPA fetch/XHR 发现；
+- SessionVault、CSRF、完整身份/授权矩阵、登录和多步骤 workflow；
+- 可信 L2 审批、TestObject、SideEffectEnvelope、CleanupReceipt 和恢复；
+- blind OOB、stored/复杂 DOM XSS、Body/Path IDOR、复杂 selector；
+- XXE、Traversal、上传、OAuth/JWT/SAML、GraphQL/WebSocket、业务逻辑、协议/缓存和 LLM Web 等模块；
+- Registry、Technique 级评测、第三方靶场、多模型重复和消融实验；
+- 可用金额成本统计、正式安装生命周期、签名和结题材料。
 
-- Ground Truth 双人人工复核和第三方固定靶场验证；
-- 单 Agent/Multi-Agent、无知识/有知识、无 Verifier/有 Verifier、FTS5/Hybrid Retrieval 的正式消融；
-- 多模型、多次重复运行、稳定性和 Token 用量研究；
-- NSIS 的真实安装、升级、卸载保留数据矩阵与代码签名；
-- 论文图表、研究总结、软著申报和答辩材料。
+现有 40 Case 满分只证明固定 fixture 的回归，不证明真实互联网准确率。
 
-下列阶段保留为项目管理基线；“代码已实现”不等同于“研究结论已经完成”。
+DAY0 同时发现固定 benchmark 的 Scope 初始化竞态：`getLatestScope()` 只按毫秒时间排序，同一毫秒的空 identity scope 与更新 scope 可能被读反。首次实跑在第 5 Case 被拒绝，新目录重跑才 40/40 通过。Day1 必须先用单调 revision 或显式 current-scope snapshot 修复并连续复跑，不能用成功重跑掩盖不稳定性。
 
-## 角色分工建议
+## 路线调整原则
 
-- Architecture Lead：仓库、契约、状态机和跨进程边界；
-- Agent Lead：Planner/Strategy/Analysis/Verifier 与 Prompt；
-- Knowledge Lead：知识摄取、检索、确认规则和修复建议；
-- Security & Evaluation Lead：SecurityPolicy、靶场、Ground Truth 和指标；
-- Desktop & QA Lead：Electron UI、构建、安装器、测试和文档。
+原路线以四类漏洞为研究核心，OAuth/JWT、上传、GraphQL 和业务逻辑放在 Stretch Goal。根据当前产品目标，这些类别不再是“可有可无”，而是进入 [Web 漏洞覆盖矩阵](planning/web-vulnerability-coverage-matrix.md) 和 [20 天后七波路线](planning/post-20-day-vulnerability-roadmap.md)。
 
-项目组应在周计划中将实际成员映射到上述角色；关键模块至少一主一审。
+但“进入覆盖目录”不等于对真实业务自动执行高风险验证。每项必须标记为 `active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 或 `forbidden`。RCE、反序列化、smuggling、DoS 和支付等能力即使开发，也只能在安全允许的环境形成最小证据。
 
-## 第一阶段：2026.06—2026.08
+当前优先级是后端：Renderer 保持可启动、可使用即可；后端合同稳定后再统一重建前端，不在中间阶段继续向 `App.tsx` 追加临时页面。
 
-状态：退出条件已满足，且固定靶场覆盖已扩展到四类漏洞。
+## 近期：20 个顺序后端工作包
 
-目标：形成可运行骨架和一条安全的完整垂直链路。
+详细实现、测试和合格交付见 [planning/README.md](planning/README.md)。这些是顺序工作包，不是必须压缩到 20 个自然日的承诺。
 
-交付：
+| 阶段 | 工作包 | 核心结果 |
+|---|---|---|
+| 扩展底座 | Day1～Day3 | 事实/覆盖基线，开放 Family/Technique ID、DefinitionRegistry/资格状态、统一 Inventory、opaque refs 和 Scan 模块快照。 |
+| 执行硬门禁 | Day4～Day6 | 三阶段请求 hash、EvidenceCapturePolicy、单次 Lease、原子预算、DNS/IP/redirect 加固。 |
+| L2 与身份 | Day7～Day10 | Evaluation/Qualification、纯 L2 状态模型、SessionVault/CSRF/AuthorizationMatrix、可信审批与首条 fixture 闭环。 |
+| 真实 Web 发现 | Day11～Day13 | 离线 API 描述导入、HTML/JS/source map 静态发现、Brokered BrowserRecon 与依赖合并。 |
+| 通用运行时 | Day14～Day15 | 受限 ValidationPlan、角色化 Evidence、统一 Retrieval、四类 V1 行为等价适配和 Coordinator 去 family 分支。 |
+| 参考模块 | Day16～Day19 | SQLi、IDOR/BOLA、XSS、SSRF 的复杂安全切片，以及一个无分支被动模块。 |
+| 总验收 | Day20 | Registry/Module conformance、legacy/complex benchmark、第三方本地 holdout、迁移恢复、安全门禁和当前桌面 build/smoke。 |
 
-- 文档体系、ADR、安全规范和威胁模型；
-- Electron + React + TypeScript monorepo 骨架；
-- contracts、domain、security-policy、agent-runtime、knowledge-base、db 基础包；
-- SecurityPolicy 自检和最小 UI；
-- 固定靶场与第一版 Ground Truth；
-- 单一漏洞族从 Hypothesis 到 Report 的垂直样例；
-- 相关项目对照矩阵。
+Day20 的完成定义是“可持续扩展的后端平台 + 四个参考主动模块 + 一个扩展证明模块”，不是“所有 Web 漏洞已经完成”。
 
-退出条件：
+## 中期：七波漏洞模块覆盖
 
-- pnpm typecheck、test、build 通过；
-- 安全动作允许、破坏性动作拒绝的自动测试通过；
-- 至少一个真实本地靶场 Case 有完整证据；
-- 第一版基线指标已记录。
+Day20 后按共享能力而非漏洞名称堆分支：
 
-## 第二阶段：2026.09—2026.11
+1. W1 被动分析与安全姿态：JS/API 发现、Headers、TLS、Cookie、CORS、错误泄漏、组件指纹；
+2. W2 身份、会话与授权：JWT、OAuth/OIDC、SAML、CSRF、session、BFLA/BOPLA、多租户只读矩阵；
+3. W3 复杂 API 协议：GraphQL、WebSocket、Webhook、SSE/异步任务、SOAP/WSDL、gRPC/AsyncAPI 的分级能力；
+4. W4 业务状态与受限竞态：用户提供的状态机、不变量、workflow、rate limit、沙箱支付和多租户；
+5. W5 通用注入：NoSQL、LDAP、XPath、SSTI、CRLF、HPP、原型污染，以及仅 fixture 的命令/代码 canary；
+6. W6 文件/XML与浏览器客户端：XXE、Traversal、上传、archive、反序列化 signal/fixture、SPA/DOM/postMessage/storage；
+7. W7 协议实验、组件/供应链与新型 Web：smuggling/cache/HTTP2 隔离实验、CVE 情报、LLM Web 和长期消融研究。
 
-状态：核心代码已提前实现；仍需在更多模型和重复运行中验证稳定性。
+每个 Technique 必须在同一交付中包含 Manifest、Detector、受限 ValidationPlan、ConfirmationRule、EvidenceProfile、Remediation、Knowledge、Fixture、Benchmark、安全测试和 Coverage 更新。缺少任何关键项时只能保持 signal/inventory/fixture 状态。
 
-目标：完成核心 Agent、上下文和知识链路。
+## 研究评测阶段
 
-交付：
+在参考模块和主要覆盖波次稳定后再形成论文结论：
 
-- Planner、Knowledge、Strategy 初版；
-- Analysis、Verifier 基础闭环；
-- 页面—接口—参数—身份—交互统一上下文；
-- BrowserRunner、HttpRunner 初版；
-- SQLite 持久化和 checkpoint；
-- SQL 注入、XSS 两类知识包和确认规则；
-- 模型图形化配置、凭据引用和连接测试；
-- 阶段性演示版本。
+- 由两名评审者独立标注 Ground Truth 并解决分歧；
+- 固定第三方教学靶场和版本，区分自建 fixture 与外部结果；
+- 单 Agent/Multi-Agent、无知识/有知识、无 Verifier/有 Verifier、FTS5/Hybrid Retrieval 消融；
+- 多模型、多次重复运行；
+- Precision、Recall、F1、FPR、Inconclusive、请求/Token/时间成本、稳定性和恢复率；
+- 每个结论保留模型、Prompt、Module、Rule、Fixture、Scope 和代码 commit 版本。
 
-退出条件：
+没有这些数据时，不把 Multi-Agent、KnowledgeAgent 或 Verifier 的价值写成已证实结论。
 
-- 两类漏洞具有正例、负例和误报分析；
-- 长任务可暂停、恢复、取消；
-- Agent 循环和预算限制生效；
-- 每条 Confirmed Finding 可追溯到规则和证据。
+## 前端重建阶段
 
-## 第三阶段：2026.12—2027.02
+后端 contracts、pending user action、ValidationAttempt、Coverage、SafetyGate 和 Benchmark summary 稳定后，统一重建桌面前端。该阶段再设计：
 
-状态：四类端到端流程和自建靶场基线已提前完成；Hybrid Retrieval 与正式消融尚未完成。
+- Dashboard、Target/Identity、Scan/Agent、Findings/Evidence、Knowledge；
+- 模块/Capability/Coverage 配置；
+- Review、Approval、Session、TestObject、Cleanup/Recovery；
+- 导入、BrowserRecon、OOB 和工作流可视化；
+- 报告、评测与安全门禁视图。
 
-目标：扩展四类漏洞并完成主要研究实验。
+前端只调用 Application contracts，不重新实现 Policy、Detector eligibility、状态机或 Verdict。
 
-交付：
+## 产品化与结题：2027.03—2027.06
 
-- SSRF、越权/IDOR；
-- 多身份、资源归属和业务状态对照；
-- KnowledgePack 缓存和 Hybrid Retrieval 实验；
-- 四类漏洞基准；
-- 单 Agent/Multi-Agent、无知识/有知识、无 Verifier/有 Verifier 消融；
-- Precision、Recall、F1、FPR、成本和稳定性报告；
-- 误报模式库和规则优化。
-
-退出条件：
-
-- 四类漏洞端到端可运行；
-- 安全硬门禁全部为 0 违规；
-- 主要研究问题具有数据支持；
-- 测试环境可重置且实验可重复。
-
-## 第四阶段：2027.03—2027.05
-
-状态：主要桌面功能、脱敏报告和安装器生成已具备；真实安装生命周期、签名和结题材料尚未完成。V1 将 Session 信息合并在“目标与身份”和“扫描与 Agent”中，不单设空壳页面。
-
-目标：产品化、最终评测和结题材料。
-
-交付：
-
-- Dashboard、Target、Session、Scan、Agent Console、Findings、Knowledge 页面；
-- 报告导出与脱敏；
-- Windows Installer、卸载和升级保留数据验证；
-- 最终重复实验和图表；
-- 使用说明、研究总结和软著申报材料；
-- 演示脚本和答辩材料。
-
-退出条件：
-
-- 安装、启动、扫描、恢复、导出、卸载流程通过；
-- 最终报告可复现；
-- 文档和软著材料完整；
+- 完成新前端与后端集成、报告导出和脱敏；
+- 完成 NSIS 安装、升级、卸载保留数据矩阵与代码签名；
+- 执行最终重复实验并生成图表；
+- 完成使用说明、研究总结、软著材料、演示脚本和答辩材料；
+- 归档代码、合成/允许公开的数据、Prompt/Module/Rule/Fixture 版本；
 - 演示只使用本地靶场或明确授权环境。
 
-## 收尾：2027.06
+## 持续增强项
 
-- 修复结题前问题；
-- 归档数据、代码、模型/Prompt/规则版本；
-- 完成项目验收和后续研究计划。
+以下能力不属于完整 Web 漏洞目录本身，只有在核心执行、证据和评测稳定后考虑：
 
-## Stretch Goals
-
-只有核心四类漏洞和评测完成后再考虑：
-
-- MCP 工具自动调用、逐次授权、审计与 Evidence 映射；
+- MCP 工具的自动调用、逐次授权和 Evidence 映射；
 - Kali MCP Server Profile；
-- OAuth/JWT、文件上传、GraphQL、业务逻辑扩展；
-- Embedding 默认启用；
-- Rust sidecar；
-- 自动更新和代码签名。
+- Embedding/Hybrid Retrieval 的默认化；
+- Rust sidecar、自动更新和代码签名基础设施。
 
-Stretch Goal 不能占用核心评测、证据链和安全策略的时间。
+任何增强项都不得绕过 Registry、SecurityPolicy、ExecutionLease、Evidence 或抢占安全门禁和研究评测时间。
