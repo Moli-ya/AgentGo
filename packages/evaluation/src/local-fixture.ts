@@ -1,5 +1,10 @@
 import { createServer, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import {
+  LEGACY_V1_FAMILY_IDS,
+  isLegacyV1VulnerabilityFamily,
+  type LegacyV1VulnerabilityFamily
+} from '@agentgo/contracts'
 
 export const LOCAL_FIXTURE_VERSION = 'agentgo-local-fixture/1.0.0'
 
@@ -40,17 +45,25 @@ function escapeHtml(value: string): string {
 }
 
 function parseCase(pathname: string): {
-  family: 'sqli' | 'xss' | 'ssrf' | 'idor'
+  family: LegacyV1VulnerabilityFamily
   polarity: 'positive' | 'negative'
   number: number
 } | undefined {
-  const match = /^\/cases\/(sqli|xss|ssrf|idor)\/(positive|negative)\/([1-5])$/.exec(
+  const match = /^\/cases\/([^/]+)\/(positive|negative)\/([1-5])$/.exec(
     pathname
   )
   if (!match) return undefined
+  const family = match[1]
+  const polarity = match[2]
+  if (
+    !isLegacyV1VulnerabilityFamily(family) ||
+    (polarity !== 'positive' && polarity !== 'negative')
+  ) {
+    return undefined
+  }
   return {
-    family: match[1] as 'sqli' | 'xss' | 'ssrf' | 'idor',
-    polarity: match[2] as 'positive' | 'negative',
+    family,
+    polarity,
     number: Number(match[3])
   }
 }
@@ -68,7 +81,7 @@ export function fixtureIdentityPlan(caseNumber: number): FixtureIdentityPlan {
 }
 
 function fixtureIndex(baseUrl: string): string {
-  const links = (['sqli', 'xss', 'ssrf', 'idor'] as const).flatMap((family) =>
+  const links = LEGACY_V1_FAMILY_IDS.flatMap((family) =>
     (['positive', 'negative'] as const).flatMap((polarity) =>
       Array.from({ length: 5 }, (_, index) => {
         const parameter = family === 'xss' ? 'q' : family === 'ssrf' ? 'url' : 'id'

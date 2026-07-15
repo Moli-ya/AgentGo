@@ -37,6 +37,8 @@
 - 摄取时检测指令性文本、重复内容和来源冲突；
 - KnowledgePack 只输出事实摘要、适用性和来源引用；
 - 检索内容不能修改 Prompt、工具权限或确认规则；
+- 知识、模型、页面、MCP 与用户导入内容不能调用 `DefinitionRegistry.registerBundle()`；Bundle 只由可信 Composition Root 注入，注册完成后 Registry 冻结；
+- Capability 目录成员资格、Manifest 的 `declaredMode` 和定义存在都不是执行授权；Activation 视图与固定 legacy 兼容允许表由确定性代码独立核对；
 - 内置确认规则变更需要评审和版本升级。
 
 ## 5. 模型数据泄露

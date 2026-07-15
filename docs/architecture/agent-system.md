@@ -51,10 +51,18 @@ Verifier 不复用 StrategyAgent 的自由推理结论作为证据，必须读�
 ## 3. 确定性服务
 
 - SecurityPolicy：唯一的 allow/deny/approval 决策者。
+- ProbeCapabilityCatalog：由可信 Composition Root 注入的不可变能力语义目录；`riskFloor` 由 SecurityPolicy 决定，能力存在不代表运行时实现、资格化或执行授权。
+- DefinitionRegistry：原子校验完整漏洞 Bundle、Capability 风险下界和 Rule/Evidence role 供给关系，输出规范化定义哈希和冻结快照；知识、模型和工具输出不能向其注入可执行定义。`ModuleConformanceTestkit` 为模块作者提供隔离注册、原子拒绝和冻结后注入断言。
+- ActivationCatalog：Day2 只提供由冻结定义派生的 registered-only 只读视图，不生成 qualification record。
+- VulnerabilityExecutionGate：在 CreateScan、start、resume 和 Candidate 执行前同时核对冻结定义、精确运行时映射及 Activation/兼容允许表；兼容路径额外固定 module/technique 版本、canonical definition hash 和 `active-l1` 模式。
 - AgentRuntime：阶段门禁、预算、失败恢复、检查点、去重和循环检测。
 - BrowserRunner / HttpRunner：只执行带 policyDecisionId 的已批准动作。
 - EvidenceStore：保存请求响应、截图、DOM、受控回连证明、Agent 输出、报告和哈希。
 - Reporting：同时输出 Confirmed、Inconclusive 和已排除项摘要，避免只报告成功案例。
+
+Day2 的当前运行时仍只有四个 V1 adapter：`sqli/xss/ssrf/idor`。为了保持 V1 行为，它们可在定义已注册、精确 `legacy-v1` runtime mapping 存在且 Application 固定允许表命中时继续执行；Activation 状态仍是 `registered`，不得宣称 qualified/supported。`security.headers` 用开放 ID 注册为 `signal-only` 被动描述符，但没有当前运行时映射，因此不能创建或启动扫描。Day7 产生有效、环境匹配的 qualification record 后必须由正式 ActivationCatalog 路径接管并移除该临时例外。
+
+桌面 Composition Root 使用 `authorized-real-target`，固定本地 benchmark 使用 `attested-fixture`；Application 与 Coordinator 必须共享同一个冻结平台实例。Application 在委托 Coordinator 前独立复核 start/resume；Coordinator 在任何 Candidate 恢复 AgentRun、checkpoint 或探测副作用前再次复核。未知或历史数据库直接写入的 family 因此失败关闭；pause/cancel 不经过激活门禁，仍可安全停止历史任务。ModelGateway 不感知具体 family，继续只处理结构化 schema 和已冻结的扫描输入。
 
 ## 4. 结构化消息
 

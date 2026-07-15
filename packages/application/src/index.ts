@@ -39,6 +39,8 @@ import type {
   UpdateTargetInput,
   UpdateKnowledgeCandidateInput,
   ExtractKnowledgeImportInput,
+  Environment,
+  VulnerabilityFamily,
   WorkspaceRecord
 } from '@agentgo/contracts'
 import {
@@ -63,6 +65,7 @@ import {
   KnowledgeReviewerOutputSchema
 } from './agent-prompts'
 import { ReportService, type ReportContent } from './report-service'
+import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
 
 export * from './execution-policy'
 export * from './execution-service'
@@ -70,6 +73,9 @@ export * from './report-service'
 export * from './agent-prompts'
 export * from './scan-coordinator'
 export * from './validation-engine'
+export * from './vulnerability-bundles'
+export * from './vulnerability-execution-gate'
+export * from './vulnerability-platform'
 
 export interface ScanCoordinator {
   control(scanId: string, action: ScanControlAction): Promise<ScanRecord>
@@ -87,6 +93,8 @@ export interface AgentGoApplicationDependencies {
   mcpHub?: McpHub
   reportService?: ReportService
   scanCoordinator?: ScanCoordinator
+  vulnerabilityPlatform: Day2VulnerabilityPlatform
+  vulnerabilityExecutionEnvironment: Environment
 }
 
 export class AgentGoApplicationService {
@@ -96,6 +104,8 @@ export class AgentGoApplicationService {
   private readonly modelGateway?: ModelGateway
   private readonly mcpHub: McpHub
   private readonly reportService?: ReportService
+  private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
+  private readonly vulnerabilityExecutionEnvironment: Environment
   private scanCoordinator?: ScanCoordinator
 
   constructor(dependencies: AgentGoApplicationDependencies) {
@@ -110,6 +120,8 @@ export class AgentGoApplicationService {
         ? new ReportService(dependencies.repository, dependencies.evidenceStore)
         : undefined)
     this.scanCoordinator = dependencies.scanCoordinator
+    this.vulnerabilityPlatform = dependencies.vulnerabilityPlatform
+    this.vulnerabilityExecutionEnvironment = dependencies.vulnerabilityExecutionEnvironment
   }
 
   setScanCoordinator(coordinator: ScanCoordinator): void {
@@ -279,14 +291,18 @@ export class AgentGoApplicationService {
   }
 
   async createScan(input: CreateScanInput): Promise<ScanRecord> {
-    const plan = createDefaultScanPlan()
-    plan.families = input.families
+    const families = [
+      ...(input.families ?? this.vulnerabilityPlatform.defaultScanFamilies)
+    ]
+    this.requireExecutableFamilies(families)
+    const plan = createDefaultScanPlan(families)
     plan.budget = input.budget
     const runtime = createRuntimeState()
     const modelProfileIds = await this.resolveScanModelProfiles(input.modelProfileIds)
     return this.repository.createScan(
       {
         ...input,
+        families,
         description: input.description.trim(),
         modelProfileIds
       },
@@ -296,12 +312,16 @@ export class AgentGoApplicationService {
   }
 
   async controlScan(scanId: string, action: ScanControlAction): Promise<ScanRecord> {
+    const row = await this.repository.getScanRow(scanId)
+    if (!row) throw new Error('扫描不存在。')
+    if (action === 'start' || action === 'resume') {
+      this.requireExecutableFamilies(row.configJson.families)
+    }
+
     if (this.scanCoordinator) {
       return this.scanCoordinator.control(scanId, action)
     }
 
-    const row = await this.repository.getScanRow(scanId)
-    if (!row) throw new Error('扫描不存在。')
     const runtime = row.runtimeJson as unknown as ScanRuntimeState
 
     if (action === 'start') {
@@ -815,6 +835,15 @@ export class AgentGoApplicationService {
   private requireReportService(): ReportService {
     if (!this.reportService) throw new Error('报告服务尚未初始化。')
     return this.reportService
+  }
+
+  private requireExecutableFamilies(
+    families: readonly VulnerabilityFamily[]
+  ): void {
+    this.vulnerabilityPlatform.executionGate.requireExecutableFamilies(
+      families,
+      this.vulnerabilityExecutionEnvironment
+    )
   }
 
   private async requireKnowledgeIngestionProfile(

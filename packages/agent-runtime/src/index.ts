@@ -99,11 +99,13 @@ export type RuntimeEvent =
   | { type: 'fail' }
   | { type: 'cancel' }
 
-export function createDefaultScanPlan(): ScanPlan {
+export function createDefaultScanPlan(
+  families: readonly VulnerabilityFamily[] = []
+): ScanPlan {
   return {
     version: '2026-07-10',
     phases: SRC_PHASES.map((phase) => phase.id),
-    families: ['sqli', 'xss', 'ssrf', 'idor'],
+    families: [...families],
     budget: {
       maxRequests: 300,
       maxRequestsPerMinute: 30,

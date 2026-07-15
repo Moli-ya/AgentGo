@@ -9,7 +9,8 @@ import {
   ExecutionService,
   PolicyBroker,
   PolicyExecutionGuard,
-  ReportService
+  ReportService,
+  createDay2VulnerabilityPlatform
 } from '@agentgo/application'
 import { createDefaultScanPlan } from '@agentgo/agent-runtime'
 import { PlaywrightBrowserRunner } from '@agentgo/browser-runner'
@@ -58,7 +59,8 @@ import { UndiciHttpRunner } from '@agentgo/http-runner'
 import { DefaultModelGateway } from '@agentgo/model-gateway'
 import { evaluateProbe } from '@agentgo/security-policy'
 
-const plan = createDefaultScanPlan()
+const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
+const plan = createDefaultScanPlan(vulnerabilityPlatform.defaultScanFamilies)
 const isSmokeTest = process.env.AGENTGO_SMOKE_TEST === '1'
 const mainDirectory = dirname(fileURLToPath(import.meta.url))
 
@@ -480,7 +482,9 @@ function createInfrastructure(): MainInfrastructure {
     credentialStore,
     evidenceStore,
     modelGateway,
-    reportService
+    reportService,
+    vulnerabilityPlatform,
+    vulnerabilityExecutionEnvironment: 'authorized-real-target'
   })
   const scanCoordinator = new DefaultScanCoordinator({
     repository,
@@ -490,6 +494,8 @@ function createInfrastructure(): MainInfrastructure {
     policyBroker: new PolicyBroker(repository),
     modelGateway,
     reportService,
+    vulnerabilityPlatform,
+    vulnerabilityExecutionEnvironment: 'authorized-real-target',
     onEvent: (event) => {
       const validatedEvent = DesktopOutputSchemas.scanEvent.parse(event)
       for (const window of BrowserWindow.getAllWindows()) {

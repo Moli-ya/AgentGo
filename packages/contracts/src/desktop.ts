@@ -57,10 +57,12 @@ import { PolicyDecisionSchema } from './security'
 import {
   AgentRoleSchema,
   ScanPhaseSchema,
-  VulnerabilityFamilySchema,
-  type ScanControlAction,
-  type VulnerabilityFamily
+  type ScanControlAction
 } from './workflow'
+import {
+  VulnerabilityFamilySchema,
+  type VulnerabilityFamily
+} from './vulnerability'
 
 export const BootstrapStateSchema = z.object({
   appVersion: z.string().min(1),

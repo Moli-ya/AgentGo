@@ -5,9 +5,9 @@ import {
   ScanControlActionSchema,
   ScanPhaseSchema,
   ScanStatusSchema,
-  VerdictSchema,
-  VulnerabilityFamilySchema
+  VerdictSchema
 } from './workflow'
+import { VulnerabilityFamilySchema } from './vulnerability'
 
 const IdSchema = z.string().min(1).max(200)
 const IsoDateSchema = z.string().datetime()
@@ -174,12 +174,7 @@ export const CreateScanInputSchema = z.object({
   targetId: IdSchema,
   name: z.string().trim().min(1).max(160),
   description: z.string().trim().min(1).max(4_000),
-  families: z.array(VulnerabilityFamilySchema).min(1).default([
-    'sqli',
-    'xss',
-    'ssrf',
-    'idor'
-  ]),
+  families: z.array(VulnerabilityFamilySchema).min(1).optional(),
   identityIds: z.array(IdSchema).default([]),
   callbackUrl: z.string().url().optional(),
   modelProfileIds: AgentModelProfileSelectionSchema.optional(),

@@ -1,7 +1,10 @@
 import type {
   BrowserExecutionResult
 } from '@agentgo/browser-runner'
-import type { VulnerabilityFamily, Verdict } from '@agentgo/contracts'
+import type {
+  LegacyV1VulnerabilityFamily,
+  Verdict
+} from '@agentgo/contracts'
 
 export interface HttpObservation {
   result: HttpExecutionResultLike
@@ -34,7 +37,7 @@ export interface BrowserObservation {
 }
 
 export interface ValidationAssessment {
-  family: VulnerabilityFamily
+  family: LegacyV1VulnerabilityFamily
   verdict: Verdict
   signalSummary: string
   explanation: string
@@ -53,7 +56,7 @@ export interface ValidationAssessment {
 export interface ConfirmationRuleDefinition {
   id: string
   version: string
-  family: VulnerabilityFamily
+  family: LegacyV1VulnerabilityFamily
   requiredChecks: string[]
   rule: Record<string, unknown>
   sourceRefs: string[]
@@ -64,7 +67,7 @@ export interface ConfirmationRuleDefinition {
 }
 
 export const V1_CONFIRMATION_RULES: Record<
-  VulnerabilityFamily,
+  LegacyV1VulnerabilityFamily,
   ConfirmationRuleDefinition
 > = {
   sqli: {
@@ -242,7 +245,7 @@ function looksBlocked(observation: HttpObservation): boolean {
 }
 
 function assessment(
-  family: VulnerabilityFamily,
+  family: LegacyV1VulnerabilityFamily,
   input: Omit<
     ValidationAssessment,
     | 'family'

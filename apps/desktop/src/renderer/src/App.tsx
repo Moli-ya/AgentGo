@@ -31,6 +31,10 @@ import {
   Users,
   type LucideIcon
 } from 'lucide-react'
+import {
+  LEGACY_V1_FAMILY_IDS,
+  isLegacyV1VulnerabilityFamily
+} from '@agentgo/contracts'
 import type {
   AgentRole,
   AuditLogRecord,
@@ -43,6 +47,7 @@ import type {
   KnowledgeIntelligenceCandidate,
   KnowledgeSourceType,
   KnowledgeEntrySummary,
+  LegacyV1VulnerabilityFamily,
   McpRiskLabel,
   McpServerRecord,
   ModelProfileRecord,
@@ -55,7 +60,6 @@ import type {
   TargetDetail,
   TargetRecord,
   TargetScopeRecord,
-  VulnerabilityFamily,
   WorkspaceRecord
 } from '@agentgo/contracts'
 import { getDesktopApi } from './desktop-api'
@@ -131,7 +135,7 @@ interface ScanFormState {
   targetId: string
   name: string
   description: string
-  families: VulnerabilityFamily[]
+  families: LegacyV1VulnerabilityFamily[]
   identityIds: string[]
   callbackUrl: string
   modelProfileIds: Partial<Record<AgentRole, string>>
@@ -176,11 +180,18 @@ function createEmptyMcpServerForm(): McpServerForm {
   }
 }
 
-const familyLabels: Record<VulnerabilityFamily, string> = {
+const legacyFamilyLabels: Record<LegacyV1VulnerabilityFamily, string> = {
   sqli: 'SQL 注入',
   xss: 'XSS',
   ssrf: 'SSRF',
   idor: '越权 / IDOR'
+}
+
+const legacyFamilyShortLabels: Record<LegacyV1VulnerabilityFamily, string> = {
+  sqli: 'SQLi',
+  xss: 'XSS',
+  ssrf: 'SSRF',
+  idor: 'IDOR'
 }
 
 const agentRoles: AgentRole[] = [
@@ -370,7 +381,7 @@ export function App(): React.JSX.Element {
     targetId: '',
     name: '',
     description: '',
-    families: ['sqli', 'xss', 'ssrf', 'idor'] as VulnerabilityFamily[],
+    families: [...LEGACY_V1_FAMILY_IDS],
     identityIds: [] as string[],
     callbackUrl: '',
     modelProfileIds: {},
@@ -1117,7 +1128,7 @@ function DashboardView(props: {
           <div className="panel-header"><div><span className="eyebrow">CORE STATUS</span><h2>V1 核心闭环</h2></div><StatusPill value={props.bootstrap?.milestone ?? 'V1'} /></div>
           <p className="muted">{props.bootstrap?.projectStatus}</p>
           <div className="capability-list">
-            {props.bootstrap?.vulnerabilityFamilies.map((family) => <div key={family}><strong>{familyLabels[family]}</strong><span>Signal → Validation → Verdict → Evidence → Report</span></div>)}
+            {props.bootstrap?.vulnerabilityFamilies.filter(isLegacyV1VulnerabilityFamily).map((family) => <div key={family}><strong>{legacyFamilyLabels[family]}</strong><span>Signal → Validation → Verdict → Evidence → Report</span></div>)}
           </div>
         </article>
         <article className="panel">
@@ -1259,7 +1270,7 @@ function ScansView(props: {
           <fieldset>
             <legend>漏洞族</legend>
             <div className="check-group">
-              {(Object.keys(familyLabels) as VulnerabilityFamily[]).map((family) => (
+              {LEGACY_V1_FAMILY_IDS.map((family) => (
                 <label key={family}>
                   <input
                     type="checkbox"
@@ -1271,7 +1282,7 @@ function ScansView(props: {
                         : current.families.filter((item) => item !== family)
                     }))}
                   />
-                  {familyLabels[family]}
+                  {legacyFamilyLabels[family]}
                 </label>
               ))}
             </div>
@@ -1694,7 +1705,10 @@ function KnowledgeCandidateEditor(props: {
         <label>厂商<input value={draft.vendor} onChange={(event) => setDraft((current) => ({ ...current, vendor: event.target.value }))} /></label>
         <label>产品<input value={draft.product} onChange={(event) => setDraft((current) => ({ ...current, product: event.target.value }))} /></label>
         <label>漏洞类型<input value={draft.vulnerabilityType} onChange={(event) => setDraft((current) => ({ ...current, vulnerabilityType: event.target.value }))} /></label>
-        <label>扫描族<select value={draft.family ?? ''} onChange={(event) => setDraft((current) => ({ ...current, ...(event.target.value ? { family: event.target.value as VulnerabilityFamily } : { family: undefined }) }))}><option value="">不映射</option><option value="sqli">SQLi</option><option value="xss">XSS</option><option value="ssrf">SSRF</option><option value="idor">IDOR</option></select></label>
+        <label>扫描族<select value={draft.family ?? ''} onChange={(event) => {
+          const family = event.target.value
+          setDraft((current) => ({ ...current, ...(isLegacyV1VulnerabilityFamily(family) ? { family } : { family: undefined }) }))
+        }}><option value="">不映射</option>{LEGACY_V1_FAMILY_IDS.map((family) => <option key={family} value={family}>{legacyFamilyShortLabels[family]}</option>)}</select></label>
         <label>CVE（每行一个）<textarea rows={3} value={draft.identifiers.cve.join('\n')} onChange={(event) => setDraft((current) => ({ ...current, identifiers: { ...current.identifiers, cve: splitLines(event.target.value) } }))} /></label>
         <label>CWE（每行一个）<textarea rows={3} value={draft.identifiers.cwe.join('\n')} onChange={(event) => setDraft((current) => ({ ...current, identifiers: { ...current.identifiers, cwe: splitLines(event.target.value) } }))} /></label>
         <label>影响版本<textarea rows={4} value={draft.affectedVersions.join('\n')} onChange={(event) => updateLines('affectedVersions', event.target.value)} /></label>

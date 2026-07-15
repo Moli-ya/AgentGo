@@ -54,7 +54,7 @@ V1 是已经存在的历史基线，必须准确保留，不能因为 V2 计划�
 
 因此，V1 已证明的是“固定本地靶场上的四类漏洞闭环”，不是对复杂 SPA、登录流程、业务工作流或任意 API 形态的完整覆盖。盲 SSRF、存储型/复杂 DOM XSS、路径/Body 型 IDOR 和复杂业务逻辑仍应保持 `Inconclusive`，直到相应的证据采集与确认规则实现并通过评测。
 
-### V2 后端目标（规划中，尚未实现）
+### V2 后端目标（Day2 扩展底座已实现，其余仍在规划）
 
 V2 的长期目标是覆盖已知 Web 漏洞分类并可持续接入新类别，而不是把几十个名字继续追加到四值枚举。工程实现必须遵守：
 
@@ -66,7 +66,7 @@ V2 的长期目标是覆盖已知 Web 漏洞分类并可持续接入新类别，
 - 无法在真实业务中安全确认的 RCE、反序列化、协议差异、DoS 或业务逻辑场景必须保持 Signal、Fixture 或 Inconclusive，不能为追求“覆盖率”执行破坏性证明；
 - “覆盖完整分类”表示每类都有可审计状态和交付路径，不表示保证发现所有未知漏洞或所有目标特有业务缺陷。
 
-V2 的详细架构、逐类状态和实施顺序见 `docs/planning/Day0.md`、`docs/planning/backend-v2-architecture.md`、`docs/planning/web-vulnerability-coverage-matrix.md`、`docs/planning/complex-web-interface-capability-matrix.md` 与 Day1～Day20。Day1 已于 2026-07-13 按 `docs/planning/day1-baseline.md` 完成；Day2 仍为 pending。计划文档或目录名称本身不能作为已实现、已激活或已资格化的证据。
+V2 的详细架构、逐类状态和实施顺序见 `docs/planning/Day0.md`、`docs/planning/backend-v2-architecture.md`、`docs/planning/web-vulnerability-coverage-matrix.md`、`docs/planning/complex-web-interface-capability-matrix.md` 与 Day1～Day20。Day1 已于 2026-07-13 按 `docs/planning/day1-baseline.md` 完成；Day2 于 2026-07-15 交付开放 ID、Capability Catalog、原子 DefinitionRegistry、registered-only Activation 视图、四类 legacy adapter 和执行门禁，证据见 `docs/audits/day2-completion-2026-07-15.md`。这不代表 Day7 qualification、Day14 通用运行时或新增漏洞检测已完成；计划文档或目录名称本身不能作为已实现、已激活或已资格化的证据。
 
 ### 当前前端边界
 
@@ -89,10 +89,13 @@ V1 的模型型 Agent：
 - EvidenceStore：不可变证据、哈希、脱敏和来源管理。
 - Reporting：模板化输出报告、复现步骤和修复建议。
 - AgentRuntime：状态机、预算、重试、检查点和结构化消息路由。
+- ProbeCapabilityCatalog：冻结的能力语义目录及 SecurityPolicy `riskFloor`，不授予执行资格。
+- DefinitionRegistry：原子注册完整 Bundle、校验引用/模式/能力风险下界/证据角色并输出 canonical hash；第一版 Module Conformance testkit 已提供。
+- RegisteredOnlyActivationCatalog / VulnerabilityExecutionGate：分离定义与激活，并在 create/start/resume/candidate 四处失败关闭；临时 legacy 例外固定到 canonical tuple、definition hash 与 `active-l1`。
 
 V2 计划新增或重构、当前不能按已存在使用的确定性服务：
 
-- DefinitionRegistry / ActivationCatalog / CandidateCompiler：验证模块完整性、资格记录、冻结版本、Subject、能力和执行资格；
+- QualificationService / 资格记录驱动的生产 ActivationCatalog / CandidateCompiler：验证测试证明、冻结版本、Subject 和正式执行资格；
 - ValidationPlanExecutor / 通用 ConfirmationEngine：解释受限步骤、组织角色化 Observation，并用版本化纯规则给出三态结论；
 - ExecutionGrant / Lease、原子预算、SessionVault、TestObject/L2 状态机、可信 ApprovalPort，以及受策略代理的 BrowserNetworkBroker。
 

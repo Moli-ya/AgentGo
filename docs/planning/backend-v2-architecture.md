@@ -209,7 +209,7 @@ Day2 的 `DefinitionRegistry` 是通过依赖注入传递的统一定义门面�
 - `EvidenceProfileRegistry`
 - `RemediationRegistry`
 
-测试进程另行组合 `FixtureRegistry`、`BenchmarkRegistry` 和 `QualificationService`。生产 Composition Root 不加载 fixture/benchmark 代码，只加载签名或内容寻址的 qualification record，并据此构造只读 `ActivationCatalog`。禁止建立可在任意位置修改的全局 Service Locator。
+测试进程另行组合 `FixtureRegistry`、`BenchmarkRegistry` 和 `QualificationService`。生产 Composition Root 不加载 fixture/benchmark 代码，只加载签名或内容寻址的 qualification record，并据此构造只读 `ActivationCatalog`。Day2 为保持 V1 行为，仅在同一 Composition Root 中额外注入固定 `sqli/xss/ssrf/idor` 的 `legacy-v1` definition/runtime 映射与 Application allowlist；它是封闭的临时兼容门，不是 qualification record。禁止建立可在任意位置修改的全局 Service Locator。
 
 `registerBundle()` 必须一次性校验：
 
@@ -218,7 +218,7 @@ Day2 的 `DefinitionRegistry` 是通过依赖注入传递的统一定义门面�
 3. Strategy 所需 Capability 已在安全能力目录注册；
 4. ConfirmationRule 的输入 Schema、Evidence Role 和三态输出完整；
 5. `active-l2` Strategy 必须声明 TestObject、SideEffectEnvelope、CleanupProtocol 和 cleanup-verify；
-6. 声明 active 的 Technique 必须引用预期 Suite ID/version，但 Day2 缺少 qualification 时只能成为 `registered-only`；
+6. 声明 active 的 Technique 必须引用预期 Suite ID/version，但 Day2 缺少 qualification 时只能成为 `registered-only`；仅固定四类 V1 可由 `legacy-v1` 临时兼容门继续执行，状态仍为 registered 且不得声明 qualified/supported；
 7. 定义哈希、构建产物哈希、commit 和 SemVer 一致，内容变化但版本未变化时拒绝启动；
 8. 任一项失败则整个 Bundle 不可见，不允许部分注册。
 
@@ -232,7 +232,7 @@ DefinitionRegistry frozen snapshot
   -> production ActivationCatalog
 ```
 
-`ActivationCatalog` 的状态至少为 registered、qualified、suspended、retired。record 缺失、过期、hash 不匹配或环境不匹配时，Technique 保持 registered-only 或 suspended；不能因 Registry 中“存在”就主动执行。
+`ActivationCatalog` 的状态至少为 registered、qualified、suspended、retired。record 缺失、过期、hash 不匹配或环境不匹配时，Technique 保持 registered-only 或 suspended；不能因 Registry 中“存在”就主动执行。唯一的 Day2 过渡例外是固定四类 `legacy-v1`：同时命中冻结 Registry definition、精确 legacy runtime mapping 和 Application allowlist 时可维持既有 V1 执行，但其支持声明仍必须显示 registered/unqualified。`security.headers` 及其他 registered-only 定义不得命中该例外。
 
 应用初始化完成后 Registry 必须冻结。Knowledge 文档、模型输出、MCP 工具输出和用户导入内容都不能注册可执行代码。
 
@@ -816,7 +816,7 @@ packages/evaluation/src/
 
 ### Day 7～10：评测、L2 与 Session
 
-- Day7 建立 Evaluation core、Ground Truth/Suite Registry、基础 loopback fixture、qualification record 和 legacy 40 Case 兼容；
+- Day7 建立 Evaluation core、Ground Truth/Suite Registry、基础 loopback fixture、qualification record 和 legacy 40 Case 兼容；四类 legacy technique 取得有效、环境匹配的 qualification record 后，Composition Root 必须以正式 ActivationCatalog 路径替换并移除 Day2 临时兼容例外；
 - Day8 建立不联网的 TestObject、L2ActionBundle、SideEffectEnvelope 和 cleanup/recovery 状态协议；
 - Day9 建立 SessionVault、CSRF、IdentityContext 和 AuthorizationMatrix；
 - Day10 建立可信 ApprovalPort/Service，并仅在认证 loopback fixture 上跑通首条 L2 闭环。

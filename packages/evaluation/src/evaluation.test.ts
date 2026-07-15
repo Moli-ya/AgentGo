@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { LEGACY_V1_FAMILY_IDS } from '@agentgo/contracts'
 import { describe, expect, it } from 'vitest'
 import {
   GroundTruthManifestSchema,
@@ -8,7 +9,7 @@ import {
   type GroundTruthCase
 } from './index'
 
-const families: GroundTruthCase['family'][] = ['sqli', 'xss', 'ssrf', 'idor']
+const families: GroundTruthCase['family'][] = [...LEGACY_V1_FAMILY_IDS]
 
 function cases(): GroundTruthCase[] {
   return families.flatMap((family) =>
@@ -84,5 +85,29 @@ describe('benchmark metrics', () => {
     expect(summary.overall.recall).toBe(19 / 20)
     expect(summary.safety.passed).toBe(true)
     expect(renderBenchmarkMarkdown(summary)).toContain('Safety Gates: PASS')
+  })
+
+  it('keeps V1 coverage requirements anchored to the explicit legacy family set', () => {
+    const manifest = {
+      schemaVersion: 'agentgo-ground-truth/1.0' as const,
+      targetVersion: 'agentgo-local-fixture/1.0.0',
+      note: 'An open family ID cannot replace one of the four V1 coverage groups.',
+      cases: cases().map((item) =>
+        item.caseId === 'idor-10'
+          ? { ...item, family: 'security.headers' }
+          : item
+      )
+    }
+
+    const result = GroundTruthManifestSchema.safeParse(manifest)
+
+    expect(result.success).toBe(false)
+    expect(result.error?.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: 'idor/not-confirmed requires at least five cases.'
+        })
+      ])
+    )
   })
 })

@@ -19,6 +19,7 @@ Electron Main
   | lifecycle / typed IPC / application services
 Scan Coordinator + Agent Runtime
   | plan / state machine / budgets / checkpoints
+  | DefinitionRegistry / Activation / runtime execution gate
   +--> ModelGateway --------> external model providers
   +--> KnowledgeBase -------> local index / curated sources
   +--> SecurityPolicy ------> deterministic allow/deny/approval
@@ -57,8 +58,8 @@ Renderer 只展示数据和发起用户意图；Main 负责生命周期、双向
 
 - apps/desktop：Electron Main、Preload、React Renderer。
 - packages/contracts：跨进程和跨包共享的版本化类型。
-- packages/domain：Target、Scan、Signal、Validation、Finding 等领域模型。
-- packages/security-policy：授权范围和主动探测硬门禁。
+- packages/domain：Target、Scan、Signal、Validation、Finding 等领域模型，以及原子 DefinitionRegistry/canonical snapshot。
+- packages/security-policy：授权范围和主动探测硬门禁，以及不可变 ProbeCapabilityCatalog。
 - packages/agent-runtime：阶段状态机、预算、检查点和 Agent 调度。
 - packages/knowledge-base：知识摄取、检索和 KnowledgePack。
 - packages/model-gateway：Provider-neutral 模型接口、模型配置和脱敏。
@@ -74,7 +75,7 @@ Renderer 只展示数据和发起用户意图；Main 负责生命周期、双向
 renderer -> contracts
 main -> contracts + security-policy + application services
 agent-runtime -> contracts + domain + model-gateway + knowledge-base
-application -> contracts + db + model-gateway + mcp-hub + deterministic services
+application -> contracts + domain + db + security-policy + model-gateway + mcp-hub + deterministic services
 runners -> contracts
 infrastructure -> domain ports
 domain -> no Electron / no provider SDK / no Playwright

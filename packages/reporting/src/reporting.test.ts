@@ -90,4 +90,38 @@ describe('report rendering', () => {
     expect(parsed.scan.description).toBe('验证搜索页的授权 XSS 测试背景。')
     expect(parsed.scan.modelProfileIds.verifier).toBe('verifier-profile')
   })
+
+  it('falls back to an open family ID when no display label is available', () => {
+    const openFamilyContext: ReportContext = {
+      ...context,
+      scan: {
+        ...context.scan,
+        families: ['security.headers']
+      },
+      findings: [{
+        id: 'finding-security-headers',
+        scanId: context.scan.id,
+        family: 'security.headers',
+        title: 'Security header review',
+        verdict: 'not-confirmed',
+        status: 'reviewed',
+        severity: 'info',
+        confidence: 1,
+        evidenceRefs: [],
+        confirmationRuleId: 'security.headers.rule',
+        confirmationRuleVersion: '1.0.0',
+        reproducibility: 'Existing response headers were reviewed without network execution.',
+        remediation: [],
+        firstSeenAt: '2026-07-10T00:00:00.000Z',
+        lastVerifiedAt: '2026-07-10T00:01:00.000Z'
+      }]
+    }
+
+    expect(renderReport(openFamilyContext, 'markdown').content).toContain(
+      '- 漏洞族：security.headers'
+    )
+    expect(renderReport(openFamilyContext, 'html').content).toContain(
+      '<dt>漏洞族</dt><dd>security.headers</dd>'
+    )
+  })
 })

@@ -66,11 +66,11 @@ benchmarkSuite:
 
 - `implementationState` 只陈述代码与测试实际成熟度，值域与覆盖矩阵当前状态一致；它不能由 Manifest 作者自行升级。
 - `declaredMode` 只是模块作者声明的最高意图模式，不是执行授权。
-- `activationStatus` 只能来自未来只读 ActivationCatalog；`registered` 等价于 registered-only，不能主动执行；`qualified` 仍只对记录绑定的 environment 与 protocol/selector 切片有效。`null` 表示尚无可信 Catalog 记录，不是另一种激活状态。
+- `activationStatus` 只能来自未来只读 ActivationCatalog；`registered` 等价于 registered-only，通常不能主动执行；Day2 仅为固定 `sqli/xss/ssrf/idor` V1 definition/runtime/allowlist 保留临时兼容例外，该例外不改变 registered 状态。`qualified` 仍只对记录绑定的 environment 与 protocol/selector 切片有效。`null` 表示尚无可信 Catalog 记录，不是另一种激活状态。
 - `environment` 与 `protocolSelector` 必须逐项列出，不能用 `supportsComplexApi=true`、`supportsWeb=true` 或 family 级总布尔值代替。
 - `benchmarkSuite` 至少绑定 suite ID/version、结果类别和 qualification record；self-built fixture 不得冒充 external holdout 或 authorized pilot。
 
-只有 `implementationState` 与声明切片一致、`activationStatus=qualified`、qualification record 的 definition/build/suite/fixture/Policy 哈希有效、环境及 protocol/selector 精确匹配时，才能对该切片作支持声明。任一字段缺失、`not-run`、版本不匹配或只有计划文字时不得标记 supported。
+只有 `implementationState` 与声明切片一致、`activationStatus=qualified`、qualification record 的 definition/build/suite/fixture/Policy 哈希有效、环境及 protocol/selector 精确匹配时，才能对该切片作支持声明。任一字段缺失、`not-run`、版本不匹配或只有计划文字时不得标记 supported；Day2 `legacy-v1` 临时兼容例外只维持既有执行，绝不构成 qualified/supported 证据。
 
 Day1 **只定义并评审这个格式**。Day1 不实现 DefinitionRegistry、ActivationCatalog、QualificationService 或 Registry schema，不生成伪造的 qualification record，也不把 V1 四类硬编码闭环改写成已资格化模块；这些分别由 Day2、Day7 及后续工作包负责。
 
@@ -136,12 +136,12 @@ Day1 **只定义并评审这个格式**。Day1 不实现 DefinitionRegistry、Ac
 | 需求 ID | 目标交付 | 来源 | 分类 | 唯一主责工作包 | 当前代码/测试证据 | 主要缺口 / 退出边界 |
 |---|---|---|---|---|---|---|
 | AG-WP-001 | Scope 竞态修复、事实/覆盖/支持声明基线与 Renderer 冻结。 | [Day1](Day1.md) | `Day1` | Day1 | [Day1 完成记录](Day1.md#完成记录) 与 [事实基线](day1-baseline.md) | 2026-07-13 已验收；不包含 Registry/Activation/qualification，也不外推固定 fixture。 |
-| AG-WP-002 | 开放 Family/Technique ID、Manifest、原子 DefinitionRegistry 与 legacy bundle；注册不等于激活。 | [Day2](Day2.md) | `后续波次` | Day2 | 当前仍为 [四值 enum](../../packages/contracts/src/workflow.ts) 与硬编码规则 | Registry/Bundle/Activation view/conformance 均未实现；`security.headers` 只能先 registered-only，未知 family fail closed。 |
+| AG-WP-002 | 开放 Family/Technique ID、Manifest、原子 DefinitionRegistry 与 legacy bundle；注册不等于激活。 | [Day2](Day2.md) | `后续波次` | Day2 | 当前仍为 [四值 enum](../../packages/contracts/src/workflow.ts) 与硬编码规则 | Registry/Bundle/Activation view/conformance 均未实现；`security.headers` 只能先 registered-only，未知 family fail closed；固定四类仅经封闭 `legacy-v1` 临时兼容门维持 V1 行为且不得宣称 qualified。 |
 | AG-WP-003 | 唯一 scan-scoped Inventory、RequestVariant/Source/Selector/Codec/Transport、opaque refs 与 module snapshot。 | [Day3](Day3.md) | `后续波次` | Day3 | V1 有 Endpoint/Parameter/Scan 表，见 [schema](../../packages/db/src/schema.ts) | 多来源幂等、secret 裁剪、旧库迁移和 frozen module snapshot 尚缺。 |
 | AG-WP-004 | 纯 RequestCompiler、Template/Resolved/Wire 三阶段哈希与 EvidenceCapturePolicy。 | [Day4](Day4.md) | `后续波次` | Day4 | V1 HTTP 构造/Evidence 保存位于 [execution service](../../packages/application/src/execution-service.ts) | 无统一 compiler、opaque generation 绑定或 capture-before-store 最小化；未实现 codec 必须拒绝。 |
 | AG-WP-005 | ExecutionGrant、单次 Lease、实际 wire 恒等复核与唯一 ExecutionPort。 | [Day5](Day5.md) | `后续波次` | Day5 | V1 有 PolicyDecision 与 Runner，见 [execution policy](../../packages/application/src/execution-policy.ts) | 裸 decisionId、重放、并发 claim、redirect child grant 与 crash unknown 语义尚缺。 |
 | AG-WP-006 | 原子 request/RPM/concurrency/bytes 预算和 DNS/IP/redirect/response resource 门禁。 | [Day6](Day6.md) | `后续波次` | Day6 | 现有 [policy](../../packages/security-policy/src/index.ts) 与 [runner](../../packages/http-runner/src/index.ts) 有部分限制 | reserve/settle、精细地址类、压缩炸弹/慢读和稳定 reason code 尚缺。 |
-| AG-WP-007 | Evaluation Core、Ground Truth v2、Suite Registry、基础 loopback fixture 与 QualificationRecord。 | [Day7](Day7.md) | `后续波次` | Day7 | [evaluation](../../packages/evaluation/src/index.ts) 与 [fixture](../../packages/evaluation/src/local-fixture.ts) 仅四类固定套件 | technique/protocol/selector/environment/Evidence role/三态与 activation record 尚缺；生产不得加载 fixture 代码。 |
+| AG-WP-007 | Evaluation Core、Ground Truth v2、Suite Registry、基础 loopback fixture 与 QualificationRecord。 | [Day7](Day7.md) | `后续波次` | Day7 | [evaluation](../../packages/evaluation/src/index.ts) 与 [fixture](../../packages/evaluation/src/local-fixture.ts) 仅四类固定套件 | technique/protocol/selector/environment/Evidence role/三态与 activation record 尚缺；生产不得加载 fixture 代码；有效记录接管后必须移除 Day2 四类临时兼容门。 |
 | AG-WP-008 | 不联网的 TestObject、L2ActionBundle、SideEffectEnvelope、cleanup/recovery 状态和 Receipt。 | [Day8](Day8.md) | `后续波次` | Day8 | 当前只有基础 Probe/Policy 合同 | 当天网络必须为 0；没有 Day9/10 绑定与批准时任何路径不得进入 approved/running。 |
 | AG-WP-009 | SessionVault、IdentityContext、CSRF binding 与 AuthorizationMatrix。 | [Day9](Day9.md) | `后续波次` | Day9 | V1 有 Identity 与 [credential store](../../packages/db/src/credential-store.ts) | 无 Cookie jar generation、CSRF 私有 sink、授权真值矩阵；当天 L2 primary/cleanup 必须为 0。 |
 | AG-WP-010 | 可信 ActorContext/ApprovalService 与首条 fixture-only L2 闭环。 | [Day10](Day10.md) | `后续波次` | Day10 | 当前 Policy 仍读取调用方 `userApproved` | Renderer/Agent 不可伪造；仅 loopback TestObject primary 一次并 cleanup-verify。无可信产品端口时真实 L2 禁用。 |

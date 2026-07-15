@@ -82,10 +82,11 @@ Main 对 IPC 输入先做 schema 校验，输出再由 `DesktopOutputSchemas` �
 
 ### 4.1 注册不等于激活
 
-Day2 只建立 `DefinitionRegistry`，允许结构正确的 descriptor/bundle 被登记为 `registered-only`。Day7 由独立 Suite/Conformance 流水线生成不可伪造的 qualification record；生产 `ActivationCatalog` 只消费资格证明，不加载 fixture 代码。必须分开记录：
+Day2 建立 `DefinitionRegistry`，普通结构正确的 descriptor/bundle 只能登记为 `registered-only`。为同时满足“旧四类结果不回退”和“注册不等于激活”，Day2 允许一个封闭、临时的 `legacy-v1` 兼容例外：只有 `sqli/xss/ssrf/idor` 四个永久 ID 在定义已注册、精确 legacy runtime mapping 存在且 Application 兼容允许表命中时，才可继续走原 V1 执行链；其 `activationStatus` 仍为 `registered`，不得生成 supported/qualified 声明，也不能把例外授予新 ID。`security.headers` 没有 legacy runtime mapping，保持不可执行。Day7 由独立 Suite/Conformance 流水线生成不可伪造的 qualification record，生产 `ActivationCatalog` 只消费资格证明、不加载 fixture 代码，并在四类记录生效后删除该临时兼容例外。必须分开记录：
 
 - `declaredMode`：模块声明想支持的模式；
 - `activationStatus`：registered / qualified / suspended / retired；
+- `legacyRuntimeCompatibility`：仅 Day2～Day7 期间四个固定 V1 ID 的封闭兼容事实，不是 Activation 状态或支持资格；
 - `qualifiedEnvironments`：fixture、external-fixture、authorized-pilot 等；
 - definition/build hash、suite version 和 qualification timestamp。
 
@@ -127,7 +128,7 @@ Day15 完成四类 V1 行为等价 adapter，统一切到通用运行时并删�
 ```text
 DAY0 review/rollback
   -> Day1 facts + machine-readable coverage
-  -> Day2 DefinitionRegistry (registered-only)
+  -> Day2 DefinitionRegistry (registered-only + fixed legacy-v1 compatibility)
   -> Day3 Inventory + opaque refs + frozen module snapshot
   -> Day4 pure compiler + capture/key abstractions
   -> Day5 grant/lease + single execution port

@@ -111,6 +111,9 @@ importers:
       '@agentgo/db':
         specifier: workspace:*
         version: link:../db
+      '@agentgo/domain':
+        specifier: workspace:*
+        version: link:../domain
       '@agentgo/http-runner':
         specifier: workspace:*
         version: link:../http-runner

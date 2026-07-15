@@ -7,6 +7,15 @@ import {
 } from '@agentgo/contracts'
 import { isIP } from 'node:net'
 
+export {
+  BUILT_IN_PROBE_CAPABILITY_DESCRIPTORS,
+  DEFAULT_PROBE_CAPABILITY_CATALOG,
+  ProbeCapabilityCatalog,
+  isProbeCapabilityId,
+  type ProbeCapabilityDescriptor,
+  type ProbeCapabilityRiskFloor
+} from './probe-capability-catalog'
+
 const destructiveIndicators = [
   /\b(?:drop|truncate|alter)\s+(?:database|schema|table)\b/i,
   /\bdelete\s+from\b/i,

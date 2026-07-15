@@ -178,7 +178,7 @@ describe('AgentGo SQLite repository', () => {
       }
     })
 
-    const plan = createDefaultScanPlan()
+    const plan = createDefaultScanPlan(['sqli', 'xss', 'ssrf', 'idor'])
     const scan = await repository.createScan(
       {
         targetId: targetBundle.target.id,
@@ -254,7 +254,7 @@ describe('AgentGo SQLite repository', () => {
         second.scope?.id
       )
 
-      const plan = createDefaultScanPlan()
+      const plan = createDefaultScanPlan(['idor'])
       const scan = await repository.createScan(
         {
           targetId: created.target.id,
@@ -445,7 +445,7 @@ describe('AgentGo SQLite repository', () => {
         'scope-legacy-new'
       )
 
-      const plan = createDefaultScanPlan()
+      const plan = createDefaultScanPlan(['sqli'])
       const scan = await repository.createScan(
         {
           targetId: 'target-legacy',
@@ -705,7 +705,7 @@ describe('AgentGo SQLite repository', () => {
       tokenBudget: 100_000,
       costBudget: 0
     })
-    const plan = createDefaultScanPlan()
+    const plan = createDefaultScanPlan(['sqli'])
     const scan = await repository.createScan(
       {
         targetId: target.target.id,

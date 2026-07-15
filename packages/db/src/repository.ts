@@ -92,6 +92,9 @@ type KnowledgeIntelligenceRow = typeof knowledgeIntelligence.$inferSelect
 type ScanRow = typeof scans.$inferSelect
 type ScanEventRow = typeof scanEvents.$inferSelect
 type AuditRow = typeof auditLogs.$inferSelect
+type CreatePersistedScanInput = Omit<CreateScanInput, 'families'> & {
+  families: ScanConfiguration['families']
+}
 
 // node:sqlite is synchronous; serialize same-process writers so one connection
 // cannot block the event loop while another connection is waiting to commit.
@@ -1685,7 +1688,7 @@ export class AgentGoRepository {
   }
 
   createScan(
-    input: CreateScanInput,
+    input: CreatePersistedScanInput,
     plan: Record<string, unknown>,
     runtime: Record<string, unknown>
   ): Promise<ScanRecord> {
@@ -1695,7 +1698,7 @@ export class AgentGoRepository {
   }
 
   private async createScanWithFrozenScope(
-    input: CreateScanInput,
+    input: CreatePersistedScanInput,
     plan: Record<string, unknown>,
     runtime: Record<string, unknown>
   ): Promise<ScanRecord> {

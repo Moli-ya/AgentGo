@@ -21,6 +21,7 @@
 - [evaluation/benchmark-plan.md](evaluation/benchmark-plan.md)：固定靶场、Ground Truth、指标和消融实验
 - [audits/v1-current-capability-audit.md](audits/v1-current-capability-audit.md)：当前代码与计划书功能满足度核查
 - [audits/day1-final-review-2026-07-15.md](audits/day1-final-review-2026-07-15.md)：Day1 正式提交前补强、最终数据库 hash 与门禁复核
+- [audits/day2-completion-2026-07-15.md](audits/day2-completion-2026-07-15.md)：Day2 开放 ID、Registry、Activation/compatibility 门禁与完整回归证据
 
 ## 知识与研究
 

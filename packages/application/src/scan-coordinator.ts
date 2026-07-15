@@ -8,15 +8,18 @@ import {
   transitionRuntime,
   type ScanRuntimeState
 } from '@agentgo/agent-runtime'
-import type {
-  AgentRole,
-  IdentityRecord,
-  InventoryEndpoint,
-  ScanControlAction,
-  ScanEvent,
-  ScanRecord,
-  TargetScopeRecord,
-  VulnerabilityFamily
+import {
+  isLegacyV1VulnerabilityFamily,
+  type LegacyV1VulnerabilityFamily,
+  type VulnerabilityFamily,
+  type AgentRole,
+  type Environment,
+  type IdentityRecord,
+  type InventoryEndpoint,
+  type ScanControlAction,
+  type ScanEvent,
+  type ScanRecord,
+  type TargetScopeRecord
 } from '@agentgo/contracts'
 import {
   AgentGoRepository,
@@ -42,6 +45,7 @@ import {
 import { ExecutionService } from './execution-service'
 import { PolicyBroker } from './execution-policy'
 import { ReportService } from './report-service'
+import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
 import {
   V1_CONFIRMATION_RULES,
   assessIdor,
@@ -70,6 +74,8 @@ export interface ScanCoordinatorDependencies {
   policyBroker: PolicyBroker
   modelGateway: ModelGateway
   reportService: ReportService
+  vulnerabilityPlatform: Day2VulnerabilityPlatform
+  vulnerabilityExecutionEnvironment: Environment
   onEvent?: (event: ScanEvent) => void
 }
 
@@ -85,11 +91,17 @@ const phaseProgress: Record<ScanRecord['phase'], number> = {
   report: 100
 }
 
-const familyLabels: Record<VulnerabilityFamily, string> = {
+const legacyFamilyLabels: Record<LegacyV1VulnerabilityFamily, string> = {
   sqli: 'SQL 注入',
   xss: 'XSS',
   ssrf: 'SSRF',
   idor: 'IDOR / 对象级越权'
+}
+
+function familyLabel(familyId: VulnerabilityFamily): string {
+  return isLegacyV1VulnerabilityFamily(familyId)
+    ? legacyFamilyLabels[familyId]
+    : familyId
 }
 
 function unique<T>(values: T[]): T[] {
@@ -142,6 +154,8 @@ export class DefaultScanCoordinator {
   private readonly policyBroker: PolicyBroker
   private readonly modelGateway: ModelGateway
   private readonly reportService: ReportService
+  private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
+  private readonly vulnerabilityExecutionEnvironment: Environment
   private readonly onEvent?: (event: ScanEvent) => void
   private readonly controllers = new Map<string, AbortController>()
   private readonly tasks = new Map<string, Promise<void>>()
@@ -154,6 +168,9 @@ export class DefaultScanCoordinator {
     this.policyBroker = dependencies.policyBroker
     this.modelGateway = dependencies.modelGateway
     this.reportService = dependencies.reportService
+    this.vulnerabilityPlatform = dependencies.vulnerabilityPlatform
+    this.vulnerabilityExecutionEnvironment =
+      dependencies.vulnerabilityExecutionEnvironment
     this.onEvent = dependencies.onEvent
   }
 
@@ -164,6 +181,7 @@ export class DefaultScanCoordinator {
 
     if (action === 'start') {
       if (row.status !== 'draft') throw new Error('只有草稿扫描可以启动。')
+      this.requireExecutableFamilies(row.configJson.families)
       const nextRuntime: CoordinatorRuntimeState = {
         ...runtime,
         status: 'running',
@@ -218,6 +236,7 @@ export class DefaultScanCoordinator {
       if (!['paused', 'awaiting-user'].includes(row.status)) {
         throw new Error('只有暂停或等待用户的扫描可以恢复。')
       }
+      this.requireExecutableFamilies(row.configJson.families)
       const next = transitionRuntime(runtime, { type: 'resume' }) as CoordinatorRuntimeState
       const scan = await this.repository.updateScan(scanId, {
         status: 'running',
@@ -697,6 +716,10 @@ export class DefaultScanCoordinator {
     let nextRuntime = runtime
     for (const candidate of candidates) {
       this.assertNotAborted(signal)
+      this.vulnerabilityPlatform.executionGate.requireExecutableFamily(
+        candidate.family,
+        this.vulnerabilityExecutionEnvironment
+      )
       const fingerprint = `${candidate.family}:${candidate.endpointId}:${candidate.parameterId}`
       if (nextRuntime.actionFingerprints.includes(fingerprint)) continue
       const endpoint = byEndpoint.get(candidate.endpointId)
@@ -727,7 +750,7 @@ export class DefaultScanCoordinator {
           scanId,
           type: 'error',
           level: error instanceof PolicyDeniedError ? 'warning' : 'error',
-          message: `${familyLabels[candidate.family]} 候选未完成：${errorMessage(error)}`,
+          message: `${familyLabel(candidate.family)} 候选未完成：${errorMessage(error)}`,
           detail: { fingerprint }
         })
         nextRuntime = registerActionResult(nextRuntime, fingerprint, false).state as CoordinatorRuntimeState
@@ -751,6 +774,11 @@ export class DefaultScanCoordinator {
     parameter: InventoryEndpoint['parameters'][number]
     signal: AbortSignal
   }): Promise<boolean> {
+    const executable = this.vulnerabilityPlatform.executionGate.requireExecutableFamily(
+      input.family,
+      this.vulnerabilityExecutionEnvironment
+    )
+    const family = executable.familyId
     const context = await this.loadContext(input.scanId)
     let assessment: ValidationAssessment
     let primary: HttpObservation
@@ -760,7 +788,7 @@ export class DefaultScanCoordinator {
     let affectedResource: string | undefined
     const identity = context.identities[0]
 
-    if (input.family === 'sqli') {
+    if (family === 'sqli') {
       const original = new URL(input.endpoint.url).searchParams.get(input.parameter.name) || '1'
       const numeric = /^-?\d+(?:\.\d+)?$/.test(original)
       const trueValue = numeric ? `${original} AND 1=1` : `${original}' AND '1'='1`
@@ -814,7 +842,7 @@ export class DefaultScanCoordinator {
       evidenceRefs = unique(
         [baseline, trueFirst, falseControl, trueRepeat].flatMap((item) => item.evidenceRefs)
       )
-    } else if (input.family === 'xss') {
+    } else if (family === 'xss') {
       const xssMarker = marker()
       const payload = buildInertXssMarkerPayload(xssMarker)
       baseline = await this.executeHttpProbe({
@@ -860,7 +888,7 @@ export class DefaultScanCoordinator {
         ...primary.evidenceRefs,
         ...(browser?.evidenceRefs ?? [])
       ])
-    } else if (input.family === 'ssrf') {
+    } else if (family === 'ssrf') {
       const callbackUrl = context.row.configJson.callbackUrl
       if (!callbackUrl) {
         throw new Error('扫描未配置受控回调 URL，SSRF 只能标记为未具备验证条件。')
@@ -913,7 +941,7 @@ export class DefaultScanCoordinator {
       evidenceRefs = unique(
         [baseline, primary, negative].flatMap((item) => item.evidenceRefs)
       )
-    } else {
+    } else if (family === 'idor') {
       if (context.identities.length < 2) {
         throw new Error('IDOR 只读对照至少需要两个授权测试身份。')
       }
@@ -971,6 +999,8 @@ export class DefaultScanCoordinator {
           context.scope.allowedIdentityIds.includes(second.id)
       })
       evidenceRefs = unique([baseline, secondOwn, primary].flatMap((item) => item.evidenceRefs))
+    } else {
+      throw new Error(`当前运行时没有漏洞族 ${family} 的候选执行器。`)
     }
 
     const analysisResult = await this.createSignalFromAssessment({
@@ -991,7 +1021,7 @@ export class DefaultScanCoordinator {
       assessment,
       evidenceRefs
     })
-    const rule = V1_CONFIRMATION_RULES[input.family]
+    const rule = V1_CONFIRMATION_RULES[family]
     await this.repository.ensureConfirmationRule(rule)
     await this.repository.createValidationRun({
       signalId: analysisResult.signal.id,
@@ -1012,8 +1042,8 @@ export class DefaultScanCoordinator {
     const location = new URL(input.endpoint.url)
     const finding = await this.repository.createFinding({
       scanId: input.scanId,
-      family: input.family,
-      title: `${familyLabels[input.family]}：${location.pathname} 参数 ${input.parameter.name}`,
+      family,
+      title: `${familyLabel(family)}：${location.pathname} 参数 ${input.parameter.name}`,
       verdict: verdict.verdict,
       severity: verdict.verdict === 'confirmed' ? assessment.severity : 'info',
       confidence:
@@ -1088,7 +1118,7 @@ export class DefaultScanCoordinator {
       endpointId: input.endpoint.id,
       parameterId: input.parameterId,
       ...(input.identityId ? { identityId: input.identityId } : {}),
-      hypothesis: `${familyLabels[input.assessment.family]} 候选需要按版本化规则验证。`,
+      hypothesis: `${familyLabel(input.assessment.family)} 候选需要按版本化规则验证。`,
       observedDifference: analysis.value.summary,
       confidenceHint: analysis.value.confidenceHint,
       evidenceRefs: input.evidenceRefs,
@@ -1605,6 +1635,15 @@ export class DefaultScanCoordinator {
       (identity) => selected.has(identity.id)
     )
     return { scan, row, target, scope, identities }
+  }
+
+  private requireExecutableFamilies(
+    families: readonly VulnerabilityFamily[]
+  ): void {
+    this.vulnerabilityPlatform.executionGate.requireExecutableFamilies(
+      families,
+      this.vulnerabilityExecutionEnvironment
+    )
   }
 
   private async assertBudget(

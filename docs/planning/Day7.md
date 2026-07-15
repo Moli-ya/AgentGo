@@ -15,7 +15,7 @@
 7. 指标按 family/technique/protocol/selector/maturity/环境分别统计；`Inconclusive`、not-run 和 policy deny 不混入 Not Confirmed。
 8. 修正 recovery 指标：恢复成功必须存在真实中断与成功恢复链；cleanup 指标在 Day8 状态机接入前明确标记 `not-applicable`，不得硬编码为成功。
 9. 保留旧 40 Case 作为 `legacy-v1` suite；迁移期间结果必须完全一致。
-10. 将 Definition 与 Activation 分离：Suite runner 生成绑定 definition/build/fixture/suite hash 的 `QualificationRecord`；生产 `ActivationCatalog` 只加载记录，不 import fixture 代码。缺记录、记录过期或环境不匹配的 active technique 保持 registered-only。
+10. 将 Definition 与 Activation 分离：Suite runner 生成绑定 definition/build/fixture/suite hash 的 `QualificationRecord`；生产 `ActivationCatalog` 只加载记录，不 import fixture 代码。缺记录、记录过期或环境不匹配的 active technique 保持 registered-only。Day2 固定四类 `legacy-v1` 临时兼容例外不得被当作资格记录；四类取得有效、环境匹配的记录后，必须由正式 ActivationCatalog 路径接管并移除该例外。
 
 ## 预计改动位置
 

@@ -14,6 +14,7 @@
     "@agentgo/browser-runner": "workspace:*",
     "@agentgo/contracts": "workspace:*",
     "@agentgo/db": "workspace:*",
+    "@agentgo/domain": "workspace:*",
     "@agentgo/http-runner": "workspace:*",
     "@agentgo/knowledge-base": "workspace:*",
     "@agentgo/mcp-hub": "workspace:*",

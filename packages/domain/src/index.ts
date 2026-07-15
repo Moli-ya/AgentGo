@@ -1,5 +1,9 @@
 import type { Verdict, VulnerabilityFamily } from '@agentgo/contracts'
 
+export * from './vulnerabilities/canonical'
+export * from './vulnerabilities/conformance-testkit'
+export * from './vulnerabilities/registry'
+
 export interface Target {
   id: string
   workspaceId: string

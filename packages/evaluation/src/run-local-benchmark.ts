@@ -12,7 +12,8 @@ import {
   PolicyBroker,
   PolicyExecutionGuard,
   ReportService,
-  V1_CONFIRMATION_RULES
+  V1_CONFIRMATION_RULES,
+  createDay2VulnerabilityPlatform
 } from '@agentgo/application'
 import { PlaywrightBrowserRunner } from '@agentgo/browser-runner'
 import {
@@ -268,12 +269,15 @@ async function run(): Promise<void> {
     prompts: new AgentPromptCatalog(),
     invocations: repository
   })
+  const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
   const application = new AgentGoApplicationService({
     repository,
     credentialStore,
     evidenceStore,
     modelGateway,
-    reportService
+    reportService,
+    vulnerabilityPlatform,
+    vulnerabilityExecutionEnvironment: 'attested-fixture'
   })
   const coordinator = new DefaultScanCoordinator({
     repository,
@@ -282,7 +286,9 @@ async function run(): Promise<void> {
     executionService,
     policyBroker: new PolicyBroker(repository),
     modelGateway,
-    reportService
+    reportService,
+    vulnerabilityPlatform,
+    vulnerabilityExecutionEnvironment: 'attested-fixture'
   })
   application.setScanCoordinator(coordinator)
   const fixture = await startLocalBenchmarkFixture()
@@ -297,7 +303,7 @@ async function run(): Promise<void> {
       description: `Fixed local target ${manifest.targetVersion}`
     })
     const fixturePort = Number(new URL(fixture.baseUrl).port)
-    const plan = createDefaultScanPlan()
+    const plan = createDefaultScanPlan(vulnerabilityPlatform.defaultScanFamilies)
 
     for (const [caseIndex, item] of manifest.cases.entries()) {
       const caseStartedAt = Date.now()

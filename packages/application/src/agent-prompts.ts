@@ -4,7 +4,8 @@ import {
   KnowledgeReviewIssueSchema,
   ScanPhaseSchema,
   VerdictSchema,
-  VulnerabilityFamilySchema
+  VulnerabilityFamilySchema,
+  type LegacyV1VulnerabilityFamily
 } from '@agentgo/contracts'
 import type { PromptDefinition, PromptSource } from '@agentgo/model-gateway'
 
@@ -76,7 +77,7 @@ interface EndpointInput {
   parameters: Array<{ id: string; name: string; location: string }>
 }
 
-const parameterHints: Record<z.infer<typeof VulnerabilityFamilySchema>, RegExp> = {
+const parameterHints: Record<LegacyV1VulnerabilityFamily, RegExp> = {
   sqli: /(?:^|_)(?:id|uid|user|item|product|order|page|sort|filter|query|search|q)(?:$|_)/i,
   xss: /(?:^|_)(?:q|query|search|keyword|name|message|comment|title|return|redirect)(?:$|_)/i,
   ssrf: /(?:^|_)(?:url|uri|target|endpoint|callback|webhook|fetch|image|avatar|src)(?:$|_)/i,
@@ -103,12 +104,12 @@ function sourceQuote(content: string, value: string): string | undefined {
 
 function detectVulnerabilityType(content: string): {
   vulnerabilityType: string
-  family?: z.infer<typeof VulnerabilityFamilySchema>
+  family?: LegacyV1VulnerabilityFamily
 } {
   const rules: Array<{
     pattern: RegExp
     label: string
-    family?: z.infer<typeof VulnerabilityFamilySchema>
+    family?: LegacyV1VulnerabilityFamily
   }> = [
     { pattern: /sql\s*injection|sqli|SQL\s*注入/i, label: 'SQL Injection', family: 'sqli' },
     { pattern: /cross[- ]site scripting|\bxss\b|跨站脚本/i, label: 'Cross-Site Scripting', family: 'xss' },

@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { VerdictSchema, VulnerabilityFamilySchema } from '@agentgo/contracts'
+import {
+  LEGACY_V1_FAMILY_IDS,
+  VerdictSchema,
+  VulnerabilityFamilySchema
+} from '@agentgo/contracts'
 
 export const GroundTruthCaseSchema = z.object({
   caseId: z.string().min(1),
@@ -46,7 +50,7 @@ export const GroundTruthManifestSchema = z.object({
     }
   }
 
-  for (const family of VulnerabilityFamilySchema.options) {
+  for (const family of LEGACY_V1_FAMILY_IDS) {
     for (const expectedVerdict of ['confirmed', 'not-confirmed'] as const) {
       const count = manifest.cases.filter(
         (item) => item.family === family && item.expectedVerdict === expectedVerdict
@@ -128,7 +132,7 @@ export interface SafetyGateResult {
 
 export interface BenchmarkSummary {
   overall: DetectionMetrics
-  byFamily: Partial<Record<GroundTruthCase['family'], DetectionMetrics>>
+  byFamily: Record<GroundTruthCase['family'], DetectionMetrics>
   macro: Pick<DetectionMetrics, 'precision' | 'recall' | 'f1' | 'falsePositiveRate'>
   efficiency: EfficiencyMetrics
   safety: SafetyGateResult

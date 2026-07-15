@@ -17,7 +17,10 @@ import {
 import { UndiciHttpRunner } from '@agentgo/http-runner'
 import { DefaultModelGateway } from '@agentgo/model-gateway'
 import { AgentPromptCatalog } from './agent-prompts'
-import { AgentGoApplicationService } from './index'
+import {
+  AgentGoApplicationService,
+  createDay2VulnerabilityPlatform
+} from './index'
 import { PolicyBroker, PolicyExecutionGuard } from './execution-policy'
 import { ExecutionService } from './execution-service'
 import { ReportService } from './report-service'
@@ -155,12 +158,15 @@ describe('DefaultScanCoordinator V1 vertical loop', () => {
         )
       }
     })
+    const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
     const application = new AgentGoApplicationService({
       repository,
       credentialStore,
       evidenceStore,
       modelGateway,
-      reportService
+      reportService,
+      vulnerabilityPlatform,
+      vulnerabilityExecutionEnvironment: 'attested-fixture'
     })
     const coordinator = new DefaultScanCoordinator({
       repository,
@@ -169,7 +175,9 @@ describe('DefaultScanCoordinator V1 vertical loop', () => {
       executionService,
       policyBroker: new PolicyBroker(repository),
       modelGateway,
-      reportService
+      reportService,
+      vulnerabilityPlatform,
+      vulnerabilityExecutionEnvironment: 'attested-fixture'
     })
     application.setScanCoordinator(coordinator)
 

@@ -2,7 +2,7 @@
 
 基于 Multi-Agent 协作的授权 Web 漏洞挖掘与验证 Windows 桌面系统。
 
-> 当前状态：V1 可运行原型。SQL 注入、XSS、SSRF、越权/IDOR 已接入 `Signal -> Validation -> Verdict -> Evidence -> Report` 完整闭环，并具备本地持久化、异常恢复、评测靶场和 Windows 打包能力。
+> 当前状态：V1 可运行原型，Day2 后端扩展底座已接入。SQL 注入、XSS、SSRF、越权/IDOR 保持 `Signal -> Validation -> Verdict -> Evidence -> Report` 完整闭环；开放 ID 和注册表不代表新增漏洞已具备执行资格。
 
 > 自动验证边界：当前运行器只自动验证授权范围内的 **GET 查询参数**。表单、POST/PUT/PATCH、JSON Body、Header、Cookie、路径参数、复杂 SPA 交互和盲回连场景会被盘点或标记为 `Inconclusive`，不会被静默扩展为真实业务写操作。
 
@@ -18,6 +18,8 @@ V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、�
 
 - 五 Agent：Planner、Knowledge、Strategy、Analysis、Verifier；所有模型调用统一经过 `ModelGateway`。
 - 四类漏洞：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 目标响应内的受控 proof（非真实 OOB Collector）、IDOR 双授权身份只读对照。
+- 漏洞扩展底座：开放 `familyId/techniqueId`、严格 Manifest/Bundle、不可变 Capability Catalog、Capability 风险下界校验、原子 DefinitionRegistry、Module Conformance testkit、canonical definition/snapshot hash 和 registered-only Activation 视图。
+- 执行资格门禁：CreateScan、start、resume、Candidate 同时核对冻结定义、精确运行时映射与 Activation/固定 legacy 兼容允许表；临时例外固定到 canonical definition hash 与 `active-l1`，未知 ID 和 registered-only 的 `security.headers` 失败关闭。
 - 确定性执行边界：HTTP DNS/重定向逐跳复检，浏览器断网渲染，L3 动作永久拒绝。
 - 本地数据层：SQLite、迁移、不可变 Scope 快照、每 Target 单调 revision/显式 current pointer、Checkpoint、审计和扫描事件。
 - 凭据与证据：Electron `safeStorage`、内容寻址证据、SHA-256 完整性校验、脱敏派生。
@@ -26,6 +28,8 @@ V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、�
 - 知识库：四类内置知识、公开情报/PoC 文本导入、Extractor/Reviewer 双 Agent 结构化复核、人工发布、来源/许可证元数据、SQLite FTS5 与中文子串回退检索。
 - 桌面边界：Renderer 通过双向 Zod 校验的 IPC 使用应用服务，不能直接访问数据库、文件、凭据或执行器。
 - 评测：固定版本本地靶场、40 个正负 Case、指标计算和六项安全硬门禁。
+
+Day2 只为固定四类 V1 adapter 保留临时 `legacy-v1` 兼容路径，其 Activation 状态仍是 `registered`，不得声明 qualified/supported。正式 qualification record、通用模块运行时和 `security.headers` 被动检测执行分别属于 Day7、Day14 和 Day19。
 
 ## 技术架构
 

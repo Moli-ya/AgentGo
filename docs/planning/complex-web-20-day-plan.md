@@ -89,12 +89,12 @@ Inventory Producers
 | 日程 | 后端交付 | 退出门槛 |
 |---|---|---|
 | Day1 | Scope 快照竞态修复、事实基线、完整覆盖目录、需求追踪、Renderer 冻结 | 同毫秒/并发 Scope 顺序稳定，benchmark 连续通过；代码/测试/文档数字一致，所有类别有状态而非空承诺。 |
-| Day2 | 稳定 Family/Technique ID、DefinitionRegistry、legacy descriptor adapter | `security.headers` 仅 registered-only；注册不等于主动激活；未知 family 在所有执行入口 fail closed。 |
+| Day2 | 稳定 Family/Technique ID、DefinitionRegistry、legacy descriptor adapter | `security.headers` 仅 registered-only；注册不等于主动激活；未知 family 在所有执行入口 fail closed；仅固定四类 V1 通过封闭 `legacy-v1` definition/runtime/allowlist 临时兼容门保持既有执行，状态仍为 registered/unqualified。 |
 | Day3 | scan-scoped Inventory、SubjectRef、Variant/Source/Selector/Codec/Transport、opaque identity/session/test-object refs | 多来源幂等，旧库迁移，secret 不落库，扫描冻结 module snapshot。 |
 | Day4 | 纯 RequestCompiler、三阶段哈希、EvidenceCapturePolicy/KeyRef | 无联网单测覆盖 header/body 与 opaque generation/ref 绑定；不前置假设 Session/TestObject 服务已实现。 |
 | Day5 | ExecutionGrant/Lease、wire request 恒等复核、Runner 统一入口 | 篡改、重放、并发 claim 全部失败关闭。 |
 | Day6 | 原子请求/RPM/并发/字节预算、DNS/redirect/IP 加固 | 每跳复核、预算不可超卖、危险地址 fail closed。 |
-| Day7 | Evaluation core、Ground Truth v2、Suite Registry、基础 loopback fixture、Qualification record | legacy 正/负/Inconclusive/安全 Case 可版本化运行；生产只消费资格证明，不加载 fixture 代码。 |
+| Day7 | Evaluation core、Ground Truth v2、Suite Registry、基础 loopback fixture、Qualification record | legacy 正/负/Inconclusive/安全 Case 可版本化运行；生产只消费资格证明，不加载 fixture 代码；有效资格记录接管四类 legacy 激活后移除 Day2 临时兼容门。 |
 | Day8 | TestObject、L2ActionBundle、SideEffectEnvelope、Cleanup 状态机 | 不联网也能验证顺序、过期、撤销、失败恢复。 |
 | Day9 | SessionVault、私有 Cookie sink、CSRF、IdentityContext/AuthorizationMatrix | secret 不持久化，多身份/过期/恢复正确；为审批提供稳定 generation。 |
 | Day10 | 可信 ActorContext、ApprovalService、首条认证 L2 fixture 闭环 | Renderer/Agent 不能伪造批准，approval 绑定 session generation，primary 不重复且完成清理。 |

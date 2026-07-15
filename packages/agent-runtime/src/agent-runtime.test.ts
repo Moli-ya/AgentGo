@@ -1,3 +1,4 @@
+import { LEGACY_V1_FAMILY_IDS } from '@agentgo/contracts'
 import { describe, expect, it } from 'vitest'
 import {
   SRC_PHASES,
@@ -31,9 +32,14 @@ describe('agent runtime workflow', () => {
     }
   })
 
-  it('includes the four V1 vulnerability families and bounded planning', () => {
+  it('leaves family defaults to Application and preserves explicit family input', () => {
     const plan = createDefaultScanPlan()
-    expect(plan.families).toEqual(['sqli', 'xss', 'ssrf', 'idor'])
+    const legacyPlan = createDefaultScanPlan(LEGACY_V1_FAMILY_IDS)
+    const openFamilyPlan = createDefaultScanPlan(['security.headers'])
+
+    expect(plan.families).toEqual([])
+    expect(legacyPlan.families).toEqual(LEGACY_V1_FAMILY_IDS)
+    expect(openFamilyPlan.families).toEqual(['security.headers'])
     expect(plan.budget.maxPlanRevisions).toBeGreaterThan(0)
     expect(plan.budget.maxRequests).toBeGreaterThan(0)
   })

@@ -1,14 +1,5 @@
 import { z } from 'zod'
 
-export const VulnerabilityFamilySchema = z.enum([
-  'sqli',
-  'xss',
-  'ssrf',
-  'idor'
-])
-
-export type VulnerabilityFamily = z.infer<typeof VulnerabilityFamilySchema>
-
 export const VerdictSchema = z.enum([
   'confirmed',
   'not-confirmed',

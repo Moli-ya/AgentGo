@@ -7,6 +7,8 @@
 - TargetScope：允许的 origin、路径、端口、身份和时间范围；每个 Target 内以不可变 `revision` 记录快照创建顺序。
 - Identity：授权测试账号、角色和凭据引用。
 - Scan：一次扫描任务及预算快照。
+- VulnerabilityModuleManifest / DefinitionRegistrySnapshot：进程内冻结的漏洞定义、六类交叉引用和内容哈希；Day2 不新增数据库真源。
+- VulnerabilityTechniqueActivationView：与 Manifest 分离的只读激活视图；Day2 全部为 registered-only，资格记录由 Day7 负责。
 - Page / Endpoint / Parameter：目标表面目录。
 - Interaction：一次请求、响应和业务状态变化。
 - AgentRun / ModelInvocation / ModelProfileUsageEvent：Agent 调用、结构化模型记录和按 Profile 的 Token 用量。
@@ -40,6 +42,8 @@ PolicyDecision 1--0..1 ToolCall
 ```
 
 `targets.current_scope_id` 是权威当前 Scope 指针，`target_scopes.revision` 只表示该 Target 下不可变快照的单调创建顺序。数据库拒绝非正整数/重复 revision、跨 Target pointer 和 Scope 原地更新。切回内容相同的历史快照时复用原 Scope ID/revision，并只原子更新 current pointer；不得重新按 `created_at` 或 UUID 推断当前快照。`current_scope_id` 只为 Target→Scope 同事务创建保留可空中间态，读取异常空指针时必须 fail closed。`Scan.scopeSnapshotId` 在创建时冻结该指针指向的精确 Scope，后续 Target 更新不改变既有 Scan。
+
+Day2 将 `Scan.families`、Signal 和 Finding 的 family 合同从四值枚举改为格式受限的稳定字符串 ID；SQLite 原本以 JSON/TEXT 保存这些值，因此不需要迁移，也不改写历史四类数据。contracts 不再提供默认 family，Application 在创建扫描时显式注入固定四类默认值，并在持久化前完成 Definition/runtime/Activation 门禁。DefinitionRegistry、Capability Catalog 和 registered-only Activation 视图目前只在可信 Composition Root 中构建；每 Scan 的 module/capability 版本快照与持久化关系仍由 Day3 交付，不能把 Day2 进程级 snapshot hash 伪称为扫描级资格证明。
 
 ## 3. EvidenceItem
 

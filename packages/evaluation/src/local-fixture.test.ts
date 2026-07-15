@@ -94,4 +94,12 @@ describe('AgentGo fixed local benchmark fixture', () => {
       expect((await fetch(idorNegative, { headers: memberHeaders })).status).toBe(403)
     }
   })
+
+  it('does not treat an open family ID as a legacy fixture route', async () => {
+    const response = await fetch(
+      new URL('/cases/security.headers/positive/1', fixture.baseUrl)
+    )
+
+    expect(response.status).toBe(404)
+  })
 })

@@ -6,6 +6,8 @@
 
 AgentGo 已有可运行 V1 原型：五个结构化 Agent、不可变 Scope、SecurityPolicy、HTTP/离线 Browser Runner、SQLite、Evidence、三态 Finding、报告、暂停恢复、知识摄取与 40 Case 固定靶场均已实现。2026-07-13 Day1 最终基线中，类型检查、包内 19 文件/78 项测试、scripts 2 文件/10 项测试、production build、benchmark manifest 校验和桌面 smoke 均通过；有效完成证据见 [Day1 事实基线](planning/day1-baseline.md)，不得引用此前被撤销的记录。
 
+2026-07-15 Day2 已交付开放 Family/Technique ID、严格 Module Bundle、不可变 Capability Catalog、原子 DefinitionRegistry、registered-only Activation 视图、四类 V1 adapter 和四处执行门禁。它没有新增已资格化漏洞：`security.headers` 仍不可执行，四类 legacy 临时兼容路径仍显示 registered/unqualified；完整验证证据见 [Day2 完成审计](audits/day2-completion-2026-07-15.md)。
+
 V1 的真实主动覆盖仍是四类 GET query 场景：SQLi 布尔差异、反射 XSS 离线 marker、目标响应回显式 SSRF proof、两个测试身份的只读 IDOR。它不是复杂真实 Web 的全覆盖平台，以下内容尚未实现：
 
 - scan-scoped RequestVariant、多来源 Inventory、OpenAPI/HAR 导入和 SPA fetch/XHR 发现；

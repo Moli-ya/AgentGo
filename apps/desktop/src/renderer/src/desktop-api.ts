@@ -1,3 +1,4 @@
+import { LEGACY_V1_FAMILY_IDS } from '@agentgo/contracts'
 import type {
   AgentGoDesktopApi,
   BootstrapState,
@@ -31,7 +32,7 @@ const previewState: BootstrapState = {
     'verification',
     'report'
   ],
-  vulnerabilityFamilies: ['sqli', 'xss', 'ssrf', 'idor'],
+  vulnerabilityFamilies: [...LEGACY_V1_FAMILY_IDS],
   safeguards: [
     '所有主动动作经过确定性 SecurityPolicy',
     'L1 低影响探测允许，L2 逐次批准',

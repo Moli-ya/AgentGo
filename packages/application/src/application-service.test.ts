@@ -12,7 +12,11 @@ import {
 } from '@agentgo/db'
 import type { McpConnectionSecrets, McpHub } from '@agentgo/mcp-hub'
 import { DefaultModelGateway, type ModelGateway } from '@agentgo/model-gateway'
-import { AgentGoApplicationService, AgentPromptCatalog } from './index'
+import {
+  AgentGoApplicationService,
+  AgentPromptCatalog,
+  createDay2VulnerabilityPlatform
+} from './index'
 
 const temporaryDirectories: string[] = []
 
@@ -26,6 +30,13 @@ const protector: SecretProtector = {
   isAvailable: () => true,
   protect: (value) => Buffer.from(value, 'utf8'),
   unprotect: (value) => value.toString('utf8')
+}
+
+function vulnerabilityDependencies() {
+  return {
+    vulnerabilityPlatform: createDay2VulnerabilityPlatform(),
+    vulnerabilityExecutionEnvironment: 'authorized-test-environment' as const
+  }
 }
 
 describe('AgentGoApplicationService recovery', () => {
@@ -61,7 +72,7 @@ describe('AgentGoApplicationService recovery', () => {
           authorizationReference: 'automated-recovery-test'
         }
       })
-      const plan = createDefaultScanPlan()
+      const plan = createDefaultScanPlan(['sqli'])
       const scan = await repository.createScan(
         {
           targetId: target.target.id,
@@ -82,6 +93,7 @@ describe('AgentGoApplicationService recovery', () => {
       })
 
       const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
         repository,
         credentialStore: new FileCredentialStore(
           join(directory, 'credentials.json'),
@@ -125,6 +137,7 @@ describe('AgentGoApplicationService recovery', () => {
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
     const application = new AgentGoApplicationService({
+      ...vulnerabilityDependencies(),
       repository,
       credentialStore: new FileCredentialStore(
         join(directory, 'credentials.json'),
@@ -214,6 +227,7 @@ describe('AgentGoApplicationService recovery', () => {
       }
     } as ModelGateway
     const application = new AgentGoApplicationService({
+      ...vulnerabilityDependencies(),
       repository,
       credentialStore,
       modelGateway
@@ -322,6 +336,7 @@ describe('AgentGoApplicationService recovery', () => {
       invocations: repository
     })
     const application = new AgentGoApplicationService({
+      ...vulnerabilityDependencies(),
       repository,
       credentialStore,
       modelGateway
@@ -437,6 +452,7 @@ describe('AgentGoApplicationService recovery', () => {
     )
     const evidenceStore = new EvidenceStore(database, join(directory, 'artifacts'))
     const application = new AgentGoApplicationService({
+      ...vulnerabilityDependencies(),
       repository,
       credentialStore,
       evidenceStore
@@ -617,6 +633,7 @@ describe('AgentGoApplicationService recovery', () => {
       }
     }
     const application = new AgentGoApplicationService({
+      ...vulnerabilityDependencies(),
       repository,
       credentialStore,
       mcpHub
