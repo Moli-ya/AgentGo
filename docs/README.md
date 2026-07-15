@@ -15,6 +15,8 @@
 
 ## 安全与测试
 
+- [audits/README.md](audits/README.md)：逐 Day 独立完成档案索引、归档规则与当前提交对应关系
+- [audits/day-completion-template.md](audits/day-completion-template.md)：后续 Day 完成档案的统一模板
 - [security/active-probing-policy.md](security/active-probing-policy.md)：主动探测等级、批准规则和永久禁令
 - [security/threat-model.md](security/threat-model.md)：恶意页面、外部模型、Electron、MCP 和执行器威胁
 - [workflows/src-hunting.md](workflows/src-hunting.md)：授权 SRC 阶段门禁和证据纪律
