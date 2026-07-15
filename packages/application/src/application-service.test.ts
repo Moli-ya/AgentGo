@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDefaultScanPlan, createRuntimeState } from '@agentgo/agent-runtime'
 import {
   AgentGoRepository,
@@ -114,6 +114,79 @@ describe('AgentGoApplicationService recovery', () => {
         detail: { recoveredPhase: 'validation' }
       })
       expect(recoveryEvent?.message).toContain('已安全恢复为暂停状态')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('returns each concurrent target update exact scope instead of rereading the head', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-exact-scope-return-'))
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+    const application = new AgentGoApplicationService({
+      repository,
+      credentialStore: new FileCredentialStore(
+        join(directory, 'credentials.json'),
+        protector
+      )
+    })
+
+    try {
+      const workspace = await application.createWorkspace({
+        name: 'Exact scope return test',
+        description: ''
+      })
+      const baseScope = {
+        allowedOrigins: ['https://lab.example.test'],
+        allowedPathPrefixes: ['/'],
+        deniedPathPrefixes: [],
+        allowedPorts: [443],
+        allowedIdentityIds: [],
+        allowActiveProbing: true,
+        allowSensitiveProbing: false,
+        allowPrivateNetworkTargets: false,
+        allowLoopbackTargets: false,
+        maxRequestsPerMinute: 20,
+        maxConcurrency: 1
+      }
+      const created = await application.createTarget({
+        workspaceId: workspace.id,
+        name: 'Exact scope fixture',
+        baseUrl: 'https://lab.example.test',
+        description: '',
+        authorizationReference: 'synthetic-exact-scope-test',
+        scope: baseScope
+      })
+      const getLatestScopeSpy = vi.spyOn(repository, 'getLatestScope')
+
+      const [first, second] = await Promise.all([
+        application.updateTarget({
+          id: created.target.id,
+          scope: {
+            ...baseScope,
+            maxRequestsPerMinute: 21
+          }
+        }),
+        application.updateTarget({
+          id: created.target.id,
+          scope: {
+            ...baseScope,
+            maxRequestsPerMinute: 22
+          }
+        })
+      ])
+
+      expect(getLatestScopeSpy).not.toHaveBeenCalled()
+      expect(first.scope).toMatchObject({
+        revision: 2,
+        maxRequestsPerMinute: 21
+      })
+      expect(second.scope).toMatchObject({
+        revision: 3,
+        maxRequestsPerMinute: 22
+      })
+      getLatestScopeSpy.mockRestore()
     } finally {
       database.close()
     }

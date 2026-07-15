@@ -73,6 +73,7 @@ export type UpdateTargetInput = z.infer<typeof UpdateTargetInputSchema>
 
 export const TargetScopeRecordSchema = TargetScopeSchema.extend({
   targetId: IdSchema,
+  revision: z.number().int().positive(),
   snapshotHash: z.string().min(1),
   createdAt: IsoDateSchema
 })

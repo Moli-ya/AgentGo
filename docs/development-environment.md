@@ -37,7 +37,7 @@ pnpm smoke:desktop
 pnpm benchmark:verify
 ```
 
-- `pnpm check`：全仓类型检查、全部 Vitest、Electron 生产构建。
+- `pnpm check`：全仓与 `scripts/` 类型检查、包内及脚本 Vitest、Electron 生产构建。
 - `pnpm smoke:desktop`：启动 Electron，等待 Renderer 就绪并验证安全策略；使用内存数据库，不访问外部目标。
 - `pnpm benchmark:verify`：校验 40 Case manifest 和指标实现，不执行完整扫描。
 
@@ -56,6 +56,16 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 ```
 
 `benchmark:run` 会自行启动只监听 `127.0.0.1` 的固定靶场，并保存数据库、证据、预测、JSON 汇总和 Markdown 报告。输出目录已被 Git 忽略。不要让 Agent 读取 `benchmarks/v1-ground-truth.json` 中的预期标签。
+
+## 合成 V1 数据库基线
+
+```powershell
+pnpm db:baseline generate --output .\benchmark-results\v1-db-baseline
+pnpm db:baseline verify --input .\benchmark-results\v1-db-baseline
+pnpm test:db-baseline
+```
+
+生成器只写入 `.invalid` 合成 Workspace/Target、一个 revision 1 Scope 和一个未运行的 draft Scan，并复用仓库 `DATABASE_MIGRATIONS`。Manifest 同时记录 SQLite 文件 hash 与逻辑内容 hash；verify 检查 migration、完整性、外键、精确记录、空敏感表及 sidecar。产物必须留在被 Git 忽略的目录，不得替换为真实用户数据库。
 
 ## Windows 交付
 

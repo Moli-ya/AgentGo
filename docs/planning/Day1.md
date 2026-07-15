@@ -1,6 +1,6 @@
 # Day 1：事实基线、完整覆盖口径与前端冻结
 
-> 状态：`pending`。先决条件为 [DAY0](Day0.md) 已完成；此前提前实施的 Day1 内容已撤销，不得引用其完成记录。
+> 状态：`completed`（2026-07-13）。先决条件 [DAY0](Day0.md) 已完成；本次有效验收见 [Day1 事实基线](day1-baseline.md)，此前被撤销的完成记录仍不得引用。
 
 ## 当天目标
 
@@ -12,7 +12,7 @@
 - `DefaultScanCoordinator` 只把 GET query 候选送入四个硬编码验证分支；主动枚举是浅层同域 GET。
 - HTTP Runner 能发送 body，但现有 Coordinator 未使用；Browser Runner 是断网 `setContent`，不是 SPA 登录/运行期浏览器自动化。
 - 当前固定靶场为 40 个同构 GET Case；测试文件数、用例数、构建和桌面冒烟结果必须在 Day1 执行时重新取证，不得沿用历史完成记录。
-- DAY0 已复现 Scope 快照竞态：同一 Target 的创建/更新 Scope 可能具有相同毫秒 `created_at`，`getLatestScope()` 会读回旧的空 identity scope，使 40 Case 单次失败、重跑成功；该问题修复前 benchmark 不具备稳定基线资格。
+- DAY0 已复现 Scope 快照竞态：同一 Target 的创建/更新 Scope 可能具有相同毫秒 `created_at`，`getLatestScope()` 会读回旧的空 identity scope，使 40 Case 单次失败、重跑成功。Day1 已用单调 revision、显式 current pointer 和精确 Scan snapshot 修复并回归，详见 [事实基线 §3](day1-baseline.md#3-scope-顺序迁移与冻结语义)。
 - 现有前端已经能提供 Dashboard、Target、Scan、Finding、Audit、Knowledge、MCP 和 Settings；本轮不重建 Renderer。
 
 ## 必须完成的工作
@@ -62,3 +62,15 @@ pnpm benchmark:run --output .\benchmark-results\day1-baseline
 - Scope 快照选择具有明确顺序和冻结 ID/version；DAY0 的同毫秒竞态回归测试稳定通过；
 - Renderer 冻结边界已写入文档，现有桌面仍可启动；
 - 后续不得再用 V1 固定靶场满分推断真实 Web 准确率。
+
+## 完成记录
+
+- 状态：`completed`。
+- 日期、分支与 commit：2026-07-13，`main`；执行起点 `2851e915bd30acd5ee3abef22733a86e24f20e85`，Day1 工作区改动尚未提交，未伪造新 commit。
+- 实际改动：完成 77 项需求追踪、98 项机器可读覆盖目录、Scope revision/current pointer 修复、Renderer 冻结、支持声明格式、合成数据库 baseline 与 Git 忽略审计。
+- Schema / migration / fixture：`0005_monotonic_scope_revisions`；`agentgo-v1-synthetic-baseline@1`；`agentgo-local-fixture/1.0.0`。
+- 测试：`pnpm check`、`pnpm smoke:desktop`、`pnpm benchmark:verify` 通过；最终代码在三个全新目录连续完成 40/40，均为 TP 20、TN 20、FP/FN/Inconclusive 0，六项安全计数全 0。
+- 数据库 baseline：两次生成字节一致；文件 SHA-256 `bf27d78ce742a63dd15f7dacdfd89bfd0320b025e643cde5c2149e2d0e5b112b`，逻辑内容 SHA-256 `89a10e291f5dc932613f8d04bcf4c1fa1e7c98dfabf0facbe0f6279d01c562af`。
+- 安全与清理：未访问真实目标、未新增 payload、未执行 L2/L3、未修改 Renderer；benchmark/数据库/Evidence 等生成物均在 Git 忽略目录。
+- 未完成与顺延：Day2 及其后的 Registry、Activation/qualification、复杂接口、L2/Session/TestObject 和新增漏洞模块保持 `pending`；固定 fixture 满分不得外推。
+- 完整命令、版本、测试计数、运行时间和边界见 [Day1 事实基线](day1-baseline.md)。

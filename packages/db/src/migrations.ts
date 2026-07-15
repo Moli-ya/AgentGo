@@ -644,5 +644,92 @@ CREATE TABLE knowledge_agent_runs (
 CREATE INDEX knowledge_agent_runs_import_idx
   ON knowledge_agent_runs(import_id, started_at);
 `
+  },
+  {
+    id: '0005_monotonic_scope_revisions',
+    sql: `
+ALTER TABLE target_scopes
+  ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+
+WITH ranked_scopes AS (
+  SELECT
+    rowid AS scope_rowid,
+    ROW_NUMBER() OVER (
+      PARTITION BY target_id
+      ORDER BY created_at ASC, rowid ASC
+    ) AS scope_revision
+  FROM target_scopes
+)
+UPDATE target_scopes
+SET revision = (
+  SELECT ranked_scopes.scope_revision
+  FROM ranked_scopes
+  WHERE ranked_scopes.scope_rowid = target_scopes.rowid
+);
+
+CREATE UNIQUE INDEX target_scopes_target_revision_uq
+  ON target_scopes(target_id, revision);
+
+CREATE TRIGGER target_scopes_revision_insert_guard
+BEFORE INSERT ON target_scopes
+WHEN typeof(NEW.revision) <> 'integer' OR NEW.revision < 1
+BEGIN
+  SELECT RAISE(ABORT, 'target scope revision must be a positive integer');
+END;
+
+CREATE TRIGGER target_scopes_immutable_guard
+BEFORE UPDATE ON target_scopes
+BEGIN
+  SELECT RAISE(ABORT, 'target scope snapshots are immutable');
+END;
+
+ALTER TABLE targets
+  ADD COLUMN current_scope_id TEXT REFERENCES target_scopes(id);
+
+UPDATE targets
+SET current_scope_id = (
+  SELECT target_scopes.id
+  FROM target_scopes
+  WHERE target_scopes.target_id = targets.id
+  ORDER BY target_scopes.revision DESC
+  LIMIT 1
+);
+
+CREATE INDEX targets_current_scope_idx ON targets(current_scope_id);
+
+CREATE TRIGGER targets_current_scope_insert_guard
+BEFORE INSERT ON targets
+WHEN NEW.current_scope_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM target_scopes
+    WHERE target_scopes.id = NEW.current_scope_id
+      AND target_scopes.target_id = NEW.id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'current scope must belong to target');
+END;
+
+CREATE TRIGGER targets_current_scope_update_guard
+BEFORE UPDATE OF current_scope_id ON targets
+WHEN NEW.current_scope_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM target_scopes
+    WHERE target_scopes.id = NEW.current_scope_id
+      AND target_scopes.target_id = NEW.id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'current scope must belong to target');
+END;
+
+CREATE TRIGGER targets_current_scope_required_guard
+BEFORE UPDATE OF current_scope_id ON targets
+WHEN OLD.current_scope_id IS NOT NULL
+  AND NEW.current_scope_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'current scope cannot be cleared');
+END;
+`
   }
 ]

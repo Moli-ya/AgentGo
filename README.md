@@ -19,7 +19,7 @@ V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、�
 - 五 Agent：Planner、Knowledge、Strategy、Analysis、Verifier；所有模型调用统一经过 `ModelGateway`。
 - 四类漏洞：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 目标响应内的受控 proof（非真实 OOB Collector）、IDOR 双授权身份只读对照。
 - 确定性执行边界：HTTP DNS/重定向逐跳复检，浏览器断网渲染，L3 动作永久拒绝。
-- 本地数据层：SQLite、迁移、不可变 Scope 快照、Checkpoint、审计和扫描事件。
+- 本地数据层：SQLite、迁移、不可变 Scope 快照、每 Target 单调 revision/显式 current pointer、Checkpoint、审计和扫描事件。
 - 凭据与证据：Electron `safeStorage`、内容寻址证据、SHA-256 完整性校验、脱敏派生。
 - 扫描控制：启动、暂停、恢复、取消；异常退出后的未完成任务在下次启动时安全恢复为暂停。
 - 结论与报告：Confirmed、Not Confirmed、Inconclusive；Markdown、JSON、HTML 脱敏报告。
@@ -91,7 +91,7 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 
 这只是自建、固定、同分布靶场的回归基线，用于证明闭环和防止代码回退；不能据此推断真实互联网或复杂业务系统上的检测效果。Ground Truth 人工复核、第三方靶场、重复稳定性和消融实验仍需按研究计划继续完成。运行结果默认写入被 Git 忽略的 `benchmark-results/`。
 
-2026-07-13 DAY0 复验还发现一个必须先修复的稳定性问题：Scope 创建和更新落在同一毫秒时，`getLatestScope()` 可能读到旧的空身份快照，导致一次 40 Case 运行在第 5 Case 初始化失败，而新目录重跑 40/40 通过。该问题已记录到 [DAY0](docs/planning/Day0.md) 并列为 Day1 硬门禁；在单调 Scope revision/显式 snapshot 绑定完成前，不把单次成功运行称为稳定基线。
+2026-07-13 Day1 已修复 [DAY0](docs/planning/Day0.md) 复现的同毫秒 Scope 竞态：每个 Target 使用单调 revision 和显式 current pointer，Scan 冻结精确 scope ID/version，旧库可确定性回填，并由同毫秒、路径别名双连接并发、create/update、事务回滚和 Application 精确返回测试覆盖。最终代码在三个全新目录连续完成 40/40，三次均为 TP 20、TN 20、FP/FN/Inconclusive 0，六项安全计数全 0。完整版本、命令、数据库 hash 与限制见 [Day1 事实基线](docs/planning/day1-baseline.md)；该结果仍只代表自建固定 fixture。
 
 ## Windows 打包
 
@@ -118,6 +118,9 @@ pnpm dist:win
 - [docs/evaluation/benchmark-plan.md](docs/evaluation/benchmark-plan.md)：研究评测计划
 - [docs/audits/v1-current-capability-audit.md](docs/audits/v1-current-capability-audit.md)：当前代码与计划书的核查结论
 - [docs/planning/Day0.md](docs/planning/Day0.md)：当前实况、Day1/Day2 撤销、二十个工作包依赖复审
+- [docs/planning/Day1.md](docs/planning/Day1.md)：Day1 目标与完成记录
+- [docs/planning/day1-baseline.md](docs/planning/day1-baseline.md)：Scope 修复、环境版本、测试/benchmark 与合成数据库事实基线
+- [docs/planning/requirements-traceability.md](docs/planning/requirements-traceability.md)：稳定需求 ID、支持声明格式和后续主责
 - [docs/planning/README.md](docs/planning/README.md)：后端 V2 顺序工作包、漏洞覆盖与复杂接口能力矩阵
 - [docs/roadmap.md](docs/roadmap.md)：当前事实与后续研究工作
 

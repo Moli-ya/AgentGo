@@ -66,7 +66,7 @@ V2 的长期目标是覆盖已知 Web 漏洞分类并可持续接入新类别，
 - 无法在真实业务中安全确认的 RCE、反序列化、协议差异、DoS 或业务逻辑场景必须保持 Signal、Fixture 或 Inconclusive，不能为追求“覆盖率”执行破坏性证明；
 - “覆盖完整分类”表示每类都有可审计状态和交付路径，不表示保证发现所有未知漏洞或所有目标特有业务缺陷。
 
-V2 的详细架构、逐类状态和实施顺序见 `docs/planning/Day0.md`、`docs/planning/backend-v2-architecture.md`、`docs/planning/web-vulnerability-coverage-matrix.md`、`docs/planning/complex-web-interface-capability-matrix.md` 与 Day1～Day20。Day1、Day2 当前均为 pending，文档名称不能作为已实现证据。
+V2 的详细架构、逐类状态和实施顺序见 `docs/planning/Day0.md`、`docs/planning/backend-v2-architecture.md`、`docs/planning/web-vulnerability-coverage-matrix.md`、`docs/planning/complex-web-interface-capability-matrix.md` 与 Day1～Day20。Day1 已于 2026-07-13 按 `docs/planning/day1-baseline.md` 完成；Day2 仍为 pending。计划文档或目录名称本身不能作为已实现、已激活或已资格化的证据。
 
 ### 当前前端边界
 

@@ -179,8 +179,11 @@ export class AgentGoApplicationService {
   }
 
   async updateTarget(input: UpdateTargetInput): Promise<TargetDetail> {
-    await this.repository.updateTarget(input)
-    return this.getTargetDetail(input.id)
+    const updated = await this.repository.updateTarget(input)
+    const scope = updated.scope ?? (await this.repository.getLatestScope(input.id))
+    if (!scope) throw new Error('目标缺少授权范围。')
+    const identities = await this.repository.listIdentities(input.id)
+    return { target: updated.target, scope, identities }
   }
 
   async deleteTarget(id: string): Promise<DeleteResult> {

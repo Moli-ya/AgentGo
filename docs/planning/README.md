@@ -7,11 +7,13 @@
 
 “覆盖完整 Web 漏洞分类”不等于承诺在真实业务上自动确认所有漏洞。业务逻辑、协议差异、未知漏洞和高风险类别无法由固定规则穷尽；系统必须明确区分 `active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 与 `forbidden`，不能把未执行或不安全的验证写成 `Confirmed`。
 
-当前执行状态：DAY0 已于 2026-07-13 完成复核、Day1/Day2 撤销和计划重排；Day1～Day20 全部仍为 `pending`。DAY0 发现的 Scope 快照同毫秒竞态是 Day1 首个硬阻塞，不能因一次成功重跑而跳过。
+当前执行状态：DAY0 与 [Day1](Day1.md) 已于 2026-07-13 完成；Day2～Day20 仍为 `pending`。Day1 已用单调 Scope revision、显式 current pointer、迁移/回填和并发回归消除 DAY0 的同毫秒竞态，并从最终代码连续完成三次全新 40 Case；事实与限制见 [Day1 基线](day1-baseline.md)。
 
 ## 开工前必读
 
 - [DAY0 复核、撤销与重排记录](Day0.md)：当前真实能力、Day1/Day2 撤销证据、依赖修正和本轮边界；
+- [Day1 完成记录](Day1.md) 与 [可复现事实基线](day1-baseline.md)：Scope 修复、工具版本、测试/benchmark、合成数据库 hash、Renderer/Git 边界；
+- [需求追踪](requirements-traceability.md) 与 [机器可读覆盖目录](web-vulnerability-coverage-catalog.json)：稳定需求/漏洞 ID、当前实现、环境安全上限、资格状态与主责工作包；
 - [20 个工作包总览](complex-web-20-day-plan.md)：目标、边界、依赖、共同安全规则和最终验收；
 - [后端 V2 架构](backend-v2-architecture.md)：Family/Technique Registry、ValidationPlan、执行与证据模型；
 - [Web 漏洞覆盖矩阵](web-vulnerability-coverage-matrix.md)：当前覆盖、允许验证方式、能力缺口和实现波次；
@@ -23,7 +25,7 @@
 
 | 阶段 | 工作包 | 结果 |
 |---|---|---|
-| 分类与扩展底座 | [Day1](Day1.md) ～ [Day3](Day3.md) | 先修复 Scope 快照竞态并冻结事实/前端边界，再建立稳定 ID、DefinitionRegistry 和统一 Inventory。 |
+| 分类与扩展底座 | [Day1](Day1.md) ～ [Day3](Day3.md) | Day1 已完成 Scope/事实/前端冻结；Day2～Day3 待建立开放 ID、DefinitionRegistry 和统一 Inventory。 |
 | 确定性执行硬门禁 | [Day4](Day4.md) ～ [Day6](Day6.md) | 请求编译、三阶段哈希、证据捕获、单次租约、原子预算和网络边界。 |
 | 评测与 L2 闭环 | [Day7](Day7.md) ～ [Day10](Day10.md) | Ground Truth v2、L2 状态模型、会话/身份/CSRF、可信审批和首条可清理闭环。 |
 | 真实 Web 发现与通用运行时 | [Day11](Day11.md) ～ [Day15](Day15.md) | 离线导入、静态资产发现、受策略代理的浏览器发现、ValidationPlan、V1 行为等价适配与通用 Coordinator。 |

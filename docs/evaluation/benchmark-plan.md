@@ -15,6 +15,8 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 
 2026-07-10 的确定性回归运行中，40/40 Case 有结论，Precision、Recall、F1 和证据完整率为 1，FPR 与 Inconclusive Rate 为 0，安全门禁全部为 0。该结果只证明自建固定靶场上的回归闭环，不代表真实世界泛化能力，也不能替代本计划要求的双人人工复核、第三方靶场、重复实验和消融研究。
 
+2026-07-13 Day1 修复 Scope 同毫秒竞态后，从最终代码在三个全新输出目录连续运行：每次均为 TP 20、TN 20、FP/FN/Inconclusive 0，Precision/Recall/F1/证据完整率为 1，六项安全计数均为 0。该结果建立了固定 fixture 的重复稳定性基线，但仍是 deterministic、自建、同分布 GET Case；版本、时间与限制见 [Day1 事实基线](../planning/day1-baseline.md#5-三次全新目录-benchmark)。
+
 ## 2. 固定测试环境
 
 优先使用本地、可重置、版本固定的授权环境，例如：

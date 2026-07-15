@@ -10,8 +10,10 @@
   },
   "scripts": {
     "dev": "pnpm --filter @agentgo/desktop dev",
-    "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "vitest run",
+    "typecheck": "pnpm -r --if-present run typecheck && pnpm typecheck:scripts",
+    "typecheck:scripts": "tsc --noEmit -p scripts/tsconfig.json",
+    "test": "vitest run && pnpm test:db-baseline",
+    "test:db-baseline": "vitest run --config scripts/vitest.config.ts",
     "test:watch": "vitest",
     "build": "pnpm --filter @agentgo/desktop build",
     "pack:win": "pnpm --filter @agentgo/desktop pack:win",
@@ -21,6 +23,7 @@
     "benchmark:verify": "pnpm vitest run packages/evaluation/src/evaluation.test.ts",
     "benchmark:fixture": "tsx packages/evaluation/src/serve-local-fixture.ts",
     "benchmark:run": "tsx packages/evaluation/src/run-local-benchmark.ts",
+    "db:baseline": "tsx scripts/v1-database-baseline.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {

@@ -4,7 +4,7 @@
 
 ## 当前事实
 
-AgentGo 已有可运行 V1 原型：五个结构化 Agent、不可变 Scope、SecurityPolicy、HTTP/离线 Browser Runner、SQLite、Evidence、三态 Finding、报告、暂停恢复、知识摄取与 40 Case 固定靶场均已实现。2026-07-13 DAY0 复验中，typecheck、19 文件/72 项测试、production build、benchmark manifest 校验和桌面 smoke 均通过；不得引用已撤销的 Day1 完成记录。
+AgentGo 已有可运行 V1 原型：五个结构化 Agent、不可变 Scope、SecurityPolicy、HTTP/离线 Browser Runner、SQLite、Evidence、三态 Finding、报告、暂停恢复、知识摄取与 40 Case 固定靶场均已实现。2026-07-13 Day1 最终基线中，类型检查、包内 19 文件/78 项测试、scripts 2 文件/10 项测试、production build、benchmark manifest 校验和桌面 smoke 均通过；有效完成证据见 [Day1 事实基线](planning/day1-baseline.md)，不得引用此前被撤销的记录。
 
 V1 的真实主动覆盖仍是四类 GET query 场景：SQLi 布尔差异、反射 XSS 离线 marker、目标响应回显式 SSRF proof、两个测试身份的只读 IDOR。它不是复杂真实 Web 的全覆盖平台，以下内容尚未实现：
 
@@ -18,7 +18,7 @@ V1 的真实主动覆盖仍是四类 GET query 场景：SQLi 布尔差异、反�
 
 现有 40 Case 满分只证明固定 fixture 的回归，不证明真实互联网准确率。
 
-DAY0 同时发现固定 benchmark 的 Scope 初始化竞态：`getLatestScope()` 只按毫秒时间排序，同一毫秒的空 identity scope 与更新 scope 可能被读反。首次实跑在第 5 Case 被拒绝，新目录重跑才 40/40 通过。Day1 必须先用单调 revision 或显式 current-scope snapshot 修复并连续复跑，不能用成功重跑掩盖不稳定性。
+DAY0 发现的 Scope 初始化竞态已在 Day1 解除：migration `0005_monotonic_scope_revisions` 引入单调 revision、显式 current pointer、旧库回填和数据库不变量，Scope 写路径通过规范真实路径锁键与事务串行，Scan 冻结精确 ID/version。最终代码连续三次全新 40 Case 均通过，且保留同毫秒、并发、路径别名、回滚和旧库回归；后续不得退回按毫秒或 UUID 推断 Scope。
 
 ## 路线调整原则
 

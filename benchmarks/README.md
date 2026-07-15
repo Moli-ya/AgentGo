@@ -38,7 +38,7 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 
 ## 当前回归基线
 
-2026-07-10 使用本地确定性 Profile 对固定靶场重跑：
+2026-07-13 Day1 修复 Scope 初始化竞态后，使用本地确定性 Profile 从最终代码在三个全新目录连续重跑；每次均为：
 
 - 40/40 Case 有结论；
 - 20 个正例均 Confirmed，20 个负例均 Not Confirmed；
@@ -46,4 +46,6 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 - FPR 和 Inconclusive Rate 均为 0；
 - out-of-scope、L3、未批准 L2、明文密钥、无证据/规则 Confirmed、清理失败后继续执行均为 0。
 
-该结果是同一项目自建靶场上的确定性回归基线，不能代表真实公网或复杂业务系统上的泛化能力。Ground Truth 的双人人工复核、第三方固定靶场、重复稳定性、真实外部模型和消融实验仍是后续研究任务。
+三次运行的 fixture 均为 `agentgo-local-fixture/1.0.0`，Ground Truth 为 `agentgo-ground-truth/1.0`，详细时间、工具版本和安全计数见 [Day1 事实基线](../docs/planning/day1-baseline.md#5-三次全新目录-benchmark)。2026-07-10 的单次结果与 DAY0 的失败后重跑只保留作历史，不替代这组三次最终代码基线。
+
+该结果是同一项目自建靶场上的确定性回归基线，不能代表真实公网或复杂业务系统上的泛化能力。Ground Truth 的双人人工复核、第三方固定靶场、真实外部模型和消融实验仍是后续研究任务。

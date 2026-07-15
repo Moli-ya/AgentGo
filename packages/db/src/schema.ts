@@ -43,11 +43,13 @@ export const targets = sqliteTable(
     description: text('description').notNull(),
     authorizationReference: text('authorization_reference').notNull(),
     defaultIdentityId: text('default_identity_id'),
+    currentScopeId: text('current_scope_id'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull()
   },
   (table) => [
     index('targets_workspace_idx').on(table.workspaceId),
+    index('targets_current_scope_idx').on(table.currentScopeId),
     uniqueIndex('targets_workspace_base_url_uq').on(table.workspaceId, table.baseUrl)
   ]
 )
@@ -83,11 +85,16 @@ export const targetScopes = sqliteTable(
     authorizationReference: text('authorization_reference'),
     validFrom: integer('valid_from'),
     validUntil: integer('valid_until'),
+    revision: integer('revision').notNull(),
     snapshotHash: text('snapshot_hash').notNull(),
     createdAt: integer('created_at').notNull()
   },
   (table) => [
     index('target_scopes_target_idx').on(table.targetId),
+    uniqueIndex('target_scopes_target_revision_uq').on(
+      table.targetId,
+      table.revision
+    ),
     uniqueIndex('target_scopes_hash_uq').on(table.targetId, table.snapshotHash)
   ]
 )

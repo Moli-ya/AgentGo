@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { URL } from 'node:url'
 import {
   and,
@@ -90,6 +92,17 @@ type KnowledgeIntelligenceRow = typeof knowledgeIntelligence.$inferSelect
 type ScanRow = typeof scans.$inferSelect
 type ScanEventRow = typeof scanEvents.$inferSelect
 type AuditRow = typeof auditLogs.$inferSelect
+
+// node:sqlite is synchronous; serialize same-process writers so one connection
+// cannot block the event loop while another connection is waiting to commit.
+const scopeSnapshotTails = new Map<string, Promise<void>>()
+
+function scopeSnapshotLockKey(filePath: string): string {
+  if (filePath === ':memory:') return filePath
+  const absolutePath = resolve(filePath)
+  const canonicalPath = realpathSync.native(absolutePath)
+  return process.platform === 'win32' ? canonicalPath.toLowerCase() : canonicalPath
+}
 
 export interface InventoryPageRecord {
   id: string
@@ -266,6 +279,7 @@ function mapScope(row: TargetScopeRow): TargetScopeRecord {
   return {
     id: row.id,
     targetId: row.targetId,
+    revision: row.revision,
     allowedOrigins: row.allowedOrigins,
     allowedPathPrefixes: row.allowedPathPrefixes,
     deniedPathPrefixes: row.deniedPathPrefixes,
@@ -642,11 +656,45 @@ function normalizedInventoryUrl(value: string): string {
 }
 
 function scopeSnapshotHash(scope: Omit<TargetScope, 'id'>): string {
-  return sha256Text(stableJson(scope))
+  return sha256Text(
+    stableJson({
+      ...scope,
+      ...(scope.validFrom
+        ? { validFrom: new Date(Date.parse(scope.validFrom)).toISOString() }
+        : {}),
+      ...(scope.validUntil
+        ? { validUntil: new Date(Date.parse(scope.validUntil)).toISOString() }
+        : {})
+    })
+  )
 }
 
 export class AgentGoRepository {
-  constructor(private readonly database: AgentGoDatabase) {}
+  private readonly scopeLockKey: string
+
+  constructor(private readonly database: AgentGoDatabase) {
+    this.scopeLockKey = scopeSnapshotLockKey(database.filePath)
+  }
+
+  private async withScopeSnapshotLock<T>(operation: () => Promise<T>): Promise<T> {
+    const lockKey = this.scopeLockKey
+    const previous = scopeSnapshotTails.get(lockKey) ?? Promise.resolve()
+    let release: (() => void) | undefined
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    scopeSnapshotTails.set(lockKey, current)
+
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release?.()
+      if (scopeSnapshotTails.get(lockKey) === current) {
+        scopeSnapshotTails.delete(lockKey)
+      }
+    }
+  }
 
   async initializeDefaults(): Promise<void> {
     const existing = await this.database.orm
@@ -1298,7 +1346,16 @@ export class AgentGoRepository {
     return row ? mapTarget(row) : undefined
   }
 
-  async createTarget(input: CreateTargetInput): Promise<{
+  createTarget(input: CreateTargetInput): Promise<{
+    target: TargetRecord
+    scope: TargetScopeRecord
+  }> {
+    return this.withScopeSnapshotLock(() =>
+      this.createTargetWithInitialScope(input)
+    )
+  }
+
+  private async createTargetWithInitialScope(input: CreateTargetInput): Promise<{
     target: TargetRecord
     scope: TargetScopeRecord
   }> {
@@ -1323,6 +1380,7 @@ export class AgentGoRepository {
       description: input.description,
       authorizationReference: input.authorizationReference,
       defaultIdentityId: null,
+      currentScopeId: null,
       createdAt: now,
       updatedAt: now
     }
@@ -1343,14 +1401,22 @@ export class AgentGoRepository {
       authorizationReference: scopeValue.authorizationReference ?? null,
       validFrom: scopeValue.validFrom ? Date.parse(scopeValue.validFrom) : null,
       validUntil: scopeValue.validUntil ? Date.parse(scopeValue.validUntil) : null,
+      revision: 1,
       snapshotHash,
       createdAt: now
     }
 
-    await this.database.orm.transaction(async (transaction) => {
-      await transaction.insert(targets).values(targetRow)
-      await transaction.insert(targetScopes).values(scopeRow)
-    })
+    await this.database.orm.transaction(
+      async (transaction) => {
+        await transaction.insert(targets).values(targetRow)
+        await transaction.insert(targetScopes).values(scopeRow)
+        await transaction
+          .update(targets)
+          .set({ currentScopeId: scopeId })
+          .where(eq(targets.id, targetId))
+      },
+      { behavior: 'immediate' }
+    )
     await this.addAuditLog({
       workspaceId: input.workspaceId,
       event: 'target.created',
@@ -1359,6 +1425,7 @@ export class AgentGoRepository {
         targetId,
         baseUrl: normalizedBaseUrl,
         scopeSnapshotId: scopeId,
+        scopeRevision: 1,
         authorizationReference: input.authorizationReference
       }
     })
@@ -1366,93 +1433,109 @@ export class AgentGoRepository {
     return { target: mapTarget(targetRow), scope: mapScope(scopeRow) }
   }
 
-  async updateTarget(input: UpdateTargetInput): Promise<{
+  updateTarget(input: UpdateTargetInput): Promise<{
     target: TargetRecord
     scope?: TargetScopeRecord
   }> {
-    const current = await this.getTarget(input.id)
-    if (!current) {
-      throw new Error('目标不存在。')
-    }
-
-    const now = Date.now()
-    const patch: Partial<typeof targets.$inferInsert> = { updatedAt: now }
-    if (input.name !== undefined) patch.name = input.name
-    if (input.description !== undefined) patch.description = input.description
-    if (input.authorizationReference !== undefined) {
-      patch.authorizationReference = input.authorizationReference
-    }
-    if (input.baseUrl !== undefined) {
-      const url = new URL(input.baseUrl)
-      url.hash = ''
-      patch.baseUrl = url.toString()
-    }
-
-    await this.database.orm.update(targets).set(patch).where(eq(targets.id, input.id))
-
-    let createdScope: TargetScopeRecord | undefined
-    if (input.scope) {
-      const scopeValue: Omit<TargetScope, 'id'> = {
-        ...input.scope,
-        authorizationReference:
-          input.scope.authorizationReference ??
-          input.authorizationReference ??
-          current.authorizationReference
+    return this.withScopeSnapshotLock(async () => {
+      const current = await this.getTarget(input.id)
+      if (!current) {
+        throw new Error('目标不存在。')
       }
-      const hash = scopeSnapshotHash(scopeValue)
-      const [existing] = await this.database.orm
-        .select()
-        .from(targetScopes)
-        .where(
-          and(
-            eq(targetScopes.targetId, input.id),
-            eq(targetScopes.snapshotHash, hash)
-          )
-        )
-        .limit(1)
 
-      if (existing) {
-        createdScope = mapScope(existing)
-      } else {
-        const row: typeof targetScopes.$inferSelect = {
-          id: randomUUID(),
+      const now = Date.now()
+      const patch: Partial<typeof targets.$inferInsert> = { updatedAt: now }
+      if (input.name !== undefined) patch.name = input.name
+      if (input.description !== undefined) patch.description = input.description
+      if (input.authorizationReference !== undefined) {
+        patch.authorizationReference = input.authorizationReference
+      }
+      if (input.baseUrl !== undefined) {
+        const url = new URL(input.baseUrl)
+        url.hash = ''
+        patch.baseUrl = url.toString()
+      }
+
+      let createdScope: TargetScopeRecord | undefined
+      await this.database.orm.transaction(
+        async (transaction) => {
+          if (input.scope) {
+            const scopeValue: Omit<TargetScope, 'id'> = {
+              ...input.scope,
+              authorizationReference:
+                input.scope.authorizationReference ??
+                input.authorizationReference ??
+                current.authorizationReference
+            }
+            const hash = scopeSnapshotHash(scopeValue)
+            const [existing] = await transaction
+              .select()
+              .from(targetScopes)
+              .where(
+                and(
+                  eq(targetScopes.targetId, input.id),
+                  eq(targetScopes.snapshotHash, hash)
+                )
+              )
+              .limit(1)
+
+            if (existing) {
+              createdScope = mapScope(existing)
+            } else {
+              const [latest] = await transaction
+                .select({ revision: targetScopes.revision })
+                .from(targetScopes)
+                .where(eq(targetScopes.targetId, input.id))
+                .orderBy(desc(targetScopes.revision))
+                .limit(1)
+              const row: typeof targetScopes.$inferSelect = {
+                id: randomUUID(),
+                targetId: input.id,
+                allowedOrigins: scopeValue.allowedOrigins,
+                allowedPathPrefixes: scopeValue.allowedPathPrefixes,
+                deniedPathPrefixes: scopeValue.deniedPathPrefixes,
+                allowedPorts: scopeValue.allowedPorts,
+                allowedIdentityIds: scopeValue.allowedIdentityIds,
+                allowActiveProbing: scopeValue.allowActiveProbing,
+                allowSensitiveProbing: scopeValue.allowSensitiveProbing,
+                allowPrivateNetworkTargets: scopeValue.allowPrivateNetworkTargets,
+                allowLoopbackTargets: scopeValue.allowLoopbackTargets,
+                maxRequestsPerMinute: scopeValue.maxRequestsPerMinute,
+                maxConcurrency: scopeValue.maxConcurrency,
+                authorizationReference: scopeValue.authorizationReference ?? null,
+                validFrom: scopeValue.validFrom ? Date.parse(scopeValue.validFrom) : null,
+                validUntil: scopeValue.validUntil ? Date.parse(scopeValue.validUntil) : null,
+                revision: (latest?.revision ?? 0) + 1,
+                snapshotHash: hash,
+                createdAt: now
+              }
+              await transaction.insert(targetScopes).values(row)
+              createdScope = mapScope(row)
+            }
+            patch.currentScopeId = createdScope.id
+          }
+
+          await transaction.update(targets).set(patch).where(eq(targets.id, input.id))
+        },
+        { behavior: 'immediate' }
+      )
+
+      const updated = await this.getTarget(input.id)
+      if (!updated) {
+        throw new Error('目标更新后无法读取。')
+      }
+      await this.addAuditLog({
+        workspaceId: current.workspaceId,
+        event: 'target.updated',
+        actor: 'user',
+        detail: {
           targetId: input.id,
-          allowedOrigins: scopeValue.allowedOrigins,
-          allowedPathPrefixes: scopeValue.allowedPathPrefixes,
-          deniedPathPrefixes: scopeValue.deniedPathPrefixes,
-          allowedPorts: scopeValue.allowedPorts,
-          allowedIdentityIds: scopeValue.allowedIdentityIds,
-          allowActiveProbing: scopeValue.allowActiveProbing,
-          allowSensitiveProbing: scopeValue.allowSensitiveProbing,
-          allowPrivateNetworkTargets: scopeValue.allowPrivateNetworkTargets,
-          allowLoopbackTargets: scopeValue.allowLoopbackTargets,
-          maxRequestsPerMinute: scopeValue.maxRequestsPerMinute,
-          maxConcurrency: scopeValue.maxConcurrency,
-          authorizationReference: scopeValue.authorizationReference ?? null,
-          validFrom: scopeValue.validFrom ? Date.parse(scopeValue.validFrom) : null,
-          validUntil: scopeValue.validUntil ? Date.parse(scopeValue.validUntil) : null,
-          snapshotHash: hash,
-          createdAt: now
+          scopeSnapshotId: createdScope?.id ?? null,
+          scopeRevision: createdScope?.revision ?? null
         }
-        await this.database.orm.insert(targetScopes).values(row)
-        createdScope = mapScope(row)
-      }
-    }
-
-    const updated = await this.getTarget(input.id)
-    if (!updated) {
-      throw new Error('目标更新后无法读取。')
-    }
-    await this.addAuditLog({
-      workspaceId: current.workspaceId,
-      event: 'target.updated',
-      actor: 'user',
-      detail: {
-        targetId: input.id,
-        scopeSnapshotId: createdScope?.id ?? null
-      }
+      })
+      return { target: updated, ...(createdScope ? { scope: createdScope } : {}) }
     })
-    return { target: updated, ...(createdScope ? { scope: createdScope } : {}) }
   }
 
   async deleteTarget(id: string): Promise<boolean> {
@@ -1484,12 +1567,18 @@ export class AgentGoRepository {
 
   async getLatestScope(targetId: string): Promise<TargetScopeRecord | undefined> {
     const [row] = await this.database.orm
-      .select()
-      .from(targetScopes)
-      .where(eq(targetScopes.targetId, targetId))
-      .orderBy(desc(targetScopes.createdAt))
+      .select({ scope: targetScopes })
+      .from(targets)
+      .innerJoin(
+        targetScopes,
+        and(
+          eq(targets.currentScopeId, targetScopes.id),
+          eq(targetScopes.targetId, targets.id)
+        )
+      )
+      .where(eq(targets.id, targetId))
       .limit(1)
-    return row ? mapScope(row) : undefined
+    return row ? mapScope(row.scope) : undefined
   }
 
   async listIdentities(targetId: string): Promise<IdentityRecord[]> {
@@ -1595,7 +1684,17 @@ export class AgentGoRepository {
     return result.length > 0
   }
 
-  async createScan(
+  createScan(
+    input: CreateScanInput,
+    plan: Record<string, unknown>,
+    runtime: Record<string, unknown>
+  ): Promise<ScanRecord> {
+    return this.withScopeSnapshotLock(() =>
+      this.createScanWithFrozenScope(input, plan, runtime)
+    )
+  }
+
+  private async createScanWithFrozenScope(
     input: CreateScanInput,
     plan: Record<string, unknown>,
     runtime: Record<string, unknown>
@@ -1671,6 +1770,7 @@ export class AgentGoRepository {
         message: '扫描草稿已创建，等待用户启动。',
         detailJson: {
           scopeSnapshotId: scope.id,
+          scopeRevision: scope.revision,
           families: input.families,
           modelProfileIds: configuration.modelProfileIds
         },
@@ -1685,6 +1785,7 @@ export class AgentGoRepository {
       detail: {
         targetId: input.targetId,
         scopeSnapshotId: scope.id,
+        scopeRevision: scope.revision,
         modelProfileIds: configuration.modelProfileIds
       }
     })

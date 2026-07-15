@@ -17,10 +17,20 @@ benchmark-results/
 
 # Runtime data
 *.log
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
 logs/
 artifacts/
 reports/
 browser-profiles/
+evidence/
+credentials/
+credentials*.json
+cache/
 
 # Environment files
 .env
@@ -30,6 +40,7 @@ browser-profiles/
 # Local application data
 .agentgo/
 data/
+release-stale-*/
 
 # OS / editor noise
 Thumbs.db

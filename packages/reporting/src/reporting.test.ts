@@ -49,6 +49,7 @@ const context: ReportContext = {
   scope: {
     id: 'scope-1',
     targetId: 'target-1',
+    revision: 1,
     allowedOrigins: ['https://lab.example.test'],
     allowedPathPrefixes: ['/'],
     deniedPathPrefixes: [],

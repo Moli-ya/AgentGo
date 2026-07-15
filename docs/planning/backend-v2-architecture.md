@@ -46,7 +46,7 @@ Inventory
 - `packages/evaluation/src/index.ts` 对 `VulnerabilityFamilySchema.options` 的全局覆盖假设；
 - `packages/evaluation/src/local-fixture.ts` 的四类固定路由。
 
-DAY0 还复现了与 V2 无关但必须先修复的 V1 基线竞态：`getLatestScope()` 只按毫秒级 `created_at` 排序，同一毫秒创建的两个 Scope 可能返回旧快照。Day1 先建立单调 revision 或显式 current-scope snapshot，并让 Scan 冻结精确 scope ID/version；不得靠 sleep/retry 掩盖。
+DAY0 复现的 V1 Scope 基线竞态已由 Day1 修复：migration `0005_monotonic_scope_revisions` 建立每 Target 单调 revision、显式 current pointer、旧库确定性回填和 DB 不变量，Scan 冻结精确 scope ID/version；同毫秒、并发与路径别名回归已通过。V2 必须复用该事实，不能退回 `created_at`/UUID 排序或 sleep/retry。
 
 SQLite 中现有 family 字段本身是 `TEXT`，没有四值 `CHECK` 约束，因此无需破坏性重写历史数据。迁移重点应放在运行时类型、注册表、版本快照和通用执行链。
 

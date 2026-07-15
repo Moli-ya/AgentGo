@@ -11,10 +11,10 @@ AgentGo 已经具备可运行的 V1 原型：在受控本地靶场中，四类�
 | 项目 | 结论 | 证据 |
 |---|---|---|
 | 工程骨架 | 已满足 | pnpm workspace、Electron 主/Preload/Renderer、contracts、domain、db、application、execution、reporting 等包均存在。 |
-| 类型与构建 | 已通过 | 2026-07-13 `pnpm typecheck` 与 `pnpm build` 均以退出码 0 完成；Main、Preload、Renderer production build 成功。 |
-| 单元/集成测试 | 已通过 | 2026-07-13 `pnpm test`：19 个测试文件、72 项测试通过；这是撤销 Day1/Day2 后的真实基线。 |
+| 类型与构建 | 已通过 | 2026-07-13 Day1 `pnpm check` 退出码 0；14 个 workspace 项目与 scripts 类型检查、Main/Preload/Renderer production build 成功。 |
+| 单元/集成测试 | 已通过 | Day1 最终基线：包内 19 个测试文件/78 项，scripts 2 个测试文件/10 项，总计 21 文件/88 项通过。DAY0 的 19/72 只作历史记录。 |
 | 桌面启动 | 已通过 | 2026-07-13 `pnpm smoke:desktop` 输出 `AGENTGO_SMOKE_TEST_OK`。 |
-| 四类漏洞闭环 | 功能通过但初始化存在竞态 | 40 Case 新目录重跑为 20 Confirmed、20 Not Confirmed，Precision/Recall/F1=1、`safetyPassed=true`；但首次运行在第 5 Case 因 Scope 快照同毫秒排序竞态失败，不能标为稳定重复基线。 |
+| 四类漏洞闭环 | 固定 fixture 稳定回归通过 | Day1 最终代码在三个全新目录连续得到 20 Confirmed、20 Not Confirmed，Precision/Recall/F1/证据完整率=1、`safetyPassed=true`、六项安全计数全 0；仍不得外推真实 Web。 |
 | 低影响安全策略 | 部分实现 | Scope、路径、端口、身份、DNS、重定向、请求预算和 L3 拒绝已存在；POST/PUT/PATCH 会被归为 L2，但当前仅有调用方 `userApproved` 布尔，没有可信 ApprovalPort/TestObject/Cleanup 闭环，因此产品环境 L2 不能视为已可用。 |
 | 证据与报告 | 已实现 | 内容寻址证据、哈希、脱敏派生、三态 Findings、Markdown/JSON/HTML 报告。 |
 | KnowledgeAgent | 已实现基础链路 | 四类内置知识、来源元数据、FTS5、导入、Extractor/Reviewer、人工发布；运行时始终注入启用漏洞族的已审查安全基线。 |
@@ -34,7 +34,7 @@ AgentGo 已经具备可运行的 V1 原型：在受控本地靶场中，四类�
 | MCP/Kali 工具 | 未纳入 V1 自动链路 | 已有配置、加密凭据、连接测试与能力发现；Agent 自动调用与 Kali Profile 按设计仍为 Stretch Goal。 |
 | 成本控制 | 部分满足 | Token、RPM、TPM 和扫描 Token 上限已记录/限制；成本字段已预留，但当前应用把 Profile 成本预算保存为 0，且未持久化 Provider 返回的费用，因此尚无可用的金额统计或严格扫描费用预扣。 |
 
-## 扩展到完整 Web 漏洞目录的结构性阻塞
+## 扩展到完整 Web 漏洞目录的结构性阻塞与已解除基线问题
 
 | 阻塞 | 当前事实 | 影响 |
 |---|---|---|
@@ -46,7 +46,7 @@ AgentGo 已经具备可运行的 V1 原型：在受控本地靶场中，四类�
 | Evidence 过量捕获 | ExecutionService 当前会保存原始 HTTP response，再生成脱敏派生。 | 扩大到真实业务前必须先实施字段级 CapturePolicy 和默认最小化。 |
 | 评测封闭 | 40 Case 全是 GET，Evaluation 遍历固定四类且每类要求五正五负。 | 无法表达不同 technique、protocol、Evidence role、L2 cleanup 和 fixture-only 环境。 |
 | 发现与会话缺口 | 无 OpenAPI/HAR import、SPA/XHR Broker、SessionVault、CSRF、workflow dependency 和 OOB collector。 | 大量真实接口、认证状态和多步骤漏洞目前无法进入可靠验证链。 |
-| Scope 快照顺序竞态 | `getLatestScope()` 只按毫秒级 `created_at DESC`；创建和更新 Scope 同毫秒时可能返回旧快照。 | benchmark 首轮曾读取 `allowed_identity_ids=[]` 并拒绝合法测试身份，重跑才通过；Day1 必须用单调 revision/显式 snapshot 绑定修复，不能靠 sleep/retry。 |
+| Scope 快照顺序竞态（已解除） | Day1 migration `0005_monotonic_scope_revisions` 引入每 Target 单调 revision、显式 current pointer、DB 不变量与规范路径并发锁；Scan 冻结精确 ID/version。 | 同毫秒、create/update、路径别名双连接、旧库回填、跨 Target pointer、不可变 Scope、事务回滚和 Application 精确返回均有回归；详见 [Day1 基线](../planning/day1-baseline.md)。不得退回按时间/UUID 推断。 |
 
 完整的逐类状态见 [Web 漏洞覆盖矩阵](../planning/web-vulnerability-coverage-matrix.md)。该矩阵中的 `not-started`、`signal-only`、`fixture-only` 或 `inventory-only` 都不能被解释为当前已支持。
 
@@ -58,12 +58,11 @@ AgentGo 已经具备可运行的 V1 原型：在受控本地靶场中，四类�
 
 ## 下一轮实现优先级
 
-1. 先修复 Scope 快照同毫秒竞态并连续复跑固定 benchmark，建立可重复的 V1 事实基线。
-2. 再用稳定 Family/Technique ID、DefinitionRegistry/ActivationCatalog、SubjectRef 和通用 ValidationPlan 拆除四值枚举与 Coordinator 分支；不要直接追加几十个 `else if`。
-3. 在任何复杂主动请求前完成 RequestCompiler、三阶段 hash、EvidenceCapturePolicy、单次 ExecutionLease、原子预算和网络加固。
-4. 建立 TestObject、SideEffectEnvelope、可信 ApprovalService、CleanupReceipt、SessionVault、CSRF 和 AuthorizationMatrix；本轮不为这些后端服务新增临时 Renderer 页面。
-5. 建立统一 Inventory、离线描述导入、静态 AssetManifest、Brokered BrowserRecon 和 workflow dependency。
-6. 将 SQLi、IDOR/BOLA、XSS、SSRF 迁为参考模块，再按 [20 天后路线](../planning/post-20-day-vulnerability-roadmap.md) 补齐完整漏洞目录。
-7. 完成第三方 holdout、双人 Ground Truth、消融、稳定性和成本研究，之后才将研究结论写入项目成果。
+1. Day2 先用稳定 Family/Technique ID 和原子 DefinitionRegistry 建立开放定义面；注册不等于激活，不直接追加几十个 `else if`。
+2. 按 Day3～Day6 完成统一 Inventory、RequestCompiler、三阶段 hash、EvidenceCapturePolicy、单次 ExecutionLease、原子预算和网络加固。
+3. 建立 Evaluation/Qualification、TestObject、SideEffectEnvelope、可信 ApprovalService、CleanupReceipt、SessionVault、CSRF 和 AuthorizationMatrix；本轮不为这些后端服务新增临时 Renderer 页面。
+4. 建立离线描述导入、静态 AssetManifest、Brokered BrowserRecon 和 workflow dependency。
+5. 将 SQLi、IDOR/BOLA、XSS、SSRF 迁为参考模块，再按 [20 天后路线](../planning/post-20-day-vulnerability-roadmap.md) 补齐完整漏洞目录。
+6. 完成第三方 holdout、双人 Ground Truth、消融、稳定性和成本研究，之后才将研究结论写入项目成果。
 
 详细顺序和退出条件见 [20 天后端计划](../planning/README.md)。

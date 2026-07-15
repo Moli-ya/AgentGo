@@ -1,6 +1,8 @@
 # Day 0：现状复核、撤销确认与 20 个工作包重排
 
 > 状态：DAY0 planning-only；Day1、Day2 均为 `pending`。
+>
+> 历史说明：上述状态是本记录完成时的快照；Day1 已于 2026-07-13 后续完成，当前状态与有效证据见 [计划索引](README.md) 和 [Day1 事实基线](day1-baseline.md)。下文的 19/72、migration 0001～0004 与竞态结论不得当作当前基线。
 > 复核日期：2026-07-13（Asia/Shanghai）
 > 代码基线：`b4ac70e0626536c833d9a6da2f5d270bdbb8ffb8`
 > 本日边界：只撤销提前实施内容、核查现状和完善计划；不实现 Registry、Inventory、L2、Session、Approval、Browser Broker 或漏洞模块。
