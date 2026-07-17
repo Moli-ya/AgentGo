@@ -12,6 +12,133 @@ import { VulnerabilityFamilySchema } from './vulnerability'
 const IdSchema = z.string().min(1).max(200)
 const IsoDateSchema = z.string().datetime()
 
+const TARGET_BASE_SECRET_PATTERN =
+  /(?:day\d*[-_ ]*)?sentinel(?:[-_ ]*(?:secret|token|password|credential))?|must[-_ ]?not[-_ ]?leak|do[-_ ]?not[-_ ]?store|super[-_ ]?secret/iu
+const TARGET_BASE_JWT_PATTERN =
+  /[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/u
+const TARGET_BASE_TOKEN_PREFIX_PATTERN =
+  /^(?:sk|pk|api|key|token|secret|ghp|github_pat|xox[baprs])[-_]/iu
+const TARGET_BASE_SENSITIVE_QUERY_NAME_PATTERN =
+  /(?:authorization|cookie|password|passwd|secret|token|api[-_.]?key|credential|csrf|xsrf|session)/iu
+
+interface ParsedTargetBaseUrl {
+  readonly protocol: string
+  readonly origin: string
+  readonly username: string
+  readonly password: string
+  readonly search: string
+  readonly hash: string
+  readonly hostname: string
+  readonly pathname: string
+  readonly searchParams: {
+    entries(): IterableIterator<[string, string]>
+  }
+  toString(): string
+}
+
+const TargetBaseUrl = (globalThis as unknown as {
+  URL: new (value: string) => ParsedTargetBaseUrl
+}).URL
+
+function targetBaseEntropy(value: string): number {
+  const counts = new Map<string, number>()
+  for (const character of value) {
+    counts.set(character, (counts.get(character) ?? 0) + 1)
+  }
+  let entropy = 0
+  for (const count of counts.values()) {
+    const probability = count / value.length
+    entropy -= probability * Math.log2(probability)
+  }
+  return entropy
+}
+
+function isTargetBaseSecretShaped(value: string): boolean {
+  const candidate = value.trim()
+  if (!candidate) return false
+  if (TARGET_BASE_SECRET_PATTERN.test(candidate)) return true
+  if (TARGET_BASE_JWT_PATTERN.test(candidate)) return true
+  if (TARGET_BASE_TOKEN_PREFIX_PATTERN.test(candidate) && candidate.length >= 16) {
+    return true
+  }
+  if (
+    candidate.length < 20 ||
+    /\s/u.test(candidate) ||
+    !/^[A-Za-z0-9._~+\/-]+={0,2}$/u.test(candidate)
+  ) {
+    return false
+  }
+  const uniqueRatio = new Set(candidate).size / candidate.length
+  const minimumEntropy = /^[a-f0-9-]+$/iu.test(candidate) ? 3.2 : 3.6
+  return uniqueRatio >= 0.25 && targetBaseEntropy(candidate) >= minimumEntropy
+}
+
+/** A target is an HTTP(S) seed URL, never a credential-bearing request URL. */
+export const TargetBaseUrlSchema = z
+  .string()
+  .url()
+  .max(16_384)
+  .superRefine((value, context) => {
+    const url = new TargetBaseUrl(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      context.addIssue({
+        code: 'custom',
+        message: 'Target Base URL must use HTTP or HTTPS.'
+      })
+    }
+    if (url.username || url.password) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Target Base URL cannot contain userinfo or credentials.'
+      })
+    }
+    if (url.hash) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Target Base URL cannot contain a fragment.'
+      })
+    }
+    if (url.toString().length > 16_384) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Normalized Target Base URL is too long.'
+      })
+    }
+    const encodedStructuralValues = [
+      ...url.hostname.split('.'),
+      ...url.pathname.split('/')
+    ]
+    if (
+      TARGET_BASE_JWT_PATTERN.test(url.hostname) ||
+      TARGET_BASE_SECRET_PATTERN.test(url.hostname) ||
+      encodedStructuralValues.some((encoded) => {
+        try {
+          return isTargetBaseSecretShaped(decodeURIComponent(encoded))
+        } catch {
+          return true
+        }
+      })
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Target Base URL cannot contain credential-shaped host or path values.'
+      })
+    }
+    if (
+      [...url.searchParams.entries()].some(
+        ([name, queryValue]) =>
+          TARGET_BASE_SENSITIVE_QUERY_NAME_PATTERN.test(name) ||
+          isTargetBaseSecretShaped(name) ||
+          isTargetBaseSecretShaped(queryValue)
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Target Base URL query cannot contain credential-shaped names or values.'
+      })
+    }
+  })
+
 export const AgentModelProfileSelectionSchema = z.object({
   planner: IdSchema.optional(),
   knowledge: IdSchema.optional(),
@@ -43,7 +170,7 @@ export const TargetSchema = z.object({
   id: IdSchema,
   workspaceId: IdSchema,
   name: z.string().min(1).max(160),
-  baseUrl: z.string().url(),
+  baseUrl: TargetBaseUrlSchema,
   description: z.string().max(2_000).default(''),
   authorizationReference: z.string().max(500).default(''),
   createdAt: IsoDateSchema,
@@ -55,7 +182,7 @@ export type TargetRecord = z.infer<typeof TargetSchema>
 export const CreateTargetInputSchema = z.object({
   workspaceId: IdSchema,
   name: z.string().trim().min(1).max(160),
-  baseUrl: z.string().url(),
+  baseUrl: TargetBaseUrlSchema,
   description: z.string().trim().max(2_000).default(''),
   authorizationReference: z.string().trim().min(1).max(500),
   scope: TargetScopeSchema.omit({ id: true })
@@ -170,7 +297,7 @@ export const ScanSchema = z.object({
 
 export type ScanRecord = z.infer<typeof ScanSchema>
 
-export const CreateScanInputSchema = z.object({
+export const CreateScanInputSchema = z.strictObject({
   targetId: IdSchema,
   name: z.string().trim().min(1).max(160),
   description: z.string().trim().min(1).max(4_000),

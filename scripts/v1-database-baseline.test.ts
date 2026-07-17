@@ -78,6 +78,31 @@ describe('synthetic V1 database baseline', () => {
           count: number
         }).count
       ).toBe(1)
+      expect(
+        database.native
+          .prepare(
+            `SELECT name FROM sqlite_schema
+             WHERE type = 'table' AND name = 'request_variants'`
+          )
+          .get()
+      ).toEqual({ name: 'request_variants' })
+      expect(
+        database.native
+          .prepare(
+            `SELECT name FROM sqlite_schema
+             WHERE type = 'index' AND name = 'endpoints_scan_method_route_uq'`
+          )
+          .get()
+      ).toEqual({ name: 'endpoints_scan_method_route_uq' })
+      expect(
+        database.native
+          .prepare(
+            `SELECT name FROM sqlite_schema
+             WHERE type = 'trigger'
+               AND name = 'scan_module_snapshots_immutable_update_guard'`
+          )
+          .get()
+      ).toEqual({ name: 'scan_module_snapshots_immutable_update_guard' })
     } finally {
       database.close()
     }

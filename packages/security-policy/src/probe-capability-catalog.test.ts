@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
   BUILT_IN_PROBE_CAPABILITY_DESCRIPTORS,
@@ -104,5 +105,51 @@ describe('ProbeCapabilityCatalog', () => {
         Object.isFrozen(descriptor)
       )
     ).toBe(true)
+  })
+
+  it('provides a canonical, order-independent SHA-256 snapshot', () => {
+    const descriptors: readonly ProbeCapabilityDescriptor[] = [
+      {
+        id: 'test.reviewed-read',
+        riskFloor: 'l1',
+        description: 'Reviewed read.'
+      },
+      {
+        id: 'test.offline-analysis',
+        riskFloor: 'l0',
+        description: 'Offline analysis.'
+      }
+    ]
+    const forward = new ProbeCapabilityCatalog(descriptors).snapshot()
+    const reverse = new ProbeCapabilityCatalog([...descriptors].reverse()).snapshot()
+
+    expect(forward).toEqual(reverse)
+    expect(forward.canonicalSnapshotJson).toBe(
+      '{"descriptors":[{"description":"Offline analysis.","id":"test.offline-analysis","riskFloor":"l0"},{"description":"Reviewed read.","id":"test.reviewed-read","riskFloor":"l1"}]}'
+    )
+    expect(forward.snapshotHash).toBe(
+      createHash('sha256').update(forward.canonicalSnapshotJson, 'utf8').digest('hex')
+    )
+  })
+
+  it('freezes and reuses the audit snapshot without opening catalog membership', () => {
+    const snapshot = DEFAULT_PROBE_CAPABILITY_CATALOG.snapshot()
+
+    expect(DEFAULT_PROBE_CAPABILITY_CATALOG.snapshot()).toBe(snapshot)
+    expect(snapshot.descriptors).toBe(DEFAULT_PROBE_CAPABILITY_CATALOG.list())
+    expect(snapshot.descriptors.map(({ id }) => id)).toEqual(
+      DEFAULT_PROBE_CAPABILITY_CATALOG.list().map(({ id }) => id)
+    )
+    expect(Object.isFrozen(snapshot)).toBe(true)
+    expect(Object.isFrozen(snapshot.descriptors)).toBe(true)
+    expect(Reflect.set(snapshot, 'snapshotHash', '0'.repeat(64))).toBe(false)
+    expect(DEFAULT_PROBE_CAPABILITY_CATALOG.has('http.not-registered')).toBe(false)
+    expect(DEFAULT_PROBE_CAPABILITY_CATALOG.get('http.not-registered')).toBeUndefined()
+  })
+
+  it('pins the built-in Day 2 catalog snapshot hash', () => {
+    expect(DEFAULT_PROBE_CAPABILITY_CATALOG.snapshot().snapshotHash).toBe(
+      'd7f3aa70efd0b55c981e7d5a105e097b32c95d558eeb5e7b7645f17e490a2792'
+    )
   })
 })

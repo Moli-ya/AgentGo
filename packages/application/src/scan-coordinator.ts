@@ -16,9 +16,11 @@ import {
   type Environment,
   type IdentityRecord,
   type InventoryEndpoint,
+  type InventoryValueType,
   type ScanControlAction,
   type ScanEvent,
   type ScanRecord,
+  type SelectorRef,
   type TargetScopeRecord
 } from '@agentgo/contracts'
 import {
@@ -44,7 +46,13 @@ import {
 } from './agent-prompts'
 import { ExecutionService } from './execution-service'
 import { PolicyBroker } from './execution-policy'
+import { InventoryService } from './inventory-service'
 import { ReportService } from './report-service'
+import {
+  ScanModuleSnapshotError,
+  requireSealedScanModuleSnapshotSet,
+  verifyScanModuleSnapshots
+} from './scan-module-snapshot'
 import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
 import {
   V1_CONFIRMATION_RULES,
@@ -76,6 +84,7 @@ export interface ScanCoordinatorDependencies {
   reportService: ReportService
   vulnerabilityPlatform: Day2VulnerabilityPlatform
   vulnerabilityExecutionEnvironment: Environment
+  inventoryService?: InventoryService
   onEvent?: (event: ScanEvent) => void
 }
 
@@ -156,6 +165,7 @@ export class DefaultScanCoordinator {
   private readonly reportService: ReportService
   private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
   private readonly vulnerabilityExecutionEnvironment: Environment
+  private readonly inventoryService: InventoryService
   private readonly onEvent?: (event: ScanEvent) => void
   private readonly controllers = new Map<string, AbortController>()
   private readonly tasks = new Map<string, Promise<void>>()
@@ -171,6 +181,12 @@ export class DefaultScanCoordinator {
     this.vulnerabilityPlatform = dependencies.vulnerabilityPlatform
     this.vulnerabilityExecutionEnvironment =
       dependencies.vulnerabilityExecutionEnvironment
+    this.inventoryService =
+      dependencies.inventoryService ??
+      new InventoryService(
+        dependencies.repository,
+        dependencies.vulnerabilityPlatform.capabilityCatalog
+      )
     this.onEvent = dependencies.onEvent
   }
 
@@ -181,7 +197,22 @@ export class DefaultScanCoordinator {
 
     if (action === 'start') {
       if (row.status !== 'draft') throw new Error('只有草稿扫描可以启动。')
-      this.requireExecutableFamilies(row.configJson.families)
+      const incompatible = await this.awaitOnIncompatibleModuleSnapshot(
+        scanId,
+        row.phase as ScanRecord['phase'],
+        runtime,
+        row.configJson.families,
+        row.moduleSnapshotsSealed
+      )
+      if (incompatible) return incompatible
+      await this.upsertTargetBaseInventory(scanId)
+      const awaitingReview = await this.awaitOnPendingInventoryReview(
+        scanId,
+        row.phase as ScanRecord['phase'],
+        runtime,
+        row.status as ScanRecord['status']
+      )
+      if (awaitingReview) return awaitingReview
       const nextRuntime: CoordinatorRuntimeState = {
         ...runtime,
         status: 'running',
@@ -236,12 +267,28 @@ export class DefaultScanCoordinator {
       if (!['paused', 'awaiting-user'].includes(row.status)) {
         throw new Error('只有暂停或等待用户的扫描可以恢复。')
       }
-      this.requireExecutableFamilies(row.configJson.families)
+      const incompatible = await this.awaitOnIncompatibleModuleSnapshot(
+        scanId,
+        row.phase as ScanRecord['phase'],
+        runtime,
+        row.configJson.families,
+        row.moduleSnapshotsSealed
+      )
+      if (incompatible) return incompatible
+      await this.upsertTargetBaseInventory(scanId)
+      const awaitingReview = await this.awaitOnPendingInventoryReview(
+        scanId,
+        row.phase as ScanRecord['phase'],
+        runtime,
+        row.status as ScanRecord['status']
+      )
+      if (awaitingReview) return awaitingReview
       const next = transitionRuntime(runtime, { type: 'resume' }) as CoordinatorRuntimeState
       const scan = await this.repository.updateScan(scanId, {
         status: 'running',
         runtimeJson: next as unknown as Record<string, unknown>,
-        lastError: null
+        lastError: null,
+        ...(row.startedAt === null ? { startedAt: Date.now() } : {})
       })
       await this.emit({
         scanId,
@@ -344,6 +391,16 @@ export class DefaultScanCoordinator {
       if (!row || row.status !== 'running') return
       const runtime = row.runtimeJson as unknown as CoordinatorRuntimeState
       await this.assertBudget(scanId, runtime)
+      if (row.phase === 'active-enum') {
+        await this.upsertTargetBaseInventory(scanId)
+        const awaitingReview = await this.awaitOnPendingInventoryReview(
+          scanId,
+          row.phase as ScanRecord['phase'],
+          runtime,
+          row.status as ScanRecord['status']
+        )
+        if (awaitingReview) return
+      }
       const patch = await this.runPhase(scanId, row.phase as ScanRecord['phase'], runtime, signal)
       this.assertNotAborted(signal)
       const stateAfterPhase = {
@@ -354,24 +411,55 @@ export class DefaultScanCoordinator {
           ...(patch.phaseOutputRefs ?? {})
         }
       }
-      const next = transitionRuntime(stateAfterPhase, {
+      let next = transitionRuntime(stateAfterPhase, {
         type: 'phase-completed',
         checkpointRef: `${row.phase}:${Date.now()}`
       }) as CoordinatorRuntimeState
+      const pendingReviewVariantIds =
+        row.phase === 'active-enum'
+          ? await this.repository.listPendingActiveL1ReviewVariantIds(scanId)
+          : []
+      if (pendingReviewVariantIds.length > 0) {
+        next = transitionRuntime(next, {
+          type: 'await-user'
+        }) as CoordinatorRuntimeState
+      }
       const checkpointId = await this.repository.addCheckpoint({
         scanId,
         phase: row.phase as ScanRecord['phase'],
         state: next as unknown as Record<string, unknown>,
-        reason: `phase-completed:${row.phase}`
+        reason:
+          pendingReviewVariantIds.length > 0
+            ? 'inventory-review-required'
+            : `phase-completed:${row.phase}`
       })
       const completed = next.status === 'completed'
       await this.repository.updateScan(scanId, {
-        status: completed ? 'completed' : 'running',
+        status: completed
+          ? 'completed'
+          : pendingReviewVariantIds.length > 0
+            ? 'awaiting-user'
+            : 'running',
         phase: next.phase,
         progress: phaseProgress[row.phase as ScanRecord['phase']],
         completedAt: completed ? Date.now() : null,
         runtimeJson: next as unknown as Record<string, unknown>
       })
+      if (pendingReviewVariantIds.length > 0) {
+        await this.emit({
+          scanId,
+          type: 'status',
+          level: 'warning',
+          message: `枚举已完成；${pendingReviewVariantIds.length} 个 L1 请求变体等待人工 review。`,
+          detail: {
+            completedPhase: row.phase,
+            nextPhase: next.phase,
+            checkpointId,
+            reviewRequiredCount: pendingReviewVariantIds.length
+          }
+        })
+        return
+      }
       await this.emit({
         scanId,
         type: 'phase',
@@ -527,19 +615,23 @@ export class DefaultScanCoordinator {
       const url = normalized.toString()
       if (visited.has(url) || !this.urlAllowed(url, context.scope, primaryIdentity?.id)) continue
       visited.add(url)
-      const endpoint = await this.repository.upsertEndpoint({
+      const inventory = await this.upsertReadInventory({
         scanId,
-        method: 'GET',
         url,
-        source: next.discoveredFrom ? 'link' : 'target-base',
-        status: 'enumerating'
+        sourceType: next.discoveredFrom ? 'link' : 'target-base',
+        ...(next.discoveredFrom
+          ? { pageId: next.discoveredFrom, initiator: next.discoveredFrom }
+          : {})
       })
-      await this.persistQueryParameters(endpoint.id, endpoint.url)
+      const endpointId = inventory.endpoint.id
+      // The exact user-configured target base is the bounded enumeration seed.
+      // Page-derived URLs are inventoried below but never fetched before review.
+      if (next.discoveredFrom) continue
       const http = await this.executeHttpProbe({
         scanId,
         agentRunId,
-        endpointId: endpoint.id,
-        targetUrl: endpoint.url,
+        endpointId,
+        targetUrl: url,
         identity: primaryIdentity,
         summary: '低速读取页面并建立接口与参数基线。',
         expectedEvidence: '页面响应摘要、响应体和内容哈希',
@@ -548,7 +640,7 @@ export class DefaultScanCoordinator {
       if (http.result.status !== 'succeeded' || !isHtml(http)) continue
       const page = await this.repository.upsertPage({
         scanId,
-        url: endpoint.url,
+        url: inventory.requestVariant.redactedPreview.url,
         depth: next.depth,
         ...(next.discoveredFrom ? { discoveredFrom: next.discoveredFrom } : {}),
         stateHash: http.result.responseBodySha256,
@@ -557,7 +649,7 @@ export class DefaultScanCoordinator {
       const browser = await this.executeBrowserProbe({
         scanId,
         agentRunId,
-        targetUrl: endpoint.url,
+        targetUrl: url,
         summary: '在断网隔离浏览器中提取页面链接与表单。',
         expectedEvidence: 'DOM 摘要、链接和表单清单',
         html: safeBodyText(http),
@@ -568,7 +660,7 @@ export class DefaultScanCoordinator {
       if (browser.result.pageTitle) {
         await this.repository.upsertPage({
           scanId,
-          url: endpoint.url,
+          url: inventory.requestVariant.redactedPreview.url,
           title: browser.result.pageTitle,
           depth: next.depth,
           ...(next.discoveredFrom ? { discoveredFrom: next.discoveredFrom } : {}),
@@ -577,17 +669,13 @@ export class DefaultScanCoordinator {
       }
       for (const link of browser.result.links) {
         if (!this.urlAllowed(link, context.scope, primaryIdentity?.id)) continue
-        const linkEndpoint = await this.repository.upsertEndpoint({
+        await this.upsertReadInventory({
           scanId,
           pageId: page.id,
-          method: 'GET',
           url: link,
-          source: 'link'
+          sourceType: 'link',
+          initiator: page.id
         })
-        await this.persistQueryParameters(linkEndpoint.id, linkEndpoint.url)
-        if (next.depth < 1 && !visited.has(linkEndpoint.url)) {
-          queue.push({ url: linkEndpoint.url, depth: next.depth + 1, discoveredFrom: page.id })
-        }
       }
       for (const form of browser.result.forms) {
         await this.persistForm(scanId, page.id, form)
@@ -612,7 +700,7 @@ export class DefaultScanCoordinator {
     signal: AbortSignal
   ): Promise<Partial<CoordinatorRuntimeState>> {
     const context = await this.loadContext(scanId)
-    const endpoints = await this.repository.listInventoryEndpoints(scanId)
+    const endpoints = await this.repository.listLegacyV1ExecutionEndpoints(scanId)
     const endpointParameterNames = unique(
       endpoints.flatMap((endpoint) => endpoint.parameters.map((parameter) => parameter.name))
     )
@@ -710,8 +798,6 @@ export class DefaultScanCoordinator {
     runtime: CoordinatorRuntimeState,
     signal: AbortSignal
   ): Promise<Partial<CoordinatorRuntimeState>> {
-    const endpoints = await this.repository.listInventoryEndpoints(scanId)
-    const byEndpoint = new Map(endpoints.map((endpoint) => [endpoint.id, endpoint]))
     const candidates = runtime.candidates ?? []
     let nextRuntime = runtime
     for (const candidate of candidates) {
@@ -722,7 +808,8 @@ export class DefaultScanCoordinator {
       )
       const fingerprint = `${candidate.family}:${candidate.endpointId}:${candidate.parameterId}`
       if (nextRuntime.actionFingerprints.includes(fingerprint)) continue
-      const endpoint = byEndpoint.get(candidate.endpointId)
+      const endpoint = (await this.repository.listLegacyV1ExecutionEndpoints(scanId))
+        .find((item) => item.id === candidate.endpointId)
       const parameter = endpoint?.parameters.find((item) => item.id === candidate.parameterId)
       if (!endpoint || !parameter || endpoint.method.toUpperCase() !== 'GET') continue
       try {
@@ -789,8 +876,13 @@ export class DefaultScanCoordinator {
     const identity = context.identities[0]
 
     if (family === 'sqli') {
-      const original = new URL(input.endpoint.url).searchParams.get(input.parameter.name) || '1'
-      const numeric = /^-?\d+(?:\.\d+)?$/.test(original)
+      const redactedValue =
+        new URL(input.endpoint.url).searchParams.get(input.parameter.name) ?? ''
+      const numeric =
+        input.parameter.dataType === 'number' ||
+        input.parameter.dataType === 'integer' ||
+        /^-?\d+(?:\.\d+)?$/u.test(redactedValue)
+      const original = numeric ? '1' : 'agentgo'
       const trueValue = numeric ? `${original} AND 1=1` : `${original}' AND '1'='1`
       const falseValue = numeric ? `${original} AND 1=2` : `${original}' AND '1'='2`
       baseline = await this.executeHttpProbe({
@@ -1439,18 +1531,95 @@ export class DefaultScanCoordinator {
     })
   }
 
-  private async persistQueryParameters(endpointId: string, urlValue: string): Promise<void> {
-    const url = new URL(urlValue)
-    for (const [name, value] of url.searchParams) {
-      await this.repository.upsertParameter({
-        endpointId,
-        name,
-        location: 'query',
-        dataType: /^-?\d+(?:\.\d+)?$/.test(value) ? 'number' : 'string',
-        required: true,
-        exampleMasked: value ? '[provided]' : '[empty]'
-      })
+  private querySelectors(urlValue: string): SelectorRef[] {
+    const grouped = new Map<string, InventoryValueType>()
+    for (const [name, value] of new URL(urlValue).searchParams) {
+      const valueType: InventoryValueType = /^-?\d+(?:\.\d+)?$/u.test(value)
+        ? 'number'
+        : 'string'
+      const existing = grouped.get(name)
+      grouped.set(name, existing && existing !== valueType ? 'unknown' : valueType)
     }
+    return [...grouped.entries()]
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([name, valueType]) => ({
+        kind: 'query',
+        name,
+        valueType,
+        required: true
+      }))
+  }
+
+  private inventoryDiscoveryHash(input: {
+    type: string
+    url: string
+    pageId?: string
+    fields?: readonly { name: string; type: string; required: boolean }[]
+  }): string {
+    const url = new URL(input.url)
+    return sha256Text(
+      JSON.stringify({
+        type: input.type,
+        route: `${url.origin}${url.pathname}`,
+        queryNames: [...url.searchParams.keys()].sort(),
+        pageId: input.pageId ?? null,
+        fields: (input.fields ?? [])
+          .map(({ name, type, required }) => ({ name, type, required }))
+          .sort((left, right) =>
+            `${left.name}\u0000${left.type}` < `${right.name}\u0000${right.type}`
+              ? -1
+              : `${left.name}\u0000${left.type}` > `${right.name}\u0000${right.type}`
+                ? 1
+                : 0
+          )
+      })
+    )
+  }
+
+  private upsertReadInventory(input: {
+    scanId: string
+    pageId?: string
+    url: string
+    sourceType: 'target-base' | 'link'
+    initiator?: string
+  }) {
+    return this.inventoryService.upsertInventory({
+      scanId: input.scanId,
+      ...(input.pageId ? { pageId: input.pageId } : {}),
+      method: 'GET',
+      url: input.url,
+      bodyShape: { rootType: 'none', fields: [] },
+      codec: 'none',
+      transport: 'standard-http',
+      allowedHeaders: [
+        { name: 'accept', valueType: 'string', required: true },
+        { name: 'user-agent', valueType: 'string', required: true }
+      ],
+      templateVersion: '1.0.0',
+      requiredCapabilityIds: ['http.reviewed-read'],
+      selectors: this.querySelectors(input.url),
+      preview: { url: input.url },
+      source: {
+        type: input.sourceType,
+        sourceHash: this.inventoryDiscoveryHash({
+          type: input.sourceType,
+          url: input.url,
+          ...(input.pageId ? { pageId: input.pageId } : {})
+        }),
+        ...(input.pageId ? { pageId: input.pageId } : {}),
+        ...(input.initiator ? { initiator: input.initiator } : {}),
+        confidence: 1
+      }
+    })
+  }
+
+  private async upsertTargetBaseInventory(scanId: string): Promise<void> {
+    const context = await this.loadContext(scanId)
+    await this.upsertReadInventory({
+      scanId,
+      url: context.target.baseUrl,
+      sourceType: 'target-base'
+    })
   }
 
   private async persistForm(scanId: string, pageId: string, form: BrowserFormSummary): Promise<void> {
@@ -1461,23 +1630,81 @@ export class DefaultScanCoordinator {
         if (!url.searchParams.has(field.name)) url.searchParams.set(field.name, '')
       }
     }
-    const endpoint = await this.repository.upsertEndpoint({
+    const fields = new Map<
+      string,
+      { name: string; valueType: InventoryValueType; required: boolean }
+    >()
+    for (const field of form.fields) {
+      const name = field.name.trim()
+      if (!name) continue
+      const valueType: InventoryValueType =
+        field.type === 'number' || field.type === 'range'
+          ? 'number'
+          : field.type === 'checkbox' || field.type === 'radio'
+            ? 'boolean'
+            : field.type === 'file'
+              ? 'binary'
+              : 'string'
+      const existing = fields.get(name)
+      fields.set(name, {
+        name,
+        valueType:
+          existing && existing.valueType !== valueType
+            ? 'unknown'
+            : valueType,
+        required: Boolean(existing?.required || field.required)
+      })
+    }
+    const fieldList = [...fields.values()]
+    await this.inventoryService.upsertInventory({
       scanId,
       pageId,
       method,
       url: url.toString(),
-      source: 'form'
-    })
-    for (const field of form.fields) {
-      await this.repository.upsertParameter({
-        endpointId: endpoint.id,
+      ...(method === 'GET'
+        ? {}
+        : { contentType: 'application/x-www-form-urlencoded' }),
+      bodyShape:
+        method === 'GET'
+          ? { rootType: 'none', fields: [] }
+          : {
+              rootType: 'object',
+              fields: fieldList.map((field) => ({
+                path: `/${field.name.replaceAll('~', '~0').replaceAll('/', '~1')}`,
+                valueType: field.valueType,
+                required: field.required
+              }))
+            },
+      codec: method === 'GET' ? 'none' : 'form',
+      transport: 'standard-http',
+      allowedHeaders:
+        method === 'GET'
+          ? []
+          : [{ name: 'content-type', valueType: 'string', required: true }],
+      templateVersion: '1.0.0',
+      requiredCapabilityIds: [
+        method === 'GET' ? 'http.reviewed-read' : 'http.test-object-write'
+      ],
+      selectors: fieldList.map((field) => ({
+        kind: method === 'GET' ? 'query' : 'form',
         name: field.name,
-        location: method === 'GET' ? 'query' : 'form',
-        dataType: field.type,
-        required: field.required,
-        exampleMasked: '[form-field]'
-      })
-    }
+        valueType: field.valueType,
+        required: field.required
+      })),
+      preview: { url: url.toString() },
+      source: {
+        type: 'form',
+        sourceHash: this.inventoryDiscoveryHash({
+          type: 'form',
+          url: url.toString(),
+          pageId,
+          fields: form.fields
+        }),
+        pageId,
+        initiator: pageId,
+        confidence: 1
+      }
+    })
   }
 
   private headersForIdentity(identity?: IdentityRecord): Record<string, string> {
@@ -1637,13 +1864,42 @@ export class DefaultScanCoordinator {
     return { scan, row, target, scope, identities }
   }
 
-  private requireExecutableFamilies(
-    families: readonly VulnerabilityFamily[]
-  ): void {
-    this.vulnerabilityPlatform.executionGate.requireExecutableFamilies(
-      families,
-      this.vulnerabilityExecutionEnvironment
-    )
+  private async awaitOnIncompatibleModuleSnapshot(
+    scanId: string,
+    phase: ScanRecord['phase'],
+    runtime: CoordinatorRuntimeState,
+    families: readonly VulnerabilityFamily[],
+    snapshotSetSealed: boolean
+  ): Promise<ScanRecord | undefined> {
+    try {
+      requireSealedScanModuleSnapshotSet(snapshotSetSealed)
+      verifyScanModuleSnapshots(
+        await this.repository.listScanModuleSnapshots(scanId),
+        families,
+        this.vulnerabilityExecutionEnvironment,
+        this.vulnerabilityPlatform
+      )
+      return undefined
+    } catch (error) {
+      if (!(error instanceof ScanModuleSnapshotError)) throw error
+      const awaiting = transitionRuntime(runtime, {
+        type: 'await-user'
+      }) as CoordinatorRuntimeState
+      return this.repository.markScanAwaitingUser({
+        scanId,
+        phase,
+        runtimeState: awaiting as unknown as Record<string, unknown>,
+        reason: `module-snapshot-incompatible:${error.code}`,
+        message:
+          '扫描冻结的模块或能力版本无法精确恢复，已进入等待用户并按 Inconclusive 处理。',
+        detail: {
+          code: error.code,
+          familyId: error.familyId,
+          environment: this.vulnerabilityExecutionEnvironment,
+          endState: 'inconclusive'
+        }
+      })
+    }
   }
 
   private async assertBudget(
@@ -1672,5 +1928,35 @@ export class DefaultScanCoordinator {
     const event = await this.repository.addScanEvent(input)
     this.onEvent?.(event)
     return event
+  }
+
+  private async awaitOnPendingInventoryReview(
+    scanId: string,
+    phase: ScanRecord['phase'],
+    runtime: CoordinatorRuntimeState,
+    scanStatus: ScanRecord['status']
+  ): Promise<ScanRecord | undefined> {
+    const pendingReviewVariantIds =
+      await this.repository.listPendingActiveL1ReviewVariantIds(scanId)
+    if (pendingReviewVariantIds.length === 0) return undefined
+    if (scanStatus === 'awaiting-user') {
+      const current = await this.repository.getScan(scanId)
+      if (!current) throw new Error('Scan disappeared while awaiting inventory review.')
+      return current
+    }
+    const awaiting = transitionRuntime(runtime, {
+      type: 'await-user'
+    }) as CoordinatorRuntimeState
+    return this.repository.markScanAwaitingUser({
+      scanId,
+      phase,
+      runtimeState: awaiting as unknown as Record<string, unknown>,
+      reason: 'inventory-review-required',
+      message: `${pendingReviewVariantIds.length} 个 L1 请求变体仍等待人工 review。`,
+      detail: {
+        reviewRequiredCount: pendingReviewVariantIds.length,
+        endState: 'awaiting-user'
+      }
+    })
   }
 }

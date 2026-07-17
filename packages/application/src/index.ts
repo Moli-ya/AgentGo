@@ -5,7 +5,10 @@ import {
   transitionRuntime,
   type ScanRuntimeState
 } from '@agentgo/agent-runtime'
-import { KnowledgeIntelligenceCandidateSchema } from '@agentgo/contracts'
+import {
+  CreateScanInputSchema,
+  KnowledgeIntelligenceCandidateSchema
+} from '@agentgo/contracts'
 import type {
   AgentModelProfileSelection,
   AgentRole,
@@ -27,6 +30,9 @@ import type {
   ModelProfileRecord,
   ModelProfileUsageRecord,
   ReportRecord,
+  RequestVariantRecord,
+  ReviewVariantInput,
+  RetireVariantInput,
   ReviewKnowledgeImportInput,
   SaveModelProfileInput,
   SaveMcpServerInput,
@@ -38,9 +44,10 @@ import type {
   TargetRecord,
   UpdateTargetInput,
   UpdateKnowledgeCandidateInput,
+  UpsertInventoryInput,
+  UpsertInventoryResult,
   ExtractKnowledgeImportInput,
   Environment,
-  VulnerabilityFamily,
   WorkspaceRecord
 } from '@agentgo/contracts'
 import {
@@ -64,14 +71,24 @@ import {
   KNOWLEDGE_INGESTION_PROMPTS,
   KnowledgeReviewerOutputSchema
 } from './agent-prompts'
+import { InventoryService } from './inventory-service'
 import { ReportService, type ReportContent } from './report-service'
+import {
+  ScanModuleSnapshotError,
+  buildScanModuleSnapshotDrafts,
+  computeScanModuleSnapshotHash,
+  requireSealedScanModuleSnapshotSet,
+  verifyScanModuleSnapshots
+} from './scan-module-snapshot'
 import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
 
 export * from './execution-policy'
 export * from './execution-service'
+export * from './inventory-service'
 export * from './report-service'
 export * from './agent-prompts'
 export * from './scan-coordinator'
+export * from './scan-module-snapshot'
 export * from './validation-engine'
 export * from './vulnerability-bundles'
 export * from './vulnerability-execution-gate'
@@ -93,6 +110,7 @@ export interface AgentGoApplicationDependencies {
   mcpHub?: McpHub
   reportService?: ReportService
   scanCoordinator?: ScanCoordinator
+  inventoryService?: InventoryService
   vulnerabilityPlatform: Day2VulnerabilityPlatform
   vulnerabilityExecutionEnvironment: Environment
 }
@@ -106,6 +124,7 @@ export class AgentGoApplicationService {
   private readonly reportService?: ReportService
   private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
   private readonly vulnerabilityExecutionEnvironment: Environment
+  private readonly inventoryService: InventoryService
   private scanCoordinator?: ScanCoordinator
 
   constructor(dependencies: AgentGoApplicationDependencies) {
@@ -122,6 +141,12 @@ export class AgentGoApplicationService {
     this.scanCoordinator = dependencies.scanCoordinator
     this.vulnerabilityPlatform = dependencies.vulnerabilityPlatform
     this.vulnerabilityExecutionEnvironment = dependencies.vulnerabilityExecutionEnvironment
+    this.inventoryService =
+      dependencies.inventoryService ??
+      new InventoryService(
+        dependencies.repository,
+        dependencies.vulnerabilityPlatform.capabilityCatalog
+      )
   }
 
   setScanCoordinator(coordinator: ScanCoordinator): void {
@@ -268,6 +293,18 @@ export class AgentGoApplicationService {
     return this.repository.listScans({ workspaceId })
   }
 
+  upsertInventory(input: UpsertInventoryInput): Promise<UpsertInventoryResult> {
+    return this.inventoryService.upsertInventory(input)
+  }
+
+  reviewVariant(input: ReviewVariantInput): Promise<RequestVariantRecord> {
+    return this.inventoryService.reviewVariant(input)
+  }
+
+  retireVariant(input: RetireVariantInput): Promise<RequestVariantRecord> {
+    return this.inventoryService.retireVariant(input)
+  }
+
   async getScanDetail(scanId: string): Promise<ScanDetail> {
     const scan = await this.repository.getScan(scanId)
     if (!scan) throw new Error('扫描不存在。')
@@ -291,23 +328,34 @@ export class AgentGoApplicationService {
   }
 
   async createScan(input: CreateScanInput): Promise<ScanRecord> {
+    const parsedInput = CreateScanInputSchema.parse(input)
     const families = [
-      ...(input.families ?? this.vulnerabilityPlatform.defaultScanFamilies)
+      ...(parsedInput.families ?? this.vulnerabilityPlatform.defaultScanFamilies)
     ]
-    this.requireExecutableFamilies(families)
+    const moduleSnapshotDrafts = buildScanModuleSnapshotDrafts(
+      families,
+      this.vulnerabilityExecutionEnvironment,
+      this.vulnerabilityPlatform
+    )
     const plan = createDefaultScanPlan(families)
-    plan.budget = input.budget
+    plan.budget = parsedInput.budget
     const runtime = createRuntimeState()
-    const modelProfileIds = await this.resolveScanModelProfiles(input.modelProfileIds)
+    const modelProfileIds = await this.resolveScanModelProfiles(
+      parsedInput.modelProfileIds
+    )
     return this.repository.createScan(
       {
-        ...input,
+        ...parsedInput,
         families,
-        description: input.description.trim(),
+        description: parsedInput.description.trim(),
         modelProfileIds
       },
       plan as unknown as Record<string, unknown>,
-      runtime as unknown as Record<string, unknown>
+      runtime as unknown as Record<string, unknown>,
+      moduleSnapshotDrafts.map((draft) => ({
+        draft,
+        snapshotHash: computeScanModuleSnapshotHash(draft)
+      }))
     )
   }
 
@@ -315,7 +363,67 @@ export class AgentGoApplicationService {
     const row = await this.repository.getScanRow(scanId)
     if (!row) throw new Error('扫描不存在。')
     if (action === 'start' || action === 'resume') {
-      this.requireExecutableFamilies(row.configJson.families)
+      if (action === 'start' && row.status !== 'draft') {
+        throw new Error('只有草稿扫描可以启动。')
+      }
+      if (
+        action === 'resume' &&
+        !['paused', 'awaiting-user'].includes(row.status)
+      ) {
+        throw new Error('只有暂停或等待用户的扫描可以恢复。')
+      }
+      const snapshots = await this.repository.listScanModuleSnapshots(scanId)
+      try {
+        requireSealedScanModuleSnapshotSet(row.moduleSnapshotsSealed)
+        verifyScanModuleSnapshots(
+          snapshots,
+          row.configJson.families,
+          this.vulnerabilityExecutionEnvironment,
+          this.vulnerabilityPlatform
+        )
+      } catch (error) {
+        if (!(error instanceof ScanModuleSnapshotError)) throw error
+        const runtime = row.runtimeJson as unknown as ScanRuntimeState
+        const awaiting = transitionRuntime(runtime, { type: 'await-user' })
+        return this.repository.markScanAwaitingUser({
+          scanId,
+          phase: row.phase as ScanRecord['phase'],
+          runtimeState: awaiting as unknown as Record<string, unknown>,
+          reason: `module-snapshot-incompatible:${error.code}`,
+          message:
+            '扫描冻结的模块或能力版本无法精确恢复，已进入等待用户并按 Inconclusive 处理。',
+          detail: {
+            code: error.code,
+            familyId: error.familyId,
+            environment: this.vulnerabilityExecutionEnvironment,
+            endState: 'inconclusive'
+          }
+        })
+      }
+      if (action === 'resume') {
+        const pendingReviewVariantIds =
+          await this.repository.listPendingActiveL1ReviewVariantIds(scanId)
+        if (pendingReviewVariantIds.length > 0) {
+          if (row.status === 'awaiting-user') {
+            const current = await this.repository.getScan(scanId)
+            if (!current) throw new Error('Scan disappeared while awaiting inventory review.')
+            return current
+          }
+          const runtime = row.runtimeJson as unknown as ScanRuntimeState
+          const awaiting = transitionRuntime(runtime, { type: 'await-user' })
+          return this.repository.markScanAwaitingUser({
+            scanId,
+            phase: row.phase as ScanRecord['phase'],
+            runtimeState: awaiting as unknown as Record<string, unknown>,
+            reason: 'inventory-review-required',
+            message: `${pendingReviewVariantIds.length} 个 L1 请求变体仍等待人工 review。`,
+            detail: {
+              reviewRequiredCount: pendingReviewVariantIds.length,
+              endState: 'awaiting-user'
+            }
+          })
+        }
+      }
     }
 
     if (this.scanCoordinator) {
@@ -835,15 +943,6 @@ export class AgentGoApplicationService {
   private requireReportService(): ReportService {
     if (!this.reportService) throw new Error('报告服务尚未初始化。')
     return this.reportService
-  }
-
-  private requireExecutableFamilies(
-    families: readonly VulnerabilityFamily[]
-  ): void {
-    this.vulnerabilityPlatform.executionGate.requireExecutableFamilies(
-      families,
-      this.vulnerabilityExecutionEnvironment
-    )
   }
 
   private async requireKnowledgeIngestionProfile(

@@ -43,7 +43,9 @@ const protector: SecretProtector = {
 describe('DefaultScanCoordinator V1 vertical loop', () => {
   it('completes SQLi, XSS, SSRF and IDOR signal-to-report flows on an authorized local fixture', async () => {
     let baseUrl = ''
+    let fixtureRequestCount = 0
     const server = createServer(async (request, response) => {
+      fixtureRequestCount += 1
       const url = new URL(request.url ?? '/', baseUrl)
       if (url.pathname === '/') {
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -52,6 +54,7 @@ describe('DefaultScanCoordinator V1 vertical loop', () => {
           <a href="/xss?q=hello">XSS</a>
           <a href="/ssrf?url=none">SSRF</a>
           <a href="/resource?id=resource-a">Resource</a>
+          <form action="/sqli" method="get"><input name="id" required></form>
         </body></html>`)
         return
       }
@@ -126,12 +129,14 @@ describe('DefaultScanCoordinator V1 vertical loop', () => {
     const reportService = new ReportService(repository, evidenceStore)
     let plannerRequestUrl = ''
     let plannerRequestBody = ''
+    let plannerInvocationCount = 0
     const modelGateway = new DefaultModelGateway({
       profiles: repository,
       credentials: credentialStore,
       prompts: new AgentPromptCatalog(),
       invocations: repository,
       fetchImplementation: async (input, init) => {
+        plannerInvocationCount += 1
         plannerRequestUrl = String(input)
         plannerRequestBody = String(init?.body ?? '')
         return new Response(
@@ -274,7 +279,54 @@ describe('DefaultScanCoordinator V1 vertical loop', () => {
       })
 
       await application.controlScan(scan.id, 'start')
-      const completed = await coordinator.waitForScan(scan.id)
+      let completed = await coordinator.waitForScan(scan.id)
+      expect(completed.status).toBe('awaiting-user')
+      expect(completed.phase).toBe('intake')
+      expect(fixtureRequestCount).toBe(0)
+      expect(plannerInvocationCount).toBe(0)
+      expect(await database.orm.select().from(agentRuns)).toHaveLength(0)
+      const targetBaseReviewVariantIds =
+        await repository.listPendingActiveL1ReviewVariantIds(scan.id)
+      expect(targetBaseReviewVariantIds).toHaveLength(1)
+      expect(
+        (await repository.listInventorySources(scan.id)).map((source) => source.type)
+      ).toEqual(['target-base'])
+      await expect(application.controlScan(scan.id, 'resume')).resolves.toMatchObject({
+        status: 'awaiting-user'
+      })
+      expect(fixtureRequestCount).toBe(0)
+      expect(plannerInvocationCount).toBe(0)
+
+      const reviewedVariantIds = new Set<string>()
+      let reviewRounds = 0
+      while (completed.status === 'awaiting-user' && reviewRounds < 4) {
+        const pendingReviewVariantIds =
+          await repository.listPendingActiveL1ReviewVariantIds(scan.id)
+        expect(pendingReviewVariantIds.length).toBeGreaterThan(0)
+        for (const requestVariantId of pendingReviewVariantIds) {
+          await application.reviewVariant({
+            scanId: scan.id,
+            requestVariantId,
+            reviewStatus: 'reviewed',
+            reviewedBy: 'fixture-manifest:scan-coordinator-test'
+          })
+          reviewedVariantIds.add(requestVariantId)
+        }
+        reviewRounds += 1
+        await application.controlScan(scan.id, 'resume')
+        completed = await coordinator.waitForScan(scan.id)
+        if (reviewRounds === 1) {
+          expect(completed.status).toBe('awaiting-user')
+          expect(fixtureRequestCount).toBeGreaterThan(0)
+          expect(plannerInvocationCount).toBe(1)
+          expect(
+            new Set(
+              (await repository.listInventorySources(scan.id)).map((source) => source.type)
+            )
+          ).toEqual(new Set(['target-base', 'link', 'form']))
+        }
+      }
+      expect(reviewRounds).toBeGreaterThanOrEqual(2)
       const findings = await application.listFindings({ scanId: scan.id })
       const confirmedFamilies = new Set(
         findings
@@ -288,6 +340,32 @@ describe('DefaultScanCoordinator V1 vertical loop', () => {
       expect((await application.listReports(scan.id)).some((report) => report.redacted)).toBe(true)
       const detail = await application.getScanDetail(scan.id)
       expect(detail.endpoints.length).toBeGreaterThanOrEqual(4)
+      const variants = await repository.listInventoryRequestVariants(scan.id)
+      const sources = await repository.listInventorySources(scan.id)
+      expect(
+        variants.some(
+          (variant) => variant.reviewStatus === 'reviewed'
+        )
+      ).toBe(true)
+      expect(
+        variants
+          .filter((variant) => variant.reviewStatus === 'reviewed')
+          .every((variant) => variant.executionClass === 'active-l1')
+      ).toBe(true)
+      expect(
+        sources
+          .filter((source) => source.reviewStatus === 'reviewed')
+          .every((source) =>
+            reviewedVariantIds.has(source.requestVariantId)
+          )
+      ).toBe(true)
+      expect(
+        (await repository.listScanModuleSnapshots(scan.id)).every(
+          (snapshot) =>
+            snapshot.environment === 'attested-fixture' &&
+            snapshot.authorization === 'legacy-v1-compatibility'
+        )
+      ).toBe(true)
       expect(scan.modelProfileIds.planner).toBe(externalPlannerProfile.id)
       expect(plannerRequestUrl).toBe('https://planner.example.test/v1/chat/completions')
       const plannerPayload = JSON.parse(plannerRequestBody) as {

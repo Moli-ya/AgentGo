@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto'
 import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { applyDatabaseMigrations } from '../packages/db/src/database'
 import { DATABASE_MIGRATIONS } from '../packages/db/src/migrations'
 import { sha256Text, stableJson } from '../packages/db/src/repository'
 
@@ -147,27 +148,9 @@ function removeDatabaseSidecars(filePath: string): void {
 }
 
 function applyCurrentMigrations(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE __agentgo_migrations (
-      id TEXT PRIMARY KEY,
-      applied_at INTEGER NOT NULL
-    );
-  `)
-  const recordMigration = database.prepare(
-    'INSERT INTO __agentgo_migrations (id, applied_at) VALUES (?, ?)'
-  )
-
-  for (const migration of DATABASE_MIGRATIONS) {
-    database.exec('BEGIN IMMEDIATE')
-    try {
-      database.exec(migration.sql)
-      recordMigration.run(migration.id, FIXED_TIMESTAMP)
-      database.exec('COMMIT')
-    } catch (error) {
-      database.exec('ROLLBACK')
-      throw error
-    }
-  }
+  applyDatabaseMigrations(database, {
+    appliedAt: () => FIXED_TIMESTAMP
+  })
 }
 
 function insertSyntheticFixture(database: DatabaseSync): void {
@@ -253,9 +236,10 @@ function insertSyntheticFixture(database: DatabaseSync): void {
            id, target_id, name, scope_snapshot_id, status, phase, progress,
            budget_json, config_json, plan_json, runtime_json,
            request_count, model_tokens, estimated_cost_micros,
-           checkpoint_count, last_error, created_at, updated_at,
+           checkpoint_count, last_error, module_snapshots_sealed,
+           created_at, updated_at,
            started_at, completed_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         FIXTURE_IDS.scan,
@@ -274,6 +258,7 @@ function insertSyntheticFixture(database: DatabaseSync): void {
         0,
         0,
         null,
+        1,
         FIXED_TIMESTAMP,
         FIXED_TIMESTAMP,
         null,
@@ -497,7 +482,8 @@ function assertExactSyntheticFixture(database: DatabaseSync): void {
       `SELECT id, target_id, name, scope_snapshot_id, status, phase,
               progress, budget_json, config_json, plan_json, runtime_json,
               request_count, model_tokens, estimated_cost_micros,
-              checkpoint_count, last_error, created_at, updated_at,
+              checkpoint_count, last_error, module_snapshots_sealed,
+              created_at, updated_at,
               started_at, completed_at
        FROM scans`
     )
@@ -510,6 +496,7 @@ function assertExactSyntheticFixture(database: DatabaseSync): void {
   invariant(scan.model_tokens === 0 && scan.estimated_cost_micros === 0, 'scan must have no model usage')
   invariant(scan.checkpoint_count === 0, 'scan must have no checkpoints')
   invariant(scan.last_error === null, 'scan must not contain an error')
+  invariant(scan.module_snapshots_sealed === 1, 'scan module snapshots must be sealed')
   invariant(scan.budget_json === stableJson(fixtureBudget), 'scan budget mismatch')
   invariant(scan.config_json === stableJson(fixtureConfig), 'scan configuration mismatch')
   invariant(scan.plan_json === stableJson(fixturePlan), 'scan plan mismatch')

@@ -161,6 +161,9 @@ importers:
       '@agentgo/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@agentgo/domain':
+        specifier: workspace:*
+        version: link:../domain
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2

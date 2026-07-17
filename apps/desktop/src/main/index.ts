@@ -7,6 +7,7 @@ import {
   AgentPromptCatalog,
   DefaultScanCoordinator,
   ExecutionService,
+  InventoryService,
   PolicyBroker,
   PolicyExecutionGuard,
   ReportService,
@@ -477,12 +478,17 @@ function createInfrastructure(): MainInfrastructure {
     prompts: new AgentPromptCatalog(),
     invocations: repository
   })
+  const inventoryService = new InventoryService(
+    repository,
+    vulnerabilityPlatform.capabilityCatalog
+  )
   const applicationService = new AgentGoApplicationService({
     repository,
     credentialStore,
     evidenceStore,
     modelGateway,
     reportService,
+    inventoryService,
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'authorized-real-target'
   })
@@ -494,6 +500,7 @@ function createInfrastructure(): MainInfrastructure {
     policyBroker: new PolicyBroker(repository),
     modelGateway,
     reportService,
+    inventoryService,
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'authorized-real-target',
     onEvent: (event) => {

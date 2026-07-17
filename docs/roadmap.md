@@ -8,9 +8,12 @@ AgentGo 已有可运行 V1 原型：五个结构化 Agent、不可变 Scope、Se
 
 2026-07-15 Day2 已交付开放 Family/Technique ID、严格 Module Bundle、不可变 Capability Catalog、原子 DefinitionRegistry、registered-only Activation 视图、四类 V1 adapter 和四处执行门禁。它没有新增已资格化漏洞：`security.headers` 仍不可执行，四类 legacy 临时兼容路径仍显示 registered/unqualified；完整验证证据见 [Day2 完成审计](audits/day2-completion-2026-07-15.md)。
 
+2026-07-18 Day3 已交付唯一 scan-scoped Inventory、结构化 RequestVariant/Selector、多来源幂等 provenance、opaque refs、不可变且封存的 Scan 模块快照，以及旧库最小化迁移。开始/恢复会按冻结的 Definition、Capability descriptor、Registry 与环境失败关闭，缺失历史语义不会偷用新版；完整证据见 [Day3 完成审计](audits/day3-completion-2026-07-18.md)。这些合同与存储没有新增主动漏洞能力，也没有把 registered-only module 变成 qualified/supported。
+
 V1 的真实主动覆盖仍是四类 GET query 场景：SQLi 布尔差异、反射 XSS 离线 marker、目标响应回显式 SSRF proof、两个测试身份的只读 IDOR。它不是复杂真实 Web 的全覆盖平台，以下内容尚未实现：
 
-- scan-scoped RequestVariant、多来源 Inventory、OpenAPI/HAR 导入和 SPA fetch/XHR 发现；
+- OpenAPI/HAR/Postman/GraphQL 描述导入、HTML/JS 静态发现和 SPA fetch/XHR 发现；
+- RequestVariant 的通用三阶段请求编译、非标准 codec/transport adapter 与统一执行租约；
 - SessionVault、CSRF、完整身份/授权矩阵、登录和多步骤 workflow；
 - 可信 L2 审批、TestObject、SideEffectEnvelope、CleanupReceipt 和恢复；
 - blind OOB、stored/复杂 DOM XSS、Body/Path IDOR、复杂 selector；

@@ -9,6 +9,7 @@ import {
   AgentPromptCatalog,
   DefaultScanCoordinator,
   ExecutionService,
+  InventoryService,
   PolicyBroker,
   PolicyExecutionGuard,
   ReportService,
@@ -270,12 +271,17 @@ async function run(): Promise<void> {
     invocations: repository
   })
   const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
+  const inventoryService = new InventoryService(
+    repository,
+    vulnerabilityPlatform.capabilityCatalog
+  )
   const application = new AgentGoApplicationService({
     repository,
     credentialStore,
     evidenceStore,
     modelGateway,
     reportService,
+    inventoryService,
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'attested-fixture'
   })
@@ -287,6 +293,7 @@ async function run(): Promise<void> {
     policyBroker: new PolicyBroker(repository),
     modelGateway,
     reportService,
+    inventoryService,
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'attested-fixture'
   })
@@ -367,7 +374,34 @@ async function run(): Promise<void> {
         }
       })
       await application.controlScan(scan.id, 'start')
-      const completed = await coordinator.waitForScan(scan.id)
+      let completed = await coordinator.waitForScan(scan.id)
+      let reviewRound = 0
+      const maximumReviewRounds = 8
+      while (completed.status === 'awaiting-user' && reviewRound < maximumReviewRounds) {
+        const pendingReviewVariantIds =
+          await repository.listPendingActiveL1ReviewVariantIds(scan.id)
+        if (pendingReviewVariantIds.length === 0) {
+          throw new Error(
+            `Scan ${scan.id} is awaiting user without reviewable L1 inventory variants.`
+          )
+        }
+        for (const requestVariantId of pendingReviewVariantIds) {
+          await application.reviewVariant({
+            scanId: scan.id,
+            requestVariantId,
+            reviewStatus: 'reviewed',
+            reviewedBy: `fixture-manifest:${item.caseId}`
+          })
+        }
+        reviewRound += 1
+        await application.controlScan(scan.id, 'resume')
+        completed = await coordinator.waitForScan(scan.id)
+      }
+      if (completed.status === 'awaiting-user') {
+        throw new Error(
+          `Scan ${scan.id} exceeded ${maximumReviewRounds} inventory review rounds.`
+        )
+      }
       const finding = (await application.listFindings({ scanId: scan.id })).find(
         (candidate) => candidate.family === item.family
       )

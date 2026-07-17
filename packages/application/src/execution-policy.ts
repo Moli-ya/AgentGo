@@ -5,6 +5,7 @@ import type {
   HttpExecutionAuthorizationInput,
   HttpExecutionGuard
 } from '@agentgo/http-runner'
+import { redactInventoryUrlPreview } from '@agentgo/domain'
 import {
   AgentGoRepository,
   type ProbeProposalRecord,
@@ -39,17 +40,31 @@ export class PolicyBroker {
       id: input.action.id ?? randomUUID(),
       scopeSnapshotId: scope.id
     }
+    const persistedAction: ProbeAction = {
+      ...action,
+      targetUrl: redactInventoryUrlPreview(action.targetUrl)
+    }
     const proposal = await this.repository.createProbeProposal({
       scanId: input.scanId,
       agentRunId: input.agentRunId,
-      action,
+      action: persistedAction,
       stopConditions: input.stopConditions
     })
     const evaluated: PolicyDecision = evaluateProbe(action, scope)
+    const persistedDecision: PolicyDecision = {
+      ...evaluated,
+      ...(evaluated.normalizedTarget
+        ? {
+            normalizedTarget: redactInventoryUrlPreview(
+              evaluated.normalizedTarget
+            )
+          }
+        : {})
+    }
     const decision = await this.repository.recordPolicyDecision({
       proposalId: proposal.id,
       scopeSnapshotId: scope.id,
-      decision: evaluated,
+      decision: persistedDecision,
       ...(input.approvedBy ? { approvedBy: input.approvedBy } : {})
     })
     await this.repository.addScanEvent({
@@ -63,7 +78,7 @@ export class PolicyBroker {
         proposalId: proposal.id,
         policyDecisionId: decision.id,
         code: decision.code,
-        targetUrl: decision.normalizedTarget ?? action.targetUrl
+        targetUrl: decision.normalizedTarget ?? persistedAction.targetUrl
       }
     })
     return { proposal, decision }

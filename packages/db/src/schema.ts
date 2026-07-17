@@ -9,6 +9,12 @@ import {
 import type {
   AgentModelProfileSelection,
   AgentRole,
+  AllowedHeaderDescriptor,
+  BodyEncoding,
+  InventoryBodyShape,
+  InventoryExecutionClass,
+  InventoryLifecycleStatus,
+  InventoryReviewStatus,
   KnowledgeFieldEvidence,
   KnowledgeHttpRequestTemplate,
   KnowledgeImportStatus,
@@ -21,7 +27,14 @@ import type {
   McpServerStatus,
   McpToolSummary,
   McpTransport,
+  RedactedInventoryPreview,
   ScanBudget,
+  ScanModuleAuthorization,
+  ScanSnapshotEnvironment,
+  ScanSnapshotCapabilityDescriptor,
+  SelectorRef,
+  TransportKind,
+  VersionedDefinitionRef,
   VulnerabilityFamily
 } from '@agentgo/contracts'
 
@@ -173,6 +186,9 @@ export const scans = sqliteTable(
     estimatedCostMicros: integer('estimated_cost_micros').notNull(),
     checkpointCount: integer('checkpoint_count').notNull(),
     lastError: text('last_error'),
+    moduleSnapshotsSealed: integer('module_snapshots_sealed', {
+      mode: 'boolean'
+    }).notNull(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     startedAt: integer('started_at'),
@@ -250,18 +266,22 @@ export const endpoints = sqliteTable(
     method: text('method').notNull(),
     urlTemplate: text('url_template').notNull(),
     normalizedUrl: text('normalized_url').notNull(),
+    canonicalRoute: text('canonical_route').notNull(),
     contentType: text('content_type'),
     source: text('source').notNull(),
     status: text('status').notNull(),
+    lifecycleStatus: text('lifecycle_status')
+      .$type<InventoryLifecycleStatus>()
+      .notNull(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull()
   },
   (table) => [
     index('endpoints_scan_idx').on(table.scanId),
-    uniqueIndex('endpoints_scan_method_url_uq').on(
+    uniqueIndex('endpoints_scan_method_route_uq').on(
       table.scanId,
       table.method,
-      table.normalizedUrl
+      table.canonicalRoute
     )
   ]
 )
@@ -284,6 +304,162 @@ export const parameters = sqliteTable(
       table.endpointId,
       table.name,
       table.location
+    )
+  ]
+)
+
+export const requestVariants = sqliteTable(
+  'request_variants',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    endpointId: text('endpoint_id').notNull(),
+    contentType: text('content_type'),
+    bodyShape: text('body_shape_json', { mode: 'json' })
+      .$type<InventoryBodyShape>()
+      .notNull(),
+    codec: text('codec').$type<BodyEncoding>().notNull(),
+    transport: text('transport').$type<TransportKind>().notNull(),
+    allowedHeaders: text('allowed_headers_json', { mode: 'json' })
+      .$type<AllowedHeaderDescriptor[]>()
+      .notNull(),
+    redactedPreview: text('redacted_preview_json', { mode: 'json' })
+      .$type<RedactedInventoryPreview>()
+      .notNull(),
+    templateVersion: text('template_version').notNull(),
+    requiredCapabilityIds: text('required_capability_ids_json', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    reviewStatus: text('review_status')
+      .$type<InventoryReviewStatus>()
+      .notNull(),
+    reviewedBy: text('reviewed_by'),
+    reviewedAt: integer('reviewed_at'),
+    executionClass: text('execution_class')
+      .$type<InventoryExecutionClass>()
+      .notNull(),
+    lifecycleStatus: text('lifecycle_status')
+      .$type<InventoryLifecycleStatus>()
+      .notNull(),
+    retiredAt: integer('retired_at'),
+    structureHash: text('structure_hash').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [
+    index('request_variants_scan_idx').on(table.scanId),
+    index('request_variants_endpoint_idx').on(table.endpointId),
+    uniqueIndex('request_variants_endpoint_structure_uq').on(
+      table.endpointId,
+      table.structureHash
+    )
+  ]
+)
+
+export const requestVariantSelectors = sqliteTable(
+  'request_variant_selectors',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    requestVariantId: text('request_variant_id').notNull(),
+    kind: text('kind').$type<SelectorRef['kind']>().notNull(),
+    selectorJson: text('selector_json', { mode: 'json' })
+      .$type<SelectorRef>()
+      .notNull(),
+    structureHash: text('structure_hash').notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    index('request_variant_selectors_scan_idx').on(table.scanId),
+    index('request_variant_selectors_variant_idx').on(table.requestVariantId),
+    uniqueIndex('request_variant_selectors_variant_structure_uq').on(
+      table.requestVariantId,
+      table.structureHash
+    )
+  ]
+)
+
+export const inventorySources = sqliteTable(
+  'inventory_sources',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    endpointId: text('endpoint_id').notNull(),
+    requestVariantId: text('request_variant_id').notNull(),
+    type: text('source_type').notNull(),
+    sourceHash: text('source_hash').notNull(),
+    provenanceHash: text('provenance_hash').notNull(),
+    pageId: text('page_id'),
+    evidenceRef: text('evidence_ref'),
+    initiator: text('initiator'),
+    confidencePpm: integer('confidence_ppm').notNull(),
+    discoveredAt: integer('discovered_at').notNull(),
+    reviewStatus: text('review_status')
+      .$type<InventoryReviewStatus>()
+      .notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    index('inventory_sources_scan_idx').on(table.scanId),
+    index('inventory_sources_endpoint_idx').on(table.endpointId),
+    index('inventory_sources_variant_idx').on(table.requestVariantId),
+    uniqueIndex('inventory_sources_scan_provenance_uq').on(
+      table.scanId,
+      table.provenanceHash
+    )
+  ]
+)
+
+export const scanModuleSnapshots = sqliteTable(
+  'scan_module_snapshots',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    familyId: text('family_id').notNull(),
+    moduleId: text('module_id').notNull(),
+    moduleVersion: text('module_version').notNull(),
+    definitionHash: text('definition_hash').notNull(),
+    techniqueId: text('technique_id').notNull(),
+    techniqueVersion: text('technique_version').notNull(),
+    strategyRefs: text('strategy_refs_json', { mode: 'json' })
+      .$type<VersionedDefinitionRef[]>()
+      .notNull(),
+    confirmationRuleRefs: text('confirmation_rule_refs_json', { mode: 'json' })
+      .$type<VersionedDefinitionRef[]>()
+      .notNull(),
+    evidenceProfileRefs: text('evidence_profile_refs_json', { mode: 'json' })
+      .$type<VersionedDefinitionRef[]>()
+      .notNull(),
+    remediationRefs: text('remediation_refs_json', { mode: 'json' })
+      .$type<VersionedDefinitionRef[]>()
+      .notNull(),
+    requiredCapabilityIds: text('required_capability_ids_json', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    capabilityDescriptors: text('capability_descriptors_json', {
+      mode: 'json'
+    })
+      .$type<ScanSnapshotCapabilityDescriptor[]>()
+      .notNull(),
+    capabilitySnapshotHash: text('capability_snapshot_hash').notNull(),
+    selectedCapabilitiesHash: text('selected_capabilities_hash').notNull(),
+    selectedDefinitionsHash: text('selected_definitions_hash').notNull(),
+    registrySnapshotHash: text('registry_snapshot_hash').notNull(),
+    environment: text('environment')
+      .$type<ScanSnapshotEnvironment>()
+      .notNull(),
+    authorization: text('authorization')
+      .$type<ScanModuleAuthorization>()
+      .notNull(),
+    snapshotHash: text('snapshot_hash').notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    index('scan_module_snapshots_scan_idx').on(table.scanId),
+    uniqueIndex('scan_module_snapshots_scan_technique_uq').on(
+      table.scanId,
+      table.familyId,
+      table.techniqueId
     )
   ]
 )

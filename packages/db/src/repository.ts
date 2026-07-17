@@ -12,8 +12,10 @@ import {
   type SQL
 } from 'drizzle-orm'
 import type {
+  AllowedHeaderDescriptor,
   AuditLogRecord,
   AgentRole,
+  BodyEncoding,
   CreateKnowledgeImportInput,
   CreateScanInput,
   CreateTargetInput,
@@ -21,7 +23,12 @@ import type {
   DashboardSnapshot,
   FindingRecord,
   IdentityRecord,
+  InventoryBodyShape,
   InventoryEndpoint,
+  InventoryEndpointRecord,
+  InventoryExecutionClass,
+  InventoryReviewStatus,
+  InventorySourceRecord,
   KnowledgeAgentRunRecord,
   KnowledgeImportDetail,
   KnowledgeImportStatus,
@@ -35,25 +42,48 @@ import type {
   PolicyDecision,
   ProbeAction,
   ReportRecord,
+  RequestVariantRecord,
   SaveModelProfileInput,
   SaveIdentityInput,
   ScanEvent,
+  ScanModuleSnapshotDraft,
+  ScanModuleSnapshotRecord,
   ScanRecord,
+  SelectorRef,
   TargetRecord,
   TargetScope,
   TargetScopeRecord,
   UpdateTargetInput,
+  RedactedInventoryPreview,
+  TransportKind,
+  UpsertInventoryResult,
+  VersionedDefinitionRef,
   WorkspaceRecord
 } from '@agentgo/contracts'
+import {
+  InventoryEndpointRecordSchema,
+  InventorySourceRecordSchema,
+  RequestVariantRecordSchema,
+  SelectorRefSchema,
+  TargetBaseUrlSchema
+} from '@agentgo/contracts'
+import {
+  INVENTORY_REDACTION_MARKER,
+  redactInventoryText,
+  redactInventoryUrlPreview,
+  stableInventoryHash
+} from '@agentgo/domain'
 import type { AgentGoDatabase } from './database'
 import {
   agentRuns,
   auditLogs,
   confirmationRules,
   endpoints,
+  evidenceItems,
   findingEvidence,
   findings,
   identities,
+  inventorySources,
   interactions,
   knowledgeAgentRuns,
   knowledgeChunks,
@@ -69,9 +99,12 @@ import {
   policyDecisions,
   probeProposals,
   reports,
+  requestVariantSelectors,
+  requestVariants,
   scanCheckpoints,
   scanEvents,
   scanIdentities,
+  scanModuleSnapshots,
   scans,
   signals,
   targetScopes,
@@ -99,6 +132,7 @@ type CreatePersistedScanInput = Omit<CreateScanInput, 'families'> & {
 // node:sqlite is synchronous; serialize same-process writers so one connection
 // cannot block the event loop while another connection is waiting to commit.
 const scopeSnapshotTails = new Map<string, Promise<void>>()
+const inventoryWriteTails = new Map<string, Promise<void>>()
 
 function scopeSnapshotLockKey(filePath: string): string {
   if (filePath === ':memory:') return filePath
@@ -117,6 +151,148 @@ export interface InventoryPageRecord {
   status: string
   createdAt: string
   updatedAt: string
+}
+
+export interface PreparedInventorySelector {
+  readonly selector: SelectorRef
+  readonly structureHash: string
+}
+
+/**
+ * Internal persistence shape produced only by Application's InventoryService.
+ * Producer-owned inputs deliberately cannot supply review or execution state.
+ */
+export interface PreparedInventoryWrite {
+  readonly scanId: string
+  readonly pageId?: string
+  readonly method: string
+  readonly canonicalRoute: string
+  readonly compatibilityUrl: string
+  readonly contentType?: string
+  readonly bodyShape: InventoryBodyShape
+  readonly codec: BodyEncoding
+  readonly transport: TransportKind
+  readonly allowedHeaders: readonly AllowedHeaderDescriptor[]
+  readonly templateVersion: string
+  readonly requiredCapabilityIds: readonly string[]
+  readonly redactedPreview: RedactedInventoryPreview
+  readonly executionClass: InventoryExecutionClass
+  readonly structureHash: string
+  readonly selectors: readonly PreparedInventorySelector[]
+  readonly source: {
+    readonly type: string
+    readonly sourceHash: string
+    readonly provenanceHash: string
+    readonly pageId?: string
+    readonly evidenceRef?: string
+    readonly initiator?: string
+    readonly confidencePpm: number
+  }
+}
+
+const PREPARED_INVENTORY_RECORD_ID = 'prepared-inventory-validation'
+const PREPARED_INVENTORY_TIMESTAMP = '1970-01-01T00:00:00.000Z'
+
+/** Validate every derived persistence field before the transaction can mutate state. */
+function validatePreparedInventoryWrite(input: PreparedInventoryWrite): void {
+  if (input.compatibilityUrl !== input.redactedPreview.url) {
+    throw new TypeError('Inventory compatibility URL must equal its redacted preview URL.')
+  }
+  if (
+    input.pageId !== undefined &&
+    input.source.pageId !== undefined &&
+    input.pageId !== input.source.pageId
+  ) {
+    throw new TypeError('Inventory endpoint and source page IDs must match.')
+  }
+
+  InventoryEndpointRecordSchema.parse({
+    id: PREPARED_INVENTORY_RECORD_ID,
+    scanId: input.scanId,
+    ...(input.pageId ? { pageId: input.pageId } : {}),
+    method: input.method,
+    canonicalRoute: input.canonicalRoute,
+    lifecycleStatus: 'active',
+    createdAt: PREPARED_INVENTORY_TIMESTAMP,
+    updatedAt: PREPARED_INVENTORY_TIMESTAMP
+  })
+  RequestVariantRecordSchema.parse({
+    id: PREPARED_INVENTORY_RECORD_ID,
+    scanId: input.scanId,
+    endpointId: PREPARED_INVENTORY_RECORD_ID,
+    ...(input.contentType ? { contentType: input.contentType } : {}),
+    bodyShape: input.bodyShape,
+    codec: input.codec,
+    transport: input.transport,
+    allowedHeaders: input.allowedHeaders,
+    templateVersion: input.templateVersion,
+    requiredCapabilityIds: input.requiredCapabilityIds,
+    selectors: input.selectors.map(({ selector }) => selector),
+    redactedPreview: input.redactedPreview,
+    reviewStatus: 'unreviewed',
+    executionClass: input.executionClass,
+    lifecycleStatus: 'active',
+    structureHash: input.structureHash,
+    createdAt: PREPARED_INVENTORY_TIMESTAMP,
+    updatedAt: PREPARED_INVENTORY_TIMESTAMP
+  })
+  InventorySourceRecordSchema.parse({
+    id: PREPARED_INVENTORY_RECORD_ID,
+    scanId: input.scanId,
+    endpointId: PREPARED_INVENTORY_RECORD_ID,
+    requestVariantId: PREPARED_INVENTORY_RECORD_ID,
+    type: input.source.type,
+    sourceHash: input.source.sourceHash,
+    provenanceHash: input.source.provenanceHash,
+    ...(input.source.pageId ? { pageId: input.source.pageId } : {}),
+    ...(input.source.evidenceRef
+      ? { evidenceRef: input.source.evidenceRef }
+      : {}),
+    ...(input.source.initiator ? { initiator: input.source.initiator } : {}),
+    confidencePpm: input.source.confidencePpm,
+    discoveredAt: PREPARED_INVENTORY_TIMESTAMP,
+    reviewStatus: 'unreviewed',
+    createdAt: PREPARED_INVENTORY_TIMESTAMP
+  })
+
+  const selectors = input.selectors.map(({ selector }) => selector)
+  const expectedStructureHash = stableInventoryHash({
+    contentType: input.contentType ?? null,
+    bodyShape: input.bodyShape,
+    codec: input.codec,
+    transport: input.transport,
+    allowedHeaders: input.allowedHeaders,
+    templateVersion: input.templateVersion,
+    requiredCapabilityIds: input.requiredCapabilityIds,
+    selectors
+  })
+  if (input.structureHash !== expectedStructureHash) {
+    throw new TypeError('Inventory structure hash does not match its derived fields.')
+  }
+  for (const { selector, structureHash } of input.selectors) {
+    if (structureHash !== stableInventoryHash(selector)) {
+      throw new TypeError('Inventory selector hash does not match its selector.')
+    }
+  }
+  const expectedProvenanceHash = stableInventoryHash({
+    scanId: input.scanId,
+    method: input.method,
+    canonicalRoute: input.canonicalRoute,
+    structureHash: input.structureHash,
+    type: input.source.type,
+    sourceHash: input.source.sourceHash,
+    pageId: input.source.pageId ?? null,
+    evidenceRef: input.source.evidenceRef ?? null,
+    initiator: input.source.initiator ?? null
+  })
+  if (input.source.provenanceHash !== expectedProvenanceHash) {
+    throw new TypeError('Inventory provenance hash does not match its derived fields.')
+  }
+}
+
+export interface PreparedScanModuleSnapshot {
+  readonly draft: ScanModuleSnapshotDraft
+  readonly snapshotHash: string
 }
 
 export interface KnowledgeIndexEntryInput {
@@ -231,6 +407,10 @@ function optionalIso(value: number | null): string | undefined {
   return value === null ? undefined : toIso(value)
 }
 
+function compareBinary(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(stableValue)
@@ -239,7 +419,7 @@ function stableValue(value: unknown): unknown {
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareBinary(left, right))
         .map(([key, nested]) => [key, stableValue(nested)])
     )
   }
@@ -528,6 +708,100 @@ function mapPage(row: typeof pages.$inferSelect): InventoryPageRecord {
   }
 }
 
+function mapInventoryEndpointRecord(
+  row: typeof endpoints.$inferSelect
+): InventoryEndpointRecord {
+  return {
+    id: row.id,
+    scanId: row.scanId,
+    ...(row.pageId ? { pageId: row.pageId } : {}),
+    method: row.method,
+    canonicalRoute: row.canonicalRoute,
+    lifecycleStatus: row.lifecycleStatus as InventoryEndpointRecord['lifecycleStatus'],
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt)
+  }
+}
+
+function mapRequestVariantRecord(
+  row: typeof requestVariants.$inferSelect,
+  selectors: readonly SelectorRef[]
+): RequestVariantRecord {
+  return {
+    id: row.id,
+    scanId: row.scanId,
+    endpointId: row.endpointId,
+    ...(row.contentType ? { contentType: row.contentType } : {}),
+    bodyShape: row.bodyShape as InventoryBodyShape,
+    codec: row.codec as BodyEncoding,
+    transport: row.transport as TransportKind,
+    allowedHeaders: row.allowedHeaders as AllowedHeaderDescriptor[],
+    templateVersion: row.templateVersion,
+    requiredCapabilityIds: row.requiredCapabilityIds,
+    selectors: [...selectors],
+    redactedPreview: row.redactedPreview as RedactedInventoryPreview,
+    reviewStatus: row.reviewStatus as InventoryReviewStatus,
+    ...(row.reviewedBy ? { reviewedBy: row.reviewedBy } : {}),
+    ...(row.reviewedAt !== null ? { reviewedAt: toIso(row.reviewedAt) } : {}),
+    executionClass: row.executionClass as InventoryExecutionClass,
+    lifecycleStatus: row.lifecycleStatus as RequestVariantRecord['lifecycleStatus'],
+    ...(row.retiredAt !== null ? { retiredAt: toIso(row.retiredAt) } : {}),
+    structureHash: row.structureHash,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt)
+  }
+}
+
+function mapInventorySourceRecord(
+  row: typeof inventorySources.$inferSelect
+): InventorySourceRecord {
+  return {
+    id: row.id,
+    scanId: row.scanId,
+    endpointId: row.endpointId,
+    requestVariantId: row.requestVariantId,
+    type: row.type,
+    sourceHash: row.sourceHash,
+    provenanceHash: row.provenanceHash,
+    ...(row.pageId ? { pageId: row.pageId } : {}),
+    ...(row.evidenceRef ? { evidenceRef: row.evidenceRef } : {}),
+    ...(row.initiator ? { initiator: row.initiator } : {}),
+    confidencePpm: row.confidencePpm,
+    discoveredAt: toIso(row.discoveredAt),
+    reviewStatus: row.reviewStatus as InventoryReviewStatus,
+    createdAt: toIso(row.createdAt)
+  }
+}
+
+function mapScanModuleSnapshotRecord(
+  row: typeof scanModuleSnapshots.$inferSelect
+): ScanModuleSnapshotRecord {
+  return {
+    id: row.id,
+    scanId: row.scanId,
+    familyId: row.familyId,
+    moduleId: row.moduleId,
+    moduleVersion: row.moduleVersion,
+    definitionHash: row.definitionHash,
+    techniqueId: row.techniqueId,
+    techniqueVersion: row.techniqueVersion,
+    strategyRefs: row.strategyRefs as VersionedDefinitionRef[],
+    confirmationRuleRefs: row.confirmationRuleRefs as VersionedDefinitionRef[],
+    evidenceProfileRefs: row.evidenceProfileRefs as VersionedDefinitionRef[],
+    remediationRefs: row.remediationRefs as VersionedDefinitionRef[],
+    requiredCapabilityIds: row.requiredCapabilityIds,
+    capabilityDescriptors: row.capabilityDescriptors as ScanModuleSnapshotRecord['capabilityDescriptors'],
+    capabilitySnapshotHash: row.capabilitySnapshotHash,
+    selectedCapabilitiesHash: row.selectedCapabilitiesHash,
+    selectedDefinitionsHash: row.selectedDefinitionsHash,
+    registrySnapshotHash: row.registrySnapshotHash,
+    environment: row.environment as ScanModuleSnapshotRecord['environment'],
+    authorization: row.authorization as ScanModuleSnapshotRecord['authorization'],
+    snapshotHash: row.snapshotHash,
+    createdAt: toIso(row.createdAt)
+  }
+}
+
 function mapSignal(row: typeof signals.$inferSelect): StoredSignalRecord {
   return {
     id: row.id,
@@ -645,17 +919,54 @@ function mapReport(row: typeof reports.$inferSelect): StoredReportRecord {
   }
 }
 
-function normalizedInventoryUrl(value: string): string {
-  const url = new URL(value)
-  url.hash = ''
-  const sorted = [...url.searchParams.entries()].sort(([leftName, leftValue], [rightName, rightValue]) =>
-    leftName === rightName
-      ? leftValue.localeCompare(rightValue)
-      : leftName.localeCompare(rightName)
-  )
+function normalizedTargetBaseUrl(value: string): string {
+  return new URL(TargetBaseUrlSchema.parse(value)).toString()
+}
+
+function reviewedLegacyExecutionUrl(
+  previewUrl: string,
+  queryNames: ReadonlySet<string>
+): string {
+  const url = new URL(previewUrl)
   url.search = ''
-  for (const [name, parameterValue] of sorted) url.searchParams.append(name, parameterValue)
+  for (const name of [...queryNames].sort(compareBinary)) {
+    url.searchParams.append(name, INVENTORY_REDACTION_MARKER)
+  }
   return url.toString()
+}
+
+function compatibilityParameter(
+  selector: SelectorRef
+): {
+  name: string
+  location: InventoryEndpoint['parameters'][number]['location']
+  dataType: string
+  required: boolean
+} | undefined {
+  if (
+    selector.kind === 'query' ||
+    selector.kind === 'path' ||
+    selector.kind === 'header' ||
+    selector.kind === 'cookie' ||
+    selector.kind === 'form'
+  ) {
+    return {
+      name: selector.name,
+      location: selector.kind,
+      dataType: selector.valueType,
+      required: selector.required
+    }
+  }
+  if (selector.kind === 'json-pointer') {
+    const encodedName = selector.pointer.split('/').at(-1) ?? selector.pointer
+    return {
+      name: encodedName.replaceAll('~1', '/').replaceAll('~0', '~') || '/',
+      location: 'json',
+      dataType: selector.valueType,
+      required: selector.required
+    }
+  }
+  return undefined
 }
 
 function scopeSnapshotHash(scope: Omit<TargetScope, 'id'>): string {
@@ -695,6 +1006,26 @@ export class AgentGoRepository {
       release?.()
       if (scopeSnapshotTails.get(lockKey) === current) {
         scopeSnapshotTails.delete(lockKey)
+      }
+    }
+  }
+
+  private async withInventoryWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    const lockKey = this.scopeLockKey
+    const previous = inventoryWriteTails.get(lockKey) ?? Promise.resolve()
+    let release: (() => void) | undefined
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    inventoryWriteTails.set(lockKey, current)
+
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release?.()
+      if (inventoryWriteTails.get(lockKey) === current) {
+        inventoryWriteTails.delete(lockKey)
       }
     }
   }
@@ -1365,9 +1696,7 @@ export class AgentGoRepository {
     const now = Date.now()
     const targetId = randomUUID()
     const scopeId = randomUUID()
-    const parsedBaseUrl = new URL(input.baseUrl)
-    parsedBaseUrl.hash = ''
-    const normalizedBaseUrl = parsedBaseUrl.toString()
+    const normalizedBaseUrl = normalizedTargetBaseUrl(input.baseUrl)
     const scopeValue: Omit<TargetScope, 'id'> = {
       ...input.scope,
       authorizationReference:
@@ -1454,9 +1783,7 @@ export class AgentGoRepository {
         patch.authorizationReference = input.authorizationReference
       }
       if (input.baseUrl !== undefined) {
-        const url = new URL(input.baseUrl)
-        url.hash = ''
-        patch.baseUrl = url.toString()
+        patch.baseUrl = normalizedTargetBaseUrl(input.baseUrl)
       }
 
       let createdScope: TargetScopeRecord | undefined
@@ -1690,17 +2017,19 @@ export class AgentGoRepository {
   createScan(
     input: CreatePersistedScanInput,
     plan: Record<string, unknown>,
-    runtime: Record<string, unknown>
+    runtime: Record<string, unknown>,
+    moduleSnapshots: readonly PreparedScanModuleSnapshot[] = []
   ): Promise<ScanRecord> {
     return this.withScopeSnapshotLock(() =>
-      this.createScanWithFrozenScope(input, plan, runtime)
+      this.createScanWithFrozenScope(input, plan, runtime, moduleSnapshots)
     )
   }
 
   private async createScanWithFrozenScope(
     input: CreatePersistedScanInput,
     plan: Record<string, unknown>,
-    runtime: Record<string, unknown>
+    runtime: Record<string, unknown>,
+    moduleSnapshots: readonly PreparedScanModuleSnapshot[]
   ): Promise<ScanRecord> {
     const target = await this.getTarget(input.targetId)
     if (!target) throw new Error('扫描目标不存在。')
@@ -1753,6 +2082,7 @@ export class AgentGoRepository {
       estimatedCostMicros: 0,
       checkpointCount: 0,
       lastError: null,
+      moduleSnapshotsSealed: false,
       createdAt: now,
       updatedAt: now,
       startedAt: null,
@@ -1765,6 +2095,38 @@ export class AgentGoRepository {
           input.identityIds.map((identityId) => ({ scanId: id, identityId }))
         )
       }
+      if (moduleSnapshots.length > 0) {
+        await transaction.insert(scanModuleSnapshots).values(
+          moduleSnapshots.map(({ draft, snapshotHash }) => ({
+            id: randomUUID(),
+            scanId: id,
+            familyId: draft.familyId,
+            moduleId: draft.moduleId,
+            moduleVersion: draft.moduleVersion,
+            definitionHash: draft.definitionHash,
+            techniqueId: draft.techniqueId,
+            techniqueVersion: draft.techniqueVersion,
+            strategyRefs: [...draft.strategyRefs],
+            confirmationRuleRefs: [...draft.confirmationRuleRefs],
+            evidenceProfileRefs: [...draft.evidenceProfileRefs],
+            remediationRefs: [...draft.remediationRefs],
+            requiredCapabilityIds: [...draft.requiredCapabilityIds],
+            capabilityDescriptors: [...draft.capabilityDescriptors],
+            capabilitySnapshotHash: draft.capabilitySnapshotHash,
+            selectedCapabilitiesHash: draft.selectedCapabilitiesHash,
+            selectedDefinitionsHash: draft.selectedDefinitionsHash,
+            registrySnapshotHash: draft.registrySnapshotHash,
+            environment: draft.environment,
+            authorization: draft.authorization,
+            snapshotHash,
+            createdAt: now
+          }))
+        )
+      }
+      await transaction
+        .update(scans)
+        .set({ moduleSnapshotsSealed: true })
+        .where(eq(scans.id, id))
       await transaction.insert(scanEvents).values({
         id: randomUUID(),
         scanId: id,
@@ -1775,6 +2137,7 @@ export class AgentGoRepository {
           scopeSnapshotId: scope.id,
           scopeRevision: scope.revision,
           families: input.families,
+          moduleSnapshotHashes: moduleSnapshots.map(({ snapshotHash }) => snapshotHash),
           modelProfileIds: configuration.modelProfileIds
         },
         createdAt: now
@@ -1802,6 +2165,15 @@ export class AgentGoRepository {
       .where(eq(scans.id, id))
       .limit(1)
     return row
+  }
+
+  async listScanModuleSnapshots(scanId: string): Promise<ScanModuleSnapshotRecord[]> {
+    const rows = await this.database.orm
+      .select()
+      .from(scanModuleSnapshots)
+      .where(eq(scanModuleSnapshots.scanId, scanId))
+      .orderBy(asc(scanModuleSnapshots.familyId), asc(scanModuleSnapshots.techniqueId))
+    return rows.map(mapScanModuleSnapshotRecord)
   }
 
   async getScan(id: string): Promise<ScanRecord | undefined> {
@@ -1909,6 +2281,55 @@ export class AgentGoRepository {
         .where(eq(scans.id, input.scanId))
     })
     return id
+  }
+
+  async markScanAwaitingUser(input: {
+    scanId: string
+    phase: ScanRecord['phase']
+    runtimeState: Record<string, unknown>
+    reason: string
+    message: string
+    detail: Record<string, unknown>
+  }): Promise<ScanRecord> {
+    await this.database.orm.transaction(async (transaction) => {
+      const [scan] = await transaction
+        .select({ id: scans.id })
+        .from(scans)
+        .where(eq(scans.id, input.scanId))
+        .limit(1)
+      if (!scan) throw new Error('扫描不存在。')
+      const now = Date.now()
+      await transaction.insert(scanCheckpoints).values({
+        id: randomUUID(),
+        scanId: input.scanId,
+        phase: input.phase,
+        stateJson: input.runtimeState,
+        reason: input.reason,
+        createdAt: now
+      })
+      await transaction
+        .update(scans)
+        .set({
+          status: 'awaiting-user',
+          runtimeJson: input.runtimeState,
+          checkpointCount: sql`${scans.checkpointCount} + 1`,
+          lastError: input.message,
+          updatedAt: now
+        })
+        .where(eq(scans.id, input.scanId))
+      await transaction.insert(scanEvents).values({
+        id: randomUUID(),
+        scanId: input.scanId,
+        type: 'status',
+        level: 'warning',
+        message: input.message,
+        detailJson: input.detail,
+        createdAt: now
+      })
+    })
+    const scan = await this.getScan(input.scanId)
+    if (!scan) throw new Error('扫描进入等待状态后无法读取。')
+    return scan
   }
 
   async createAgentRun(input: {
@@ -2218,7 +2639,7 @@ export class AgentGoRepository {
       : undefined
   }
 
-  async upsertPage(input: {
+  upsertPage(input: {
     scanId: string
     url: string
     title?: string
@@ -2227,7 +2648,24 @@ export class AgentGoRepository {
     stateHash?: string
     status?: string
   }): Promise<InventoryPageRecord> {
-    const url = normalizedInventoryUrl(input.url)
+    return this.withInventoryWriteLock(() => this.upsertPageUnlocked(input))
+  }
+
+  private async upsertPageUnlocked(input: {
+    scanId: string
+    url: string
+    title?: string
+    depth: number
+    discoveredFrom?: string
+    stateHash?: string
+    status?: string
+  }): Promise<InventoryPageRecord> {
+    const url = redactInventoryUrlPreview(input.url)
+    // Browser DOM, importers and future producers are untrusted inputs.  The
+    // repository is the final persistence sink, so callers cannot bypass
+    // title redaction by writing through a different Application path.
+    const title =
+      input.title === undefined ? undefined : redactInventoryText(input.title, 512)
     const [existing] = await this.database.orm
       .select()
       .from(pages)
@@ -2238,7 +2676,7 @@ export class AgentGoRepository {
       await this.database.orm
         .update(pages)
         .set({
-          title: input.title ?? existing.title,
+          title: title ?? existing.title,
           depth: Math.min(existing.depth, input.depth),
           discoveredFrom: input.discoveredFrom ?? existing.discoveredFrom,
           stateHash: input.stateHash ?? existing.stateHash,
@@ -2259,7 +2697,7 @@ export class AgentGoRepository {
       id: randomUUID(),
       scanId: input.scanId,
       url,
-      title: input.title ?? null,
+      title: title ?? null,
       depth: input.depth,
       discoveredFrom: input.discoveredFrom ?? null,
       stateHash: input.stateHash ?? null,
@@ -2280,93 +2718,455 @@ export class AgentGoRepository {
     return rows.map(mapPage)
   }
 
-  async upsertEndpoint(input: {
-    scanId: string
-    pageId?: string
-    method: string
-    url: string
-    urlTemplate?: string
-    contentType?: string
-    source: string
-    status?: string
-  }): Promise<{ id: string; url: string }> {
-    const normalizedUrl = normalizedInventoryUrl(input.url)
-    const method = input.method.toUpperCase()
-    const [existing] = await this.database.orm
-      .select()
-      .from(endpoints)
-      .where(
-        and(
-          eq(endpoints.scanId, input.scanId),
-          eq(endpoints.method, method),
-          eq(endpoints.normalizedUrl, normalizedUrl)
-        )
-      )
-      .limit(1)
-    const now = Date.now()
-    if (existing) {
-      await this.database.orm
-        .update(endpoints)
-        .set({
-          pageId: input.pageId ?? existing.pageId,
-          contentType: input.contentType ?? existing.contentType,
-          source: input.source,
-          status: input.status ?? existing.status,
-          updatedAt: now
-        })
-        .where(eq(endpoints.id, existing.id))
-      return { id: existing.id, url: normalizedUrl }
-    }
-
-    const id = randomUUID()
-    await this.database.orm.insert(endpoints).values({
-      id,
-      scanId: input.scanId,
-      pageId: input.pageId ?? null,
-      method,
-      urlTemplate: input.urlTemplate ?? normalizedUrl,
-      normalizedUrl,
-      contentType: input.contentType ?? null,
-      source: input.source,
-      status: input.status ?? 'discovered',
-      createdAt: now,
-      updatedAt: now
-    })
-    return { id, url: normalizedUrl }
+  /** Atomic persistence sink used only by Application's InventoryService. */
+  persistInventory(input: PreparedInventoryWrite): Promise<UpsertInventoryResult> {
+    validatePreparedInventoryWrite(input)
+    return this.withInventoryWriteLock(() => this.persistInventoryUnlocked(input))
   }
 
-  async upsertParameter(input: {
-    endpointId: string
-    name: string
-    location: InventoryEndpoint['parameters'][number]['location']
-    dataType?: string
-    required?: boolean
-    exampleMasked?: string
-  }): Promise<string> {
-    const [existing] = await this.database.orm
+  private async persistInventoryUnlocked(
+    input: PreparedInventoryWrite
+  ): Promise<UpsertInventoryResult> {
+    const identifiers = await this.database.orm.transaction(async (transaction) => {
+      const now = Date.now()
+      if (input.source.evidenceRef) {
+        const [evidence] = await transaction
+          .select({ id: evidenceItems.id })
+          .from(evidenceItems)
+          .where(
+            and(
+              eq(evidenceItems.id, input.source.evidenceRef),
+              eq(evidenceItems.scanId, input.scanId)
+            )
+          )
+          .limit(1)
+        if (!evidence) {
+          throw new Error('Inventory evidence reference does not belong to this scan.')
+        }
+      }
+      let [endpoint] = await transaction
+        .select()
+        .from(endpoints)
+        .where(
+          and(
+            eq(endpoints.scanId, input.scanId),
+            eq(endpoints.method, input.method),
+            eq(endpoints.canonicalRoute, input.canonicalRoute)
+          )
+        )
+        .limit(1)
+
+      if (!endpoint) {
+        const endpointId = randomUUID()
+        await transaction.insert(endpoints).values({
+          id: endpointId,
+          scanId: input.scanId,
+          pageId: input.pageId ?? null,
+          method: input.method,
+          urlTemplate: input.canonicalRoute,
+          normalizedUrl: input.compatibilityUrl,
+          canonicalRoute: input.canonicalRoute,
+          contentType: input.contentType ?? null,
+          source: input.source.type,
+          status: 'discovered',
+          lifecycleStatus: 'active',
+          createdAt: now,
+          updatedAt: now
+        })
+        ;[endpoint] = await transaction
+          .select()
+          .from(endpoints)
+          .where(eq(endpoints.id, endpointId))
+          .limit(1)
+      } else {
+        const compatibilityUrl =
+          compareBinary(input.compatibilityUrl, endpoint.normalizedUrl) < 0
+            ? input.compatibilityUrl
+            : endpoint.normalizedUrl
+        const pageId = endpoint.pageId ?? input.pageId ?? null
+        const contentType = endpoint.contentType ?? input.contentType ?? null
+        if (
+          pageId !== endpoint.pageId ||
+          compatibilityUrl !== endpoint.normalizedUrl ||
+          contentType !== endpoint.contentType
+        ) {
+          await transaction
+            .update(endpoints)
+            .set({
+              pageId,
+              normalizedUrl: compatibilityUrl,
+              contentType,
+              updatedAt: now
+            })
+            .where(eq(endpoints.id, endpoint.id))
+        }
+      }
+      if (!endpoint) throw new Error('Inventory endpoint disappeared during upsert.')
+
+      let [variant] = await transaction
+        .select()
+        .from(requestVariants)
+        .where(
+          and(
+            eq(requestVariants.endpointId, endpoint.id),
+            eq(requestVariants.structureHash, input.structureHash)
+          )
+        )
+        .limit(1)
+      if (!variant) {
+        const variantId = randomUUID()
+        await transaction.insert(requestVariants).values({
+          id: variantId,
+          scanId: input.scanId,
+          endpointId: endpoint.id,
+          contentType: input.contentType ?? null,
+          bodyShape: input.bodyShape,
+          codec: input.codec,
+          transport: input.transport,
+          allowedHeaders: [...input.allowedHeaders],
+          redactedPreview: input.redactedPreview,
+          templateVersion: input.templateVersion,
+          requiredCapabilityIds: [...input.requiredCapabilityIds],
+          reviewStatus: 'unreviewed',
+          reviewedBy: null,
+          reviewedAt: null,
+          executionClass: input.executionClass,
+          lifecycleStatus: 'active',
+          retiredAt: null,
+          structureHash: input.structureHash,
+          createdAt: now,
+          updatedAt: now
+        })
+        ;[variant] = await transaction
+          .select()
+          .from(requestVariants)
+          .where(eq(requestVariants.id, variantId))
+          .limit(1)
+        if (endpoint.lifecycleStatus === 'retired') {
+          await transaction
+            .update(endpoints)
+            .set({ lifecycleStatus: 'active', updatedAt: now })
+            .where(eq(endpoints.id, endpoint.id))
+        }
+      }
+      if (!variant) throw new Error('Request variant disappeared during upsert.')
+      if (variant.scanId !== input.scanId || variant.endpointId !== endpoint.id) {
+        throw new Error('Request variant structure hash collided across inventory scope.')
+      }
+
+      for (const prepared of input.selectors) {
+        const [existingSelector] = await transaction
+          .select({ id: requestVariantSelectors.id })
+          .from(requestVariantSelectors)
+          .where(
+            and(
+              eq(requestVariantSelectors.requestVariantId, variant.id),
+              eq(requestVariantSelectors.structureHash, prepared.structureHash)
+            )
+          )
+          .limit(1)
+        if (!existingSelector) {
+          await transaction.insert(requestVariantSelectors).values({
+            id: randomUUID(),
+            scanId: input.scanId,
+            requestVariantId: variant.id,
+            kind: prepared.selector.kind,
+            selectorJson: prepared.selector,
+            structureHash: prepared.structureHash,
+            createdAt: now
+          })
+        }
+
+        const projection = compatibilityParameter(prepared.selector)
+        if (!projection) continue
+        const [existingParameter] = await transaction
+          .select({ id: parameters.id })
+          .from(parameters)
+          .where(
+            and(
+              eq(parameters.endpointId, endpoint.id),
+              eq(parameters.name, projection.name),
+              eq(parameters.location, projection.location)
+            )
+          )
+          .limit(1)
+        if (!existingParameter) {
+          await transaction.insert(parameters).values({
+            id: randomUUID(),
+            endpointId: endpoint.id,
+            name: projection.name,
+            location: projection.location,
+            dataType: projection.dataType,
+            required: projection.required,
+            exampleMasked: null,
+            createdAt: now
+          })
+        }
+      }
+
+      let [source] = await transaction
+        .select()
+        .from(inventorySources)
+        .where(
+          and(
+            eq(inventorySources.scanId, input.scanId),
+            eq(inventorySources.provenanceHash, input.source.provenanceHash)
+          )
+        )
+        .limit(1)
+      if (!source) {
+        const sourceId = randomUUID()
+        await transaction.insert(inventorySources).values({
+          id: sourceId,
+          scanId: input.scanId,
+          endpointId: endpoint.id,
+          requestVariantId: variant.id,
+          type: input.source.type,
+          sourceHash: input.source.sourceHash,
+          provenanceHash: input.source.provenanceHash,
+          pageId: input.source.pageId ?? null,
+          evidenceRef: input.source.evidenceRef ?? null,
+          initiator: input.source.initiator ?? null,
+          confidencePpm: input.source.confidencePpm,
+          discoveredAt: now,
+          reviewStatus: 'unreviewed',
+          createdAt: now
+        })
+        ;[source] = await transaction
+          .select()
+          .from(inventorySources)
+          .where(eq(inventorySources.id, sourceId))
+          .limit(1)
+      }
+      if (!source) throw new Error('Inventory source disappeared during upsert.')
+      if (
+        source.endpointId !== endpoint.id ||
+        source.requestVariantId !== variant.id ||
+        source.sourceHash !== input.source.sourceHash ||
+        source.type !== input.source.type
+      ) {
+        throw new Error('Inventory provenance hash collided with a different source.')
+      }
+      return { endpointId: endpoint.id, variantId: variant.id, sourceId: source.id }
+    })
+
+    const endpoint = await this.getInventoryEndpointRecord(identifiers.endpointId, input.scanId)
+    const requestVariant = await this.getInventoryRequestVariant(
+      identifiers.variantId,
+      input.scanId
+    )
+    const source = await this.getInventorySource(identifiers.sourceId, input.scanId)
+    if (!endpoint || !requestVariant || !source) {
+      throw new Error('Inventory records disappeared after atomic upsert.')
+    }
+    return { endpoint, requestVariant, source }
+  }
+
+  async getInventoryEndpointRecord(
+    id: string,
+    scanId: string
+  ): Promise<InventoryEndpointRecord | undefined> {
+    const [row] = await this.database.orm
       .select()
-      .from(parameters)
+      .from(endpoints)
+      .where(and(eq(endpoints.id, id), eq(endpoints.scanId, scanId)))
+      .limit(1)
+    return row ? mapInventoryEndpointRecord(row) : undefined
+  }
+
+  async getInventoryRequestVariant(
+    id: string,
+    scanId: string
+  ): Promise<RequestVariantRecord | undefined> {
+    const [row] = await this.database.orm
+      .select()
+      .from(requestVariants)
+      .where(and(eq(requestVariants.id, id), eq(requestVariants.scanId, scanId)))
+      .limit(1)
+    if (!row) return undefined
+    const selectorRows = await this.database.orm
+      .select()
+      .from(requestVariantSelectors)
       .where(
         and(
-          eq(parameters.endpointId, input.endpointId),
-          eq(parameters.name, input.name),
-          eq(parameters.location, input.location)
+          eq(requestVariantSelectors.scanId, scanId),
+          eq(requestVariantSelectors.requestVariantId, id)
         )
       )
+      .orderBy(asc(requestVariantSelectors.structureHash))
+    return mapRequestVariantRecord(
+      row,
+      selectorRows.map(({ selectorJson }) => selectorJson as unknown as SelectorRef)
+    )
+  }
+
+  async listInventoryRequestVariants(scanId: string): Promise<RequestVariantRecord[]> {
+    const rows = await this.database.orm
+      .select({ id: requestVariants.id })
+      .from(requestVariants)
+      .where(eq(requestVariants.scanId, scanId))
+      .orderBy(asc(requestVariants.createdAt), asc(requestVariants.id))
+    const records = await Promise.all(
+      rows.map(({ id }) => this.getInventoryRequestVariant(id, scanId))
+    )
+    return records.filter((record): record is RequestVariantRecord => Boolean(record))
+  }
+
+  async listPendingActiveL1ReviewVariantIds(scanId: string): Promise<string[]> {
+    return (await this.listInventoryRequestVariants(scanId))
+      .filter(
+        (variant) =>
+          variant.lifecycleStatus === 'active' &&
+          variant.executionClass === 'active-l1' &&
+          variant.reviewStatus === 'unreviewed' &&
+          variant.transport === 'standard-http' &&
+          variant.codec === 'none'
+      )
+      .map(({ id }) => id)
+  }
+
+  async getInventorySource(
+    id: string,
+    scanId: string
+  ): Promise<InventorySourceRecord | undefined> {
+    const [row] = await this.database.orm
+      .select()
+      .from(inventorySources)
+      .where(and(eq(inventorySources.id, id), eq(inventorySources.scanId, scanId)))
       .limit(1)
-    if (existing) return existing.id
-    const id = randomUUID()
-    await this.database.orm.insert(parameters).values({
-      id,
-      endpointId: input.endpointId,
-      name: input.name,
-      location: input.location,
-      dataType: input.dataType ?? null,
-      required: input.required ?? false,
-      exampleMasked: input.exampleMasked ?? null,
-      createdAt: Date.now()
+    return row ? mapInventorySourceRecord(row) : undefined
+  }
+
+  async listInventorySources(
+    scanId: string,
+    requestVariantId?: string
+  ): Promise<InventorySourceRecord[]> {
+    const conditions: SQL[] = [eq(inventorySources.scanId, scanId)]
+    if (requestVariantId) {
+      conditions.push(eq(inventorySources.requestVariantId, requestVariantId))
+    }
+    const rows = await this.database.orm
+      .select()
+      .from(inventorySources)
+      .where(and(...conditions))
+      .orderBy(asc(inventorySources.discoveredAt), asc(inventorySources.id))
+    return rows.map(mapInventorySourceRecord)
+  }
+
+  reviewInventoryVariant(input: {
+    scanId: string
+    requestVariantId: string
+    reviewStatus: Exclude<InventoryReviewStatus, 'unreviewed'>
+    reviewedBy: string
+  }): Promise<RequestVariantRecord> {
+    return this.withInventoryWriteLock(() =>
+      this.reviewInventoryVariantUnlocked(input)
+    )
+  }
+
+  private async reviewInventoryVariantUnlocked(input: {
+    scanId: string
+    requestVariantId: string
+    reviewStatus: Exclude<InventoryReviewStatus, 'unreviewed'>
+    reviewedBy: string
+  }): Promise<RequestVariantRecord> {
+    await this.database.orm.transaction(async (transaction) => {
+      const [variant] = await transaction
+        .select()
+        .from(requestVariants)
+        .where(
+          and(
+            eq(requestVariants.id, input.requestVariantId),
+            eq(requestVariants.scanId, input.scanId)
+          )
+        )
+        .limit(1)
+      if (!variant) throw new Error('Request variant does not exist in this scan.')
+      if (variant.lifecycleStatus !== 'active') {
+        throw new Error('Retired request variants cannot be reviewed.')
+      }
+      const now = Date.now()
+      await transaction
+        .update(requestVariants)
+        .set({
+          reviewStatus: input.reviewStatus,
+          reviewedBy: input.reviewedBy,
+          reviewedAt: now,
+          updatedAt: now
+        })
+        .where(eq(requestVariants.id, variant.id))
+      await transaction
+        .update(inventorySources)
+        .set({ reviewStatus: input.reviewStatus })
+        .where(
+          and(
+            eq(inventorySources.scanId, input.scanId),
+            eq(inventorySources.requestVariantId, variant.id)
+          )
+        )
     })
-    return id
+    const record = await this.getInventoryRequestVariant(
+      input.requestVariantId,
+      input.scanId
+    )
+    if (!record) throw new Error('Request variant disappeared after review.')
+    return record
+  }
+
+  retireInventoryVariant(input: {
+    scanId: string
+    requestVariantId: string
+  }): Promise<RequestVariantRecord> {
+    return this.withInventoryWriteLock(() =>
+      this.retireInventoryVariantUnlocked(input)
+    )
+  }
+
+  private async retireInventoryVariantUnlocked(input: {
+    scanId: string
+    requestVariantId: string
+  }): Promise<RequestVariantRecord> {
+    await this.database.orm.transaction(async (transaction) => {
+      const [variant] = await transaction
+        .select()
+        .from(requestVariants)
+        .where(
+          and(
+            eq(requestVariants.id, input.requestVariantId),
+            eq(requestVariants.scanId, input.scanId)
+          )
+        )
+        .limit(1)
+      if (!variant) throw new Error('Request variant does not exist in this scan.')
+      if (variant.lifecycleStatus === 'retired') return
+      const now = Date.now()
+      await transaction
+        .update(requestVariants)
+        .set({ lifecycleStatus: 'retired', retiredAt: now, updatedAt: now })
+        .where(eq(requestVariants.id, variant.id))
+      const [activeSibling] = await transaction
+        .select({ id: requestVariants.id })
+        .from(requestVariants)
+        .where(
+          and(
+            eq(requestVariants.endpointId, variant.endpointId),
+            eq(requestVariants.lifecycleStatus, 'active')
+          )
+        )
+        .limit(1)
+      if (!activeSibling) {
+        await transaction
+          .update(endpoints)
+          .set({ lifecycleStatus: 'retired', updatedAt: now })
+          .where(eq(endpoints.id, variant.endpointId))
+      }
+    })
+    const record = await this.getInventoryRequestVariant(
+      input.requestVariantId,
+      input.scanId
+    )
+    if (!record) throw new Error('Request variant disappeared after retirement.')
+    return record
   }
 
   async listInventoryEndpoints(scanId: string): Promise<InventoryEndpoint[]> {
@@ -2395,6 +3195,204 @@ export class AgentGoRepository {
             ...(parameter.dataType ? { dataType: parameter.dataType } : {}),
             required: parameter.required
           }))
+        }
+      })
+    )
+  }
+
+  /**
+   * Narrow compatibility projection for the fixed legacy-v1 coordinator.
+   * Only reviewed L1 variants are eligible. Producer-controlled source labels
+   * and fixture environment labels never grant review. Rejected, retired,
+   * non-HTTP, non-query, unsupported custom-header, and non-L1 variants never
+   * enter the active path.
+   */
+  async listLegacyV1ExecutionEndpoints(scanId: string): Promise<InventoryEndpoint[]> {
+    const candidateVariants = await this.database.orm
+      .select({
+        id: requestVariants.id,
+        endpointId: requestVariants.endpointId,
+        contentType: requestVariants.contentType,
+        allowedHeaders: requestVariants.allowedHeaders,
+        redactedPreview: requestVariants.redactedPreview,
+        structureHash: requestVariants.structureHash
+      })
+      .from(requestVariants)
+      .where(
+        and(
+          eq(requestVariants.scanId, scanId),
+          eq(requestVariants.lifecycleStatus, 'active'),
+          eq(requestVariants.executionClass, 'active-l1'),
+          eq(requestVariants.transport, 'standard-http'),
+          eq(requestVariants.codec, 'none'),
+          eq(requestVariants.reviewStatus, 'reviewed')
+        )
+      )
+      .orderBy(asc(requestVariants.structureHash), asc(requestVariants.id))
+    if (candidateVariants.length === 0) return []
+    const candidateVariantIds = candidateVariants.map(({ id }) => id)
+    const selectorRows = await this.database.orm
+      .select({
+        requestVariantId: requestVariantSelectors.requestVariantId,
+        selectorJson: requestVariantSelectors.selectorJson
+      })
+      .from(requestVariantSelectors)
+      .where(
+        and(
+          eq(requestVariantSelectors.scanId, scanId),
+          inArray(requestVariantSelectors.requestVariantId, candidateVariantIds)
+        )
+      )
+    type ReviewedQuerySelector = Extract<SelectorRef, { kind: 'query' }>
+    const querySelectorsByVariant = new Map<
+      string,
+      Map<string, ReviewedQuerySelector>
+    >()
+    const ineligibleSelectorVariantIds = new Set<string>()
+    for (const row of selectorRows) {
+      const parsedSelector = SelectorRefSchema.safeParse(row.selectorJson)
+      if (!parsedSelector.success || parsedSelector.data.kind !== 'query') {
+        ineligibleSelectorVariantIds.add(row.requestVariantId)
+        continue
+      }
+      const selector = parsedSelector.data
+      const selectors =
+        querySelectorsByVariant.get(row.requestVariantId) ??
+        new Map<string, ReviewedQuerySelector>()
+      if (selectors.has(selector.name)) {
+        ineligibleSelectorVariantIds.add(row.requestVariantId)
+        continue
+      }
+      selectors.set(selector.name, selector)
+      querySelectorsByVariant.set(row.requestVariantId, selectors)
+    }
+    const sourceRows = await this.database.orm
+      .select({
+        id: inventorySources.id,
+        requestVariantId: inventorySources.requestVariantId,
+        type: inventorySources.type,
+        discoveredAt: inventorySources.discoveredAt
+      })
+      .from(inventorySources)
+      .where(
+        and(
+          eq(inventorySources.scanId, scanId),
+          eq(inventorySources.reviewStatus, 'reviewed'),
+          inArray(inventorySources.requestVariantId, candidateVariantIds)
+        )
+      )
+      .orderBy(asc(inventorySources.discoveredAt), asc(inventorySources.id))
+    const reviewedSourceTypeByVariant = new Map<string, string>()
+    for (const row of sourceRows) {
+      if (!reviewedSourceTypeByVariant.has(row.requestVariantId)) {
+        reviewedSourceTypeByVariant.set(row.requestVariantId, row.type)
+      }
+    }
+
+    // The legacy coordinator has one URL slot per Endpoint.  Select one
+    // reviewed variant deterministically instead of combining selectors from
+    // several variants or reusing the Endpoint's compatibility preview (which
+    // also reflects rejected/retired inventory).
+    const selectedVariantByEndpoint = new Map<
+      string,
+      (typeof candidateVariants)[number]
+    >()
+    // The coordinator always supplies these two headers. Any other declared
+    // header would be silently dropped by the legacy DTO and must fail closed.
+    const implicitLegacyHeaderNames = new Set(['accept', 'user-agent'])
+    for (const variant of candidateVariants) {
+      if (ineligibleSelectorVariantIds.has(variant.id)) continue
+      if (!querySelectorsByVariant.has(variant.id)) continue
+      if (
+        variant.allowedHeaders.some(
+          ({ name }) => !implicitLegacyHeaderNames.has(name)
+        )
+      ) {
+        continue
+      }
+      if (!reviewedSourceTypeByVariant.has(variant.id)) continue
+      if (!selectedVariantByEndpoint.has(variant.endpointId)) {
+        selectedVariantByEndpoint.set(variant.endpointId, variant)
+      }
+    }
+    const selectedVariants = [...selectedVariantByEndpoint.values()]
+    if (selectedVariants.length === 0) return []
+    const executableUrlByEndpoint = new Map(
+      selectedVariants.map(({ id, endpointId, redactedPreview }) => [
+        endpointId,
+        reviewedLegacyExecutionUrl(
+          redactedPreview.url,
+          new Set(querySelectorsByVariant.get(id)!.keys())
+        )
+      ] as const)
+    )
+    const querySelectorsByEndpoint = new Map(
+      selectedVariants.map(({ id, endpointId }) => [
+        endpointId,
+        [...querySelectorsByVariant.get(id)!.values()].sort((left, right) =>
+          compareBinary(left.name, right.name)
+        )
+      ] as const)
+    )
+
+    const eligibleEndpointIds = [
+      ...selectedVariantByEndpoint.keys()
+    ]
+    const endpointRows = await this.database.orm
+      .select()
+      .from(endpoints)
+      .where(
+        and(
+          eq(endpoints.scanId, scanId),
+          eq(endpoints.method, 'GET'),
+          eq(endpoints.lifecycleStatus, 'active'),
+          inArray(endpoints.id, eligibleEndpointIds)
+        )
+      )
+      .orderBy(asc(endpoints.createdAt))
+
+    return Promise.all(
+      endpointRows.map(async (endpoint) => {
+        const selectedVariant = selectedVariantByEndpoint.get(endpoint.id)
+        const reviewedSelectors = querySelectorsByEndpoint.get(endpoint.id) ?? []
+        const executableUrl = executableUrlByEndpoint.get(endpoint.id)
+        const reviewedSourceType = selectedVariant
+          ? reviewedSourceTypeByVariant.get(selectedVariant.id)
+          : undefined
+        if (!selectedVariant || !executableUrl || !reviewedSourceType) {
+          throw new Error('Reviewed legacy request variant lost its executable projection inputs.')
+        }
+        const parameterRows = await this.database.orm
+          .select()
+          .from(parameters)
+          .where(eq(parameters.endpointId, endpoint.id))
+          .orderBy(asc(parameters.createdAt))
+        return {
+          id: endpoint.id,
+          method: endpoint.method,
+          url: executableUrl,
+          ...(selectedVariant.contentType
+            ? { contentType: selectedVariant.contentType }
+            : {}),
+          source: reviewedSourceType,
+          parameters: reviewedSelectors.map((selector) => {
+            const compatibilityReference = parameterRows.find(
+              (parameter) =>
+                parameter.location === 'query' && parameter.name === selector.name
+            )
+            if (!compatibilityReference) {
+              throw new Error(
+                'Reviewed request selector lost its legacy parameter reference.'
+              )
+            }
+            return {
+              id: compatibilityReference.id,
+              name: selector.name,
+              location: 'query' as const,
+              dataType: selector.valueType,
+              required: selector.required
+            }
+          })
         }
       })
     )

@@ -2,7 +2,10 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { drizzle, type SqliteRemoteDatabase } from 'drizzle-orm/sqlite-proxy'
-import { DATABASE_MIGRATIONS } from './migrations'
+import {
+  DATABASE_MIGRATIONS,
+  type DatabaseMigration
+} from './migrations'
 import * as schema from './schema'
 
 export type AgentGoOrm = SqliteRemoteDatabase<typeof schema>
@@ -43,7 +46,21 @@ function normalizeParameter(value: unknown): SQLInputValue {
   throw new TypeError(`Unsupported SQLite parameter type: ${typeof value}`)
 }
 
-function applyMigrations(database: DatabaseSync): void {
+export interface ApplyDatabaseMigrationsOptions {
+  readonly migrations?: readonly DatabaseMigration[]
+  readonly appliedAt?: () => number
+}
+
+/**
+ * Applies each migration atomically. SQL setup, deterministic TypeScript data
+ * hooks, final SQL, and the migration ledger row all share one BEGIN IMMEDIATE.
+ */
+export function applyDatabaseMigrations(
+  database: DatabaseSync,
+  options: ApplyDatabaseMigrationsOptions = {}
+): void {
+  const migrations = options.migrations ?? DATABASE_MIGRATIONS
+  const appliedAt = options.appliedAt ?? Date.now
   database.exec(`
     CREATE TABLE IF NOT EXISTS __agentgo_migrations (
       id TEXT PRIMARY KEY,
@@ -58,7 +75,12 @@ function applyMigrations(database: DatabaseSync): void {
     'INSERT INTO __agentgo_migrations (id, applied_at) VALUES (?, ?)'
   )
 
-  for (const migration of DATABASE_MIGRATIONS) {
+  const migrationIds = new Set<string>()
+  for (const migration of migrations) {
+    if (migrationIds.has(migration.id)) {
+      throw new Error(`Duplicate database migration ID: ${migration.id}`)
+    }
+    migrationIds.add(migration.id)
     if (hasMigration.get(migration.id)) {
       continue
     }
@@ -66,7 +88,9 @@ function applyMigrations(database: DatabaseSync): void {
     database.exec('BEGIN IMMEDIATE')
     try {
       database.exec(migration.sql)
-      recordMigration.run(migration.id, Date.now())
+      migration.dataHook?.(database)
+      if (migration.finalizeSql) database.exec(migration.finalizeSql)
+      recordMigration.run(migration.id, appliedAt())
       database.exec('COMMIT')
     } catch (error) {
       database.exec('ROLLBACK')
@@ -89,7 +113,7 @@ export function openAgentGoDatabase(filePath: string): AgentGoDatabase {
   native.exec('PRAGMA synchronous = NORMAL;')
   native.exec('PRAGMA temp_store = MEMORY;')
   native.exec('PRAGMA trusted_schema = OFF;')
-  applyMigrations(native)
+  applyDatabaseMigrations(native)
 
   const orm = drizzle<typeof schema>(
     async (sql, params, method) => {

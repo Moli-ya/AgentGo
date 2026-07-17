@@ -24,6 +24,7 @@ afterEach(() => {
 
 describe('ExecutionService HTTP evidence loop', () => {
   it('executes only an approved request and persists immutable raw plus redacted evidence', async () => {
+    const urlSecret = 'DAY3_SENTINEL_SECRET_must-not-leak'
     const server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
       response.end('Authorization: Bearer response-secret\nresult=ok')
@@ -94,7 +95,7 @@ describe('ExecutionService HTTP evidence loop', () => {
       agentRunId: agentRun.id,
       action: {
         kind: 'http-request',
-        targetUrl: `${baseUrl}/search?q=baseline`,
+        targetUrl: `${baseUrl}/search?token=${urlSecret}&q=baseline`,
         method: 'GET',
         probeLevel: 'active-safe',
         sideEffect: 'none',
@@ -124,7 +125,7 @@ describe('ExecutionService HTTP evidence loop', () => {
       scanId: scan.id,
       policyDecisionId: policy.decision.id,
       request: {
-        targetUrl: `${baseUrl}/search?q=baseline`,
+        targetUrl: `${baseUrl}/search?token=${urlSecret}&q=baseline`,
         method: 'GET',
         headers: { Authorization: 'Bearer request-secret' },
         timeoutMs: 2_000
@@ -142,6 +143,28 @@ describe('ExecutionService HTTP evidence loop', () => {
     expect((await evidenceStore.read(redacted!.id)).content.toString()).not.toContain(
       'response-secret'
     )
+    const requestSummary = evidence.find(
+      (item) => item.type === 'http-request-summary'
+    )
+    expect(requestSummary).toBeDefined()
+    expect((await evidenceStore.read(requestSummary!.id)).content.toString()).not.toContain(
+      urlSecret
+    )
+    const persistedAuditText = JSON.stringify({
+      proposals: database.native.prepare('SELECT target_url FROM probe_proposals').all(),
+      decisions: database.native
+        .prepare('SELECT normalized_target FROM policy_decisions')
+        .all(),
+      interactions: database.native
+        .prepare('SELECT request_summary_json, response_summary_json FROM interactions')
+        .all(),
+      events: database.native
+        .prepare('SELECT message, detail_json FROM scan_events')
+        .all(),
+      tools: database.native.prepare('SELECT error FROM tool_calls').all()
+    })
+    expect(persistedAuditText).not.toContain(urlSecret)
+    expect(persistedAuditText).not.toContain('request-secret')
     expect((await repository.getScan(scan.id))?.requestCount).toBe(1)
 
     await new Promise<void>((resolve) => server.close(() => resolve()))

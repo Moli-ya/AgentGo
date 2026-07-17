@@ -12,6 +12,7 @@ export {
   DEFAULT_PROBE_CAPABILITY_CATALOG,
   ProbeCapabilityCatalog,
   isProbeCapabilityId,
+  type ProbeCapabilityCatalogSnapshot,
   type ProbeCapabilityDescriptor,
   type ProbeCapabilityRiskFloor
 } from './probe-capability-catalog'

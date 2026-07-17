@@ -10,6 +10,11 @@ import type {
   HttpRunner
 } from '@agentgo/http-runner'
 import {
+  redactInventoryPreview,
+  redactInventoryText,
+  redactInventoryUrlPreview
+} from '@agentgo/domain'
+import {
   AgentGoRepository,
   EvidenceStore,
   isTextualEvidenceMimeType,
@@ -22,6 +27,21 @@ export interface StoredExecutionResult<TResult> {
   interactionId?: string
   evidenceRefs: string[]
   toolCallId: string
+}
+
+function redactedExecutionUrl(value: string): string {
+  try {
+    return redactInventoryUrlPreview(value)
+  } catch {
+    return 'https://redacted.invalid/'
+  }
+}
+
+function redactedExecutionHeaders(
+  targetUrl: string,
+  headers: Record<string, string>
+): Record<string, string> {
+  return redactInventoryPreview({ url: targetUrl, headers }).headers ?? {}
 }
 
 export class ExecutionService {
@@ -59,7 +79,8 @@ export class ExecutionService {
               : Buffer.from(request.body).toString('base64')
           )
     const argumentSummary = {
-      targetUrl: request.targetUrl,
+      targetUrl: redactedExecutionUrl(request.targetUrl),
+      targetUrlHash: sha256Text(request.targetUrl),
       method: request.method,
       headerNames: Object.keys(request.headers ?? {}).map((name) => name.toLowerCase()),
       requestBodyHash,
@@ -88,14 +109,20 @@ export class ExecutionService {
       requestId,
       status: result.status,
       statusCode: result.statusCode,
-      headers: result.responseHeaders,
+      headers: redactedExecutionHeaders(request.targetUrl, result.responseHeaders),
       responseBodySha256: result.responseBodySha256,
       responseBytes: result.responseBytes,
       durationMs: result.durationMs,
-      redirectChain: result.redirectChain,
+      redirectChain: result.redirectChain.map((redirect) => ({
+        ...redirect,
+        from: redactedExecutionUrl(redirect.from),
+        to: redactedExecutionUrl(redirect.to)
+      })),
       resolvedAddresses: result.resolvedAddresses,
       errorCode: result.errorCode,
       errorMessage: result.errorMessage
+        ? redactInventoryText(result.errorMessage)
+        : undefined
     }
     await this.repository.recordInteraction({
       id: interactionId,
@@ -122,10 +149,11 @@ export class ExecutionService {
       content: JSON.stringify(
         {
           requestId,
-          targetUrl: request.targetUrl,
-          finalUrl: result.finalUrl,
+          targetUrl: redactedExecutionUrl(request.targetUrl),
+          targetUrlHash: sha256Text(request.targetUrl),
+          finalUrl: redactedExecutionUrl(result.finalUrl),
           method: request.method,
-          headers: result.requestHeaders,
+          headers: redactedExecutionHeaders(request.targetUrl, result.requestHeaders),
           requestBodySha256: result.requestBodySha256,
           policyDecisionId: input.policyDecisionId
         },
@@ -163,7 +191,9 @@ export class ExecutionService {
         interactionId,
         policyDecisionId: input.policyDecisionId,
         type: 'http-response-body',
-        mimeType: result.responseHeaders['content-type'] ?? 'application/octet-stream',
+        mimeType:
+          result.responseHeaders['content-type']?.split(';', 1)[0]?.trim() ||
+          'application/octet-stream',
         content: result.responseBody,
         source: 'http-runner',
         createdBy: 'execution-service',
@@ -194,7 +224,9 @@ export class ExecutionService {
       status: result.status,
       durationMs: result.durationMs,
       outputRef: responseRef,
-      ...(result.errorMessage ? { error: result.errorMessage } : {})
+      ...(result.errorMessage
+        ? { error: redactInventoryText(result.errorMessage) }
+        : {})
     })
     await this.repository.incrementScanUsage({ scanId: input.scanId, requests: 1 })
     await this.repository.addScanEvent({
@@ -203,8 +235,8 @@ export class ExecutionService {
       level: result.status === 'succeeded' ? 'info' : 'warning',
       message:
         result.status === 'succeeded'
-          ? `HTTP ${request.method.toUpperCase()} ${result.finalUrl} -> ${result.statusCode}`
-          : `HTTP 执行未完成：${result.errorMessage ?? result.errorCode ?? 'unknown'}`,
+          ? `HTTP ${request.method.toUpperCase()} ${redactedExecutionUrl(result.finalUrl)} -> ${result.statusCode}`
+          : `HTTP 执行未完成：${result.errorMessage ? redactInventoryText(result.errorMessage) : result.errorCode ?? 'unknown'}`,
       detail: {
         requestId,
         toolCallId,
@@ -267,15 +299,26 @@ export class ExecutionService {
         {
           requestId,
           status: result.status,
-          finalUrl: result.finalUrl,
-          title: result.pageTitle,
-          links: result.links,
-          forms: result.forms,
+          finalUrl: redactedExecutionUrl(result.finalUrl),
+          title: result.pageTitle
+            ? redactInventoryText(result.pageTitle)
+            : undefined,
+          links: result.links.map(redactedExecutionUrl),
+          forms: result.forms.map((form) => ({
+            ...form,
+            action: redactedExecutionUrl(form.action),
+            fields: form.fields.map((field) => ({
+              ...field,
+              name: redactInventoryText(field.name, 500)
+            }))
+          })),
           markerExecuted: result.markerExecuted,
           networkRequestsBlocked: result.networkRequestsBlocked,
           durationMs: result.durationMs,
           errorCode: result.errorCode,
           errorMessage: result.errorMessage
+            ? redactInventoryText(result.errorMessage)
+            : undefined
         },
         null,
         2
@@ -332,7 +375,9 @@ export class ExecutionService {
       status: result.status,
       durationMs: result.durationMs,
       outputRef,
-      ...(result.errorMessage ? { error: result.errorMessage } : {})
+      ...(result.errorMessage
+        ? { error: redactInventoryText(result.errorMessage) }
+        : {})
     })
     await this.repository.addScanEvent({
       scanId: input.scanId,
@@ -341,7 +386,7 @@ export class ExecutionService {
       message:
         result.status === 'succeeded'
           ? `隔离浏览器完成 ${request.action}，阻断 ${result.networkRequestsBlocked} 个网络请求。`
-          : `隔离浏览器执行未完成：${result.errorMessage ?? result.errorCode ?? 'unknown'}`,
+          : `隔离浏览器执行未完成：${result.errorMessage ? redactInventoryText(result.errorMessage) : result.errorCode ?? 'unknown'}`,
       detail: { requestId, toolCallId, evidenceRefs }
     })
     return { result, evidenceRefs, toolCallId }

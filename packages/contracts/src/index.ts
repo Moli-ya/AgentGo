@@ -1,5 +1,6 @@
 export * from './application'
 export * from './desktop'
+export * from './inventory'
 export * from './security'
 export * from './vulnerability'
 export * from './workflow'

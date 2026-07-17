@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 /**
  * Stable capability identifiers use a lowercase dotted namespace. Hyphens are
  * allowed inside a segment, but empty segments and leading/trailing separators
@@ -19,6 +21,17 @@ export interface ProbeCapabilityDescriptor {
   readonly id: string
   readonly riskFloor: ProbeCapabilityRiskFloor
   readonly description: string
+}
+
+/**
+ * Auditable, immutable representation of the complete capability catalog.
+ * The canonical JSON contains only `descriptors`; `snapshotHash` is the
+ * lowercase SHA-256 digest of that exact UTF-8 string.
+ */
+export interface ProbeCapabilityCatalogSnapshot {
+  readonly descriptors: readonly Readonly<ProbeCapabilityDescriptor>[]
+  readonly canonicalSnapshotJson: string
+  readonly snapshotHash: string
 }
 
 export function isProbeCapabilityId(value: string): boolean {
@@ -65,6 +78,29 @@ function parseDescriptor(
   })
 }
 
+function compareDescriptorId(
+  left: Readonly<ProbeCapabilityDescriptor>,
+  right: Readonly<ProbeCapabilityDescriptor>
+): number {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+}
+
+function serializeCanonicalSnapshot(
+  descriptors: readonly Readonly<ProbeCapabilityDescriptor>[]
+): string {
+  return JSON.stringify({
+    descriptors: descriptors.map(({ id, riskFloor, description }) => ({
+      description,
+      id,
+      riskFloor
+    }))
+  })
+}
+
+function sha256Text(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
 /**
  * Trusted, immutable catalog of capability semantics.
  *
@@ -75,6 +111,7 @@ function parseDescriptor(
 export class ProbeCapabilityCatalog {
   readonly #byId: ReadonlyMap<string, Readonly<ProbeCapabilityDescriptor>>
   readonly #ordered: readonly Readonly<ProbeCapabilityDescriptor>[]
+  readonly #snapshot: ProbeCapabilityCatalogSnapshot
 
   constructor(descriptors: readonly ProbeCapabilityDescriptor[]) {
     if (!Array.isArray(descriptors)) {
@@ -93,8 +130,14 @@ export class ProbeCapabilityCatalog {
 
     this.#byId = byId
     this.#ordered = Object.freeze(
-      [...byId.values()].sort((left, right) => left.id.localeCompare(right.id))
+      [...byId.values()].sort(compareDescriptorId)
     )
+    const canonicalSnapshotJson = serializeCanonicalSnapshot(this.#ordered)
+    this.#snapshot = Object.freeze({
+      descriptors: this.#ordered,
+      canonicalSnapshotJson,
+      snapshotHash: sha256Text(canonicalSnapshotJson)
+    })
     Object.freeze(this)
   }
 
@@ -111,6 +154,10 @@ export class ProbeCapabilityCatalog {
 
   list(): readonly Readonly<ProbeCapabilityDescriptor>[] {
     return this.#ordered
+  }
+
+  snapshot(): ProbeCapabilityCatalogSnapshot {
+    return this.#snapshot
   }
 }
 
