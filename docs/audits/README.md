@@ -30,7 +30,7 @@
 |---|---|---|
 | Day0 | 尚无完成档案 | `docs/planning/Day0.md` 是复审与规划记录，不在本索引中冒充完成证明。 |
 | Day1 | [Day1 最终提交前复核](day1-final-review-2026-07-15.md) | 已完成并提交；commit `e82caf49e1985670022479b347abcc39329d5295`。 |
-| Day2 | [Day2 完成审计](day2-completion-2026-07-15.md) | 已完成并提交；commit `cef43bb5b5339a0fdd7243fb9562a03be6ad2803`。 |
+| Day2 | [Day2 完成审计](day2-completion-2026-07-15.md)；[2026-07-17 补充复核](day2-review-2026-07-17.md) | 已完成并提交；原实现 commit `cef43bb5b5339a0fdd7243fb9562a03be6ad2803`，补充门禁与现时态修正为 `15638f1`、`295ace9`。 |
 | Day3 | 尚无完成档案 | 未声明完成。 |
 | Day4 | 尚无完成档案 | 未声明完成。 |
 | Day5 | 尚无完成档案 | 未声明完成。 |
