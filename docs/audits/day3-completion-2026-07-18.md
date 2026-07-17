@@ -46,7 +46,7 @@
 
 ## 可复现标识
 
-- 完成 commit：待提交；提交后用独立复核记录固化实现与档案 commit 对应关系。
+- 完成 commit：`7b25b2bdfe8fee351f4bf915eba5efd8c2da2865`；对应关系见 [Day3 commit 映射复核](day3-commit-review-2026-07-18.md)。
 - 数据库 migration：`0006_unified_inventory_and_module_snapshots`。
 - Definition Registry snapshot SHA-256：`d4c45f8c27463729e01d60ab1a1ddfea03039e9dc2967e6ebb52f8c5f17cd9e9`。
 - Capability Catalog snapshot SHA-256：`d7f3aa70efd0b55c981e7d5a105e097b32c95d558eeb5e7b7645f17e490a2792`。
