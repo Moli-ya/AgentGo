@@ -7,7 +7,7 @@
 
 “覆盖完整 Web 漏洞分类”不等于承诺在真实业务上自动确认所有漏洞。业务逻辑、协议差异、未知漏洞和高风险类别无法由固定规则穷尽；系统必须明确区分 `active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 与 `forbidden`，不能把未执行或不安全的验证写成 `Confirmed`。
 
-当前执行状态：DAY0 与 [Day1](Day1.md) 已于 2026-07-13 完成；Day2～Day20 仍为 `pending`。Day1 已用单调 Scope revision、显式 current pointer、迁移/回填和并发回归消除 DAY0 的同毫秒竞态，并从最终代码连续完成三次全新 40 Case；事实与限制见 [Day1 基线](day1-baseline.md)。
+当前执行状态：DAY0 与 [Day1](Day1.md) 已于 2026-07-13 完成；Day2 已于 2026-07-15 完成并提交，Day3～Day20 仍为 `pending`。Day1 已用单调 Scope revision、显式 current pointer、迁移/回填和并发回归消除 DAY0 的同毫秒竞态，并从最终代码连续完成三次全新 40 Case；事实与限制见 [Day1 基线](day1-baseline.md)。Day2 的逐项实现、固定兼容边界和验证证据见 [Day2 完成审计](../audits/day2-completion-2026-07-15.md)，其 `legacy-v1` 例外仍不构成 qualified/supported 声明。
 
 ## 开工前必读
 
@@ -25,7 +25,7 @@
 
 | 阶段 | 工作包 | 结果 |
 |---|---|---|
-| 分类与扩展底座 | [Day1](Day1.md) ～ [Day3](Day3.md) | Day1 已完成 Scope/事实/前端冻结；Day2～Day3 待建立开放 ID、DefinitionRegistry 和统一 Inventory。 |
+| 分类与扩展底座 | [Day1](Day1.md) ～ [Day3](Day3.md) | Day1 已完成 Scope/事实/前端冻结；Day2 已完成开放 ID、DefinitionRegistry 与执行门禁；Day3 待建立统一 Inventory 和 Scan 模块快照。 |
 | 确定性执行硬门禁 | [Day4](Day4.md) ～ [Day6](Day6.md) | 请求编译、三阶段哈希、证据捕获、单次租约、原子预算和网络边界。 |
 | 评测与 L2 闭环 | [Day7](Day7.md) ～ [Day10](Day10.md) | Ground Truth v2、L2 状态模型、会话/身份/CSRF、可信审批和首条可清理闭环。 |
 | 真实 Web 发现与通用运行时 | [Day11](Day11.md) ～ [Day15](Day15.md) | 离线导入、静态资产发现、受策略代理的浏览器发现、ValidationPlan、V1 行为等价适配与通用 Coordinator。 |

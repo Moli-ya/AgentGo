@@ -72,7 +72,7 @@ benchmarkSuite:
 
 只有 `implementationState` 与声明切片一致、`activationStatus=qualified`、qualification record 的 definition/build/suite/fixture/Policy 哈希有效、环境及 protocol/selector 精确匹配时，才能对该切片作支持声明。任一字段缺失、`not-run`、版本不匹配或只有计划文字时不得标记 supported；Day2 `legacy-v1` 临时兼容例外只维持既有执行，绝不构成 qualified/supported 证据。
 
-Day1 **只定义并评审这个格式**。Day1 不实现 DefinitionRegistry、ActivationCatalog、QualificationService 或 Registry schema，不生成伪造的 qualification record，也不把 V1 四类硬编码闭环改写成已资格化模块；这些分别由 Day2、Day7 及后续工作包负责。
+Day1 **只定义并评审这个格式**。Day1 当时不实现 DefinitionRegistry、ActivationCatalog、QualificationService 或 Registry schema，不生成伪造的 qualification record，也不把 V1 四类硬编码闭环改写成已资格化模块。Day2 后续已实现 DefinitionRegistry、registered-only Activation view 与固定四类临时兼容门；QualificationService 和正式资格仍由 Day7 及后续工作包负责。
 
 ## 3. 架构与安全不变量
 
@@ -100,7 +100,7 @@ Day1 **只定义并评审这个格式**。Day1 不实现 DefinitionRegistry、Ac
 
 | 需求 ID | 当前事实 | 来源 | 分类 | 唯一主责工作包 | 当前代码/测试证据 | 缺口 / 禁止外推 |
 |---|---|---|---|---|---|---|
-| AG-V1-001 | 当前 family 只有 `sqli/xss/ssrf/idor`，四类可在本地固定靶场走通 Signal → Validation → Verdict → Evidence → Report。 | V1 审计；DAY0 §3 | `已有` | Day15 | [VulnerabilityFamilySchema](../../packages/contracts/src/workflow.ts)、[Coordinator](../../packages/application/src/scan-coordinator.ts)、[validation engine](../../packages/application/src/validation-engine.ts) | 四值枚举横跨 Application/DB/Knowledge/Reporting/Evaluation/Renderer；不能称为开放漏洞平台。 |
+| AG-V1-001 | 当前可执行 runtime 仍只有 `sqli/xss/ssrf/idor`，四类可在本地固定靶场走通 Signal → Validation → Verdict → Evidence → Report；contracts 已开放稳定 family ID，另有一个不可执行的 registered-only `security.headers` 定义。 | V1 审计；DAY0 §3；Day2 审计 | `已有` | Day15 | [开放 VulnerabilityFamilySchema](../../packages/contracts/src/vulnerability.ts)、[DefinitionRegistry composition root](../../packages/application/src/vulnerability-platform.ts)、[Coordinator](../../packages/application/src/scan-coordinator.ts)、[validation engine](../../packages/application/src/validation-engine.ts) | Coordinator/验证/评测的实际执行仍只有四类 legacy 分支；DefinitionRegistry 可扩展不等于新增检测 runtime、qualification 或真实目标支持。 |
 | AG-V1-002 | 扫描阶段为 intake、passive-recon、active-enum、hypothesis、validation、verification、report，并支持暂停/取消/恢复。 | Agent 系统 §8；DAY0 §3 | `已有` | Day15 | [agent-runtime](../../packages/agent-runtime/src/index.ts)、[Coordinator tests](../../packages/application/src/scan-coordinator.test.ts) | passive/active discovery 较浅；尚无通用 CandidateAttempt/PhaseOutcome 与复杂 step 恢复。 |
 | AG-V1-003 | SQLi 仅为 GET query 的只读布尔差异、负对照与重复。 | V1 审计 | `已有` | Day16 | [SQLi rule](../../packages/application/src/validation-engine.ts)、[fixture](../../packages/evaluation/src/local-fixture.ts) | path/form/JSON、稳定错误/时间策略未资格化；禁止读取数据与写语句。 |
 | AG-V1-004 | XSS 为惰性反射 marker 加断网 `setContent` 浏览器观察。 | V1 审计 | `已有` | Day18 | [Coordinator XSS branch](../../packages/application/src/scan-coordinator.ts)、[BrowserRunner](../../packages/browser-runner/src/index.ts) | 不是登录 SPA/运行期浏览器；存储型与复杂 DOM 尚未实现，反射不等于执行。 |
@@ -125,7 +125,7 @@ Day1 **只定义并评审这个格式**。Day1 不实现 DefinitionRegistry、Ac
 | AG-D01-003 | 修复 Scope 快照竞态并冻结确定 scope ID/version。 | Day1 必须工作 3；DAY0 §10.1 | `Day1` | Day1 | migration `0005`、[repository](../../packages/db/src/repository.ts)、[9 项 DB 测试](../../packages/db/src/database.test.ts) 与 [Application 精确返回测试](../../packages/application/src/application-service.test.ts) | 已验收；覆盖同毫秒、create/update、路径别名并发、旧库、DB 不变量、回滚与 createScan；禁用 sleep/UUID 排序/失败重试掩盖。 |
 | AG-D01-004 | 重新记录 commit、Node/pnpm/Electron/Playwright/SQLite、测试数、fixture/migration 版本、build 与 desktop smoke。 | Day1 必须工作 4 | `Day1` | Day1 | [Day1 环境与命令记录](day1-baseline.md#2-环境与版本) | 已验收；执行起点与未提交工作区状态均明确记录，DAY0 数字只作历史参照。 |
 | AG-D01-005 | 冻结 `apps/desktop/src/renderer/**`；除后端兼容修复外不增加 View、导航或交互。 | Day1 必须工作 5 | `Day1` | Day1 | [Renderer](../../apps/desktop/src/renderer) 相对基线 diff 为空；typecheck/build/smoke 通过 | 已验收；冻结规则继续适用于后端工作包。 |
-| AG-D01-006 | 定义 `familyId + techniqueId + moduleVersion + maturity + environment + protocol/selector + benchmarkSuite` 支持声明。 | Day1 必须工作 6 | `Day1` | Day1 | 本文件 §2 | 格式已验收；Registry/Activation/qualification 仍为 Day2/Day7，当前未生成 supported 声明。 |
+| AG-D01-006 | 定义 `familyId + techniqueId + moduleVersion + maturity + environment + protocol/selector + benchmarkSuite` 支持声明。 | Day1 必须工作 6 | `Day1` | Day1 | 本文件 §2 | 格式已验收；Day2 后续已交付 Registry 与 registered-only Activation view，qualification 仍由 Day7 负责，当前未生成 supported 声明。 |
 | AG-D01-007 | 生成仅含合成数据、可重建且有 schema version/hash 的 V1 数据库 baseline。 | Day1 必须工作 7 | `Day1` | Day1 | [生成/验证脚本](../../scripts/v1-database-baseline.ts)、[4 项测试](../../scripts/v1-database-baseline.test.ts) 与 [双 hash 记录](day1-baseline.md#6-合成-v1-数据库-baseline) | 已验收；仅 `.invalid` 合成数据，生成物仍不得提交。 |
 | AG-D01-008 | 审核 Git 忽略边界，计划原件、DB、凭据、Evidence、benchmark results、release 和本机缓存不得入库。 | Day1 必须工作 8 | `Day1` | Day1 | [`.gitignore`](../../.gitignore) 与 [最终审计](day1-baseline.md#7-git敏感数据与顺延边界) | 已验收；后续新增生成物仍必须逐项检查，不能依赖泛化目录名猜测。 |
 
@@ -136,7 +136,7 @@ Day1 **只定义并评审这个格式**。Day1 不实现 DefinitionRegistry、Ac
 | 需求 ID | 目标交付 | 来源 | 分类 | 唯一主责工作包 | 当前代码/测试证据 | 主要缺口 / 退出边界 |
 |---|---|---|---|---|---|---|
 | AG-WP-001 | Scope 竞态修复、事实/覆盖/支持声明基线与 Renderer 冻结。 | [Day1](Day1.md) | `Day1` | Day1 | [Day1 完成记录](Day1.md#完成记录) 与 [事实基线](day1-baseline.md) | 2026-07-13 已验收；不包含 Registry/Activation/qualification，也不外推固定 fixture。 |
-| AG-WP-002 | 开放 Family/Technique ID、Manifest、原子 DefinitionRegistry 与 legacy bundle；注册不等于激活。 | [Day2](Day2.md) | `后续波次` | Day2 | 当前仍为 [四值 enum](../../packages/contracts/src/workflow.ts) 与硬编码规则 | Registry/Bundle/Activation view/conformance 均未实现；`security.headers` 只能先 registered-only，未知 family fail closed；固定四类仅经封闭 `legacy-v1` 临时兼容门维持 V1 行为且不得宣称 qualified。 |
+| AG-WP-002 | 开放 Family/Technique ID、Manifest、原子 DefinitionRegistry 与 legacy bundle；注册不等于激活。 | [Day2](Day2.md) | `Day2` | Day2 | [开放 ID/Manifest contracts](../../packages/contracts/src/vulnerability.ts)、[DefinitionRegistry](../../packages/domain/src/vulnerabilities/registry.ts)、[legacy bundles](../../packages/application/src/vulnerability-bundles.ts)、[执行门禁](../../packages/application/src/vulnerability-execution-gate.ts) 与 [完成审计](../audits/day2-completion-2026-07-15.md) | 2026-07-15 已验收；`security.headers` 保持 registered-only，未知 family fail closed；固定四类仅经封闭 `legacy-v1` 临时兼容门维持 V1 行为且不得宣称 qualified，Day7 有效资格接管后必须移除例外。 |
 | AG-WP-003 | 唯一 scan-scoped Inventory、RequestVariant/Source/Selector/Codec/Transport、opaque refs 与 module snapshot。 | [Day3](Day3.md) | `后续波次` | Day3 | V1 有 Endpoint/Parameter/Scan 表，见 [schema](../../packages/db/src/schema.ts) | 多来源幂等、secret 裁剪、旧库迁移和 frozen module snapshot 尚缺。 |
 | AG-WP-004 | 纯 RequestCompiler、Template/Resolved/Wire 三阶段哈希与 EvidenceCapturePolicy。 | [Day4](Day4.md) | `后续波次` | Day4 | V1 HTTP 构造/Evidence 保存位于 [execution service](../../packages/application/src/execution-service.ts) | 无统一 compiler、opaque generation 绑定或 capture-before-store 最小化；未实现 codec 必须拒绝。 |
 | AG-WP-005 | ExecutionGrant、单次 Lease、实际 wire 恒等复核与唯一 ExecutionPort。 | [Day5](Day5.md) | `后续波次` | Day5 | V1 有 PolicyDecision 与 Runner，见 [execution policy](../../packages/application/src/execution-policy.ts) | 裸 decisionId、重放、并发 claim、redirect child grant 与 crash unknown 语义尚缺。 |
@@ -153,7 +153,7 @@ Day1 **只定义并评审这个格式**。Day1 不实现 DefinitionRegistry、Ac
 | AG-WP-016 | SQLi 参考模块：复杂 selector 下的非写入差异与分 technique 成熟度。 | [Day16](Day16.md) | `后续波次` | Day16 | V1 只有 GET query boolean 差异 | 在 Day15 同一 bundle 增强；form/JSON 为批准 L2，时间法 fixture-only，破坏性语义请求数 0。 |
 | AG-WP-017 | IDOR/BOLA 参考模块：已知 TestObject、多身份只读 AuthorizationMatrix。 | [Day17](Day17.md) | `后续波次` | Day17 | V1 仅双身份 GET query 对照 | path/query、owner/public/shared/admin/tenant/parent 控制与 selected-field Evidence 尚缺；不枚举/写对象。 |
 | AG-WP-018 | XSS 参考模块：惰性反射、离线 DOM 与可清理 stored TestObject 分级。 | [Day18](Day18.md) | `后续波次` | Day18 | V1 有反射 marker 与离线 BrowserRunner | 需上下文/编码/CSP/负对照；stored 仅 L2 TestObject，浏览器外联为 0，cleanup failure 冻结。 |
-| AG-WP-019 | SSRF 回显/OOB 参考模块，并资格化零新增请求的 `security.headers` 被动模块。 | [Day19](Day19.md) | `后续波次` | Day19 | V1 仅回显 proof；无 CallbackCollector/headers module | OOB token 关联、危险网络拒绝、collector unavailable 三态与无分支扩展证明尚缺；mock 不冒充生产。 |
+| AG-WP-019 | SSRF 回显/OOB 参考模块，并资格化零新增请求的 `security.headers` 被动模块。 | [Day19](Day19.md) | `后续波次` | Day19 | V1 仅回显 proof；Day2 已注册 [security.headers signal-only descriptor](../../packages/application/src/vulnerability-bundles.ts)，但无 detector runtime、评测或资格 | OOB token 关联、危险网络拒绝、collector unavailable 三态、headers 被动 detector/评测/qualification 与无分支扩展证明尚缺；mock 不冒充生产。 |
 | AG-WP-020 | 全量 conformance/迁移/恢复/安全/benchmark/holdout/报告与桌面兼容门禁。 | [Day20](Day20.md) | `后续波次` | Day20 | DAY0 仅有 V1 check/build/smoke 与固定 benchmark 历史证据 | `benchmark:complex`、`benchmark:holdout` 等目标命令当前未交付；安全计数必须为 0，self-built/holdout/pilot/not-run 分栏。 |
 
 ## 7. Day20 后七波追踪
