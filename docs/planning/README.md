@@ -7,7 +7,7 @@
 
 “覆盖完整 Web 漏洞分类”不等于承诺在真实业务上自动确认所有漏洞。业务逻辑、协议差异、未知漏洞和高风险类别无法由固定规则穷尽；系统必须明确区分 `active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 与 `forbidden`，不能把未执行或不安全的验证写成 `Confirmed`。
 
-当前执行状态：DAY0 与 [Day1](Day1.md) 已于 2026-07-13 完成；Day2 已于 2026-07-15 完成并提交；Day3 已于 2026-07-18 完成，Day4～Day20 仍为 `pending`。Day1 已用单调 Scope revision、显式 current pointer、迁移/回填和并发回归消除 DAY0 的同毫秒竞态，并从最终代码连续完成三次全新 40 Case；事实与限制见 [Day1 基线](day1-baseline.md)。Day2 的逐项实现、固定兼容边界和验证证据见 [Day2 完成审计](../audits/day2-completion-2026-07-15.md)，其 `legacy-v1` 例外仍不构成 qualified/supported 声明。Day3 的统一 Inventory、不可变 Scan 模块快照、旧库迁移、数据最小化和验证证据见 [Day3 完成审计](../audits/day3-completion-2026-07-18.md)；它没有提前实现请求编译、资格化、Vault、导入或浏览器发现。
+当前执行状态：DAY0 与 [Day1](Day1.md) 已于 2026-07-13 完成；Day2 已于 2026-07-15 完成并提交；Day3 已于 2026-07-18 完成；Day4 于 2026-07-19 进入 `in_progress`，Day5～Day20 仍为 `pending`。Day1 已用单调 Scope revision、显式 current pointer、迁移/回填和并发回归消除 DAY0 的同毫秒竞态，并从最终代码连续完成三次全新 40 Case；事实与限制见 [Day1 基线](day1-baseline.md)。Day2 的逐项实现、固定兼容边界和验证证据见 [Day2 完成审计](../audits/day2-completion-2026-07-15.md)，其 `legacy-v1` 例外仍不构成 qualified/supported 声明。Day3 的统一 Inventory、不可变 Scan 模块快照、旧库迁移、数据最小化和验证证据见 [Day3 完成审计](../audits/day3-completion-2026-07-18.md)；它没有提前实现请求编译、资格化、Vault、导入或浏览器发现。Day4 当前只完成首个纯函数切片，范围与残余风险见 [进度档案](../audits/day4-progress-2026-07-19.md)，不得把它写成 Day4 合格交付。
 
 ## 开工前必读
 

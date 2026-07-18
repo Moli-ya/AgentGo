@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SystemIssuedOpaqueIdSchema } from './inventory'
 import { TargetScopeSchema } from './security'
 import {
   ScanBudgetSchema,
@@ -7,7 +8,13 @@ import {
   ScanStatusSchema,
   VerdictSchema
 } from './workflow'
-import { VulnerabilityFamilySchema } from './vulnerability'
+import {
+  DefinitionIdSchema,
+  EvidenceRoleSchema,
+  ModuleVersionSchema,
+  VulnerabilityFamilySchema,
+  VulnerabilityTechniqueIdSchema
+} from './vulnerability'
 
 const IdSchema = z.string().min(1).max(200)
 const IsoDateSchema = z.string().datetime()
@@ -365,6 +372,896 @@ export const ScanEventSchema = z.object({
 })
 
 export type ScanEvent = z.infer<typeof ScanEventSchema>
+
+export const EVIDENCE_SOURCE_HASH_DOMAIN =
+  'agentgo.evidence-source.v1' as const
+export const OOB_TOKEN_COMMITMENT_DOMAIN =
+  'agentgo.oob-token-commitment.v1' as const
+
+export const EvidenceCaptureSourceSchema = z.enum([
+  'http-response-body',
+  'dom-snapshot',
+  'browser-screenshot',
+  'oob-event'
+])
+
+export type EvidenceCaptureSource = z.infer<
+  typeof EvidenceCaptureSourceSchema
+>
+
+export const EvidenceCaptureExecutionStateSchema = z.enum([
+  'succeeded',
+  'failed',
+  'cancelled',
+  'timed-out'
+])
+
+export type EvidenceCaptureExecutionState = z.infer<
+  typeof EvidenceCaptureExecutionStateSchema
+>
+
+export const EvidenceCaptureActionSchema = z.enum([
+  'persist-minimized',
+  'hash-only',
+  'discard',
+  'protected-original'
+])
+
+export type EvidenceCaptureAction = z.infer<
+  typeof EvidenceCaptureActionSchema
+>
+
+export const EvidenceCaptureOutcomeSchema = z.enum([
+  'captured',
+  'hash-only',
+  'discarded',
+  'unsupported'
+])
+
+export type EvidenceCaptureOutcome = z.infer<
+  typeof EvidenceCaptureOutcomeSchema
+>
+
+export const EvidenceCaptureReasonSchema = z.enum([
+  'allowlisted-json-selection',
+  'allowlisted-oob-metadata',
+  'decision-hash-only',
+  'decision-discard',
+  'unstructured-text-source',
+  'partial-source',
+  'oversize-source',
+  'compressed-source',
+  'non-utf8-source',
+  'xml-source',
+  'binary-source',
+  'json-parse-failed',
+  'json-selection-failed',
+  'protected-original-unsupported',
+  'oob-commitment-unavailable'
+])
+
+export type EvidenceCaptureReason = z.infer<
+  typeof EvidenceCaptureReasonSchema
+>
+
+export const EvidenceSourceHashSchema = z
+  .strictObject({
+    domain: z.literal(EVIDENCE_SOURCE_HASH_DOMAIN),
+    algorithm: z.literal('sha256'),
+    digest: z.string().regex(/^[a-f0-9]{64}$/u),
+    basis: z.enum(['source-bytes', 'selected-oob-metadata']),
+    coverage: z.enum(['complete', 'partial']),
+    hashedBytes: z.number().int().nonnegative(),
+    knownTotalBytes: z.number().int().nonnegative().optional()
+  })
+  .superRefine((hash, context) => {
+    if (
+      hash.coverage === 'complete' &&
+      hash.knownTotalBytes !== undefined &&
+      hash.hashedBytes !== hash.knownTotalBytes
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A complete evidence hash must cover the known total byte length.',
+        path: ['knownTotalBytes']
+      })
+    }
+    if (
+      hash.coverage === 'partial' &&
+      hash.knownTotalBytes !== undefined &&
+      hash.hashedBytes >= hash.knownTotalBytes
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A partial evidence hash must cover fewer bytes than the known total byte length.',
+        path: ['knownTotalBytes']
+      })
+    }
+  })
+  .readonly()
+
+export type EvidenceSourceHash = z.infer<typeof EvidenceSourceHashSchema>
+
+export const OobCaptureMetadataFieldSchema = z.enum([
+  'channel',
+  'eventType',
+  'receivedAt',
+  'requestMethod',
+  'dnsRecordType',
+  'statusCode'
+])
+
+export type OobCaptureMetadataField = z.infer<
+  typeof OobCaptureMetadataFieldSchema
+>
+
+export const OobCaptureMetadataSchema = z
+  .strictObject({
+    channel: z.enum(['dns', 'http', 'smtp', 'other']).optional(),
+    eventType: z
+      .enum([
+        'dns-query',
+        'http-request',
+        'smtp-message',
+        'callback-observed'
+      ])
+      .optional(),
+    receivedAt: IsoDateSchema.optional(),
+    requestMethod: z
+      .enum([
+        'GET',
+        'HEAD',
+        'POST',
+        'PUT',
+        'PATCH',
+        'DELETE',
+        'OPTIONS',
+        'OTHER'
+      ])
+      .optional(),
+    dnsRecordType: z
+      .enum([
+        'A',
+        'AAAA',
+        'CNAME',
+        'TXT',
+        'MX',
+        'NS',
+        'PTR',
+        'SRV',
+        'HTTPS',
+        'SVCB',
+        'OTHER'
+      ])
+      .optional(),
+    statusCode: z.number().int().min(100).max(599).optional()
+  })
+  .readonly()
+
+export type OobCaptureMetadata = z.infer<
+  typeof OobCaptureMetadataSchema
+>
+
+export const OobTokenCommitmentSchema = z
+  .strictObject({
+    domain: z.literal(OOB_TOKEN_COMMITMENT_DOMAIN),
+    algorithm: z.literal('hmac-sha256'),
+    keyRef: SystemIssuedOpaqueIdSchema,
+    keyVersion: z.number().int().nonnegative(),
+    captureDecisionId: SystemIssuedOpaqueIdSchema,
+    capturePolicyId: DefinitionIdSchema,
+    capturePolicyVersion: ModuleVersionSchema,
+    selectedMetadata: OobCaptureMetadataSchema,
+    sourceHash: EvidenceSourceHashSchema,
+    digest: z.string().regex(/^[a-f0-9]{64}$/u)
+  })
+  .superRefine((commitment, context) => {
+    if (
+      commitment.sourceHash.basis !== 'selected-oob-metadata' ||
+      commitment.sourceHash.coverage !== 'partial' ||
+      commitment.sourceHash.knownTotalBytes !== undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'An OOB token commitment requires a partial OOB metadata source hash.',
+        path: ['sourceHash']
+      })
+    }
+  })
+  .readonly()
+
+export type OobTokenCommitment = z.infer<
+  typeof OobTokenCommitmentSchema
+>
+
+export const EvidenceResponseDescriptorSchema = z
+  .strictObject({
+    mediaType: z
+      .string()
+      .regex(/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u),
+    charset: z.enum(['utf-8', 'non-utf-8', 'unknown', 'not-applicable']),
+    contentEncoding: z.enum(['identity', 'compressed', 'unknown']),
+    declaredSizeBytes: z.number().int().nonnegative().optional()
+  })
+  .readonly()
+
+export type EvidenceResponseDescriptor = z.infer<
+  typeof EvidenceResponseDescriptorSchema
+>
+
+const EvidenceCaptureContextFields = {
+  scanId: SystemIssuedOpaqueIdSchema,
+  policyDecisionId: SystemIssuedOpaqueIdSchema,
+  techniqueId: VulnerabilityTechniqueIdSchema,
+  techniqueVersion: ModuleVersionSchema,
+  stepId: DefinitionIdSchema,
+  executionState: EvidenceCaptureExecutionStateSchema,
+  role: EvidenceRoleSchema,
+  occurredAt: IsoDateSchema
+} as const
+
+export const EvidenceCaptureContextSchema = z.discriminatedUnion('source', [
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('http-response-body'),
+      response: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('dom-snapshot'),
+      response: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('browser-screenshot'),
+      response: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('oob-event')
+    })
+    .readonly()
+])
+
+export type EvidenceCaptureContext = z.infer<
+  typeof EvidenceCaptureContextSchema
+>
+
+const JsonCapturePointerSchema = z
+  .string()
+  .min(1)
+  .max(2_048)
+  .regex(/^(?:\/(?:[^~/\u0000-\u001f\u007f]|~[01])*)+$/u)
+  .refine(
+    (value) => value === value.normalize('NFC'),
+    'Evidence JSON pointers must use Unicode NFC normalization.'
+  )
+
+function addDuplicateCaptureSelectionIssues(
+  values: readonly string[],
+  context: z.RefinementCtx,
+  label: string
+): void {
+  const seen = new Set<string>()
+  for (const [index, value] of values.entries()) {
+    if (seen.has(value)) {
+      context.addIssue({
+        code: 'custom',
+        message: `Duplicate ${label}.`,
+        path: [index]
+      })
+    }
+    seen.add(value)
+  }
+}
+
+export const EvidenceCaptureDecisionSchema = z
+  .strictObject({
+    id: SystemIssuedOpaqueIdSchema,
+    scanId: SystemIssuedOpaqueIdSchema,
+    policyDecisionId: SystemIssuedOpaqueIdSchema,
+    capturePolicyId: DefinitionIdSchema,
+    capturePolicyVersion: ModuleVersionSchema,
+    techniqueId: VulnerabilityTechniqueIdSchema,
+    techniqueVersion: ModuleVersionSchema,
+    stepId: DefinitionIdSchema,
+    executionState: EvidenceCaptureExecutionStateSchema,
+    source: EvidenceCaptureSourceSchema,
+    role: EvidenceRoleSchema,
+    action: EvidenceCaptureActionSchema,
+    validFrom: IsoDateSchema,
+    validUntil: IsoDateSchema,
+    maxSourceBytes: z.number().int().positive().max(16_777_216),
+    maxExcerptBytes: z.number().int().min(32).max(65_536),
+    jsonPointers: z.array(JsonCapturePointerSchema).max(128).readonly(),
+    oobMetadataFields: z
+      .array(OobCaptureMetadataFieldSchema)
+      .max(6)
+      .readonly(),
+    oobCommitmentKeyRef: SystemIssuedOpaqueIdSchema.optional(),
+    oobCommitmentKeyVersion: z.number().int().nonnegative().optional()
+  })
+  .superRefine((decision, context) => {
+    if (Date.parse(decision.validFrom) > Date.parse(decision.validUntil)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Evidence capture validity start must not be after its end.',
+        path: ['validUntil']
+      })
+    }
+    if (decision.maxExcerptBytes > decision.maxSourceBytes) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Evidence excerpt limit must not exceed the source limit.',
+        path: ['maxExcerptBytes']
+      })
+    }
+    addDuplicateCaptureSelectionIssues(
+      decision.jsonPointers,
+      context,
+      'evidence JSON pointer'
+    )
+    addDuplicateCaptureSelectionIssues(
+      decision.oobMetadataFields,
+      context,
+      'OOB metadata field'
+    )
+    if (
+      decision.source !== 'oob-event' &&
+      decision.oobMetadataFields.length > 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'OOB metadata fields are valid only for OOB evidence.',
+        path: ['oobMetadataFields']
+      })
+    }
+    if (
+      decision.source !== 'http-response-body' &&
+      decision.jsonPointers.length > 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'JSON pointers are valid only for HTTP response body evidence.',
+        path: ['jsonPointers']
+      })
+    }
+    const requiresOobCommitment =
+      decision.source === 'oob-event' &&
+      (decision.action === 'persist-minimized' ||
+        decision.action === 'hash-only')
+    if (requiresOobCommitment) {
+      if (decision.oobCommitmentKeyRef === undefined) {
+        context.addIssue({
+          code: 'custom',
+          message: 'OOB capture must bind an opaque commitment key reference.',
+          path: ['oobCommitmentKeyRef']
+        })
+      }
+      if (decision.oobCommitmentKeyVersion === undefined) {
+        context.addIssue({
+          code: 'custom',
+          message: 'OOB capture must bind a commitment key version.',
+          path: ['oobCommitmentKeyVersion']
+        })
+      }
+    } else if (
+      decision.oobCommitmentKeyRef !== undefined ||
+      decision.oobCommitmentKeyVersion !== undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'OOB commitment keys are valid only when an OOB token commitment will be persisted.',
+        path: ['oobCommitmentKeyRef']
+      })
+    }
+  })
+  .readonly()
+
+export type EvidenceCaptureDecision = z.infer<
+  typeof EvidenceCaptureDecisionSchema
+>
+
+export const EvidenceHashOnlyReasonSchema = z.enum([
+  'decision-hash-only',
+  'unstructured-text-source',
+  'partial-source',
+  'oversize-source',
+  'compressed-source',
+  'non-utf8-source',
+  'xml-source',
+  'binary-source',
+  'json-parse-failed',
+  'json-selection-failed'
+])
+
+export type EvidenceHashOnlyReason = z.infer<
+  typeof EvidenceHashOnlyReasonSchema
+>
+
+const EvidenceArtifactSchemaVersion = z.literal(
+  'evidence-capture-artifact.v1'
+)
+
+const EvidenceJsonSelectionValueSchema = z.union([
+  z.null(),
+  z.boolean(),
+  z.number().finite(),
+  z.literal('[REDACTED]')
+])
+
+const EvidenceJsonSelectionSchema = z
+  .strictObject({
+    pointer: JsonCapturePointerSchema,
+    value: EvidenceJsonSelectionValueSchema
+  })
+  .readonly()
+
+export const EvidenceJsonSelectionPayloadSchema = z
+  .strictObject({
+    schemaVersion: EvidenceArtifactSchemaVersion,
+    kind: z.literal('allowlisted-json-selection'),
+    selections: z
+      .array(EvidenceJsonSelectionSchema)
+      .min(1)
+      .max(128)
+      .superRefine((selections, context) => {
+        addDuplicateCaptureSelectionIssues(
+          selections.map(({ pointer }) => pointer),
+          context,
+          'evidence JSON selection'
+        )
+        for (let index = 1; index < selections.length; index += 1) {
+          const previous = selections[index - 1]
+          const current = selections[index]
+          if (
+            previous !== undefined &&
+            current !== undefined &&
+            previous.pointer > current.pointer
+          ) {
+            context.addIssue({
+              code: 'custom',
+              message: 'Evidence JSON selections must use canonical pointer order.',
+              path: [index, 'pointer']
+            })
+          }
+        }
+      })
+      .readonly(),
+    sourceHash: EvidenceSourceHashSchema
+  })
+  .readonly()
+
+export type EvidenceJsonSelectionPayload = z.infer<
+  typeof EvidenceJsonSelectionPayloadSchema
+>
+
+export const EvidenceOobMetadataPayloadSchema = z
+  .strictObject({
+    schemaVersion: EvidenceArtifactSchemaVersion,
+    kind: z.literal('allowlisted-oob-metadata'),
+    metadata: OobCaptureMetadataSchema,
+    tokenCommitment: OobTokenCommitmentSchema,
+    sourceHash: EvidenceSourceHashSchema
+  })
+  .superRefine((payload, context) => {
+    if (
+      !evidenceSourceHashesEqual(
+        payload.tokenCommitment.sourceHash,
+        payload.sourceHash
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'OOB payload commitment must bind its payload source hash.',
+        path: ['tokenCommitment', 'sourceHash']
+      })
+    }
+    if (
+      !oobCaptureMetadataEqual(
+        payload.metadata,
+        payload.tokenCommitment.selectedMetadata
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'OOB payload metadata must match its committed metadata.',
+        path: ['metadata']
+      })
+    }
+  })
+  .readonly()
+
+export type EvidenceOobMetadataPayload = z.infer<
+  typeof EvidenceOobMetadataPayloadSchema
+>
+
+export const EvidenceHashOnlyPayloadSchema = z
+  .strictObject({
+    schemaVersion: EvidenceArtifactSchemaVersion,
+    kind: z.literal('hash-only'),
+    reason: EvidenceHashOnlyReasonSchema,
+    sourceHash: EvidenceSourceHashSchema,
+    tokenCommitment: OobTokenCommitmentSchema.optional()
+  })
+  .superRefine((payload, context) => {
+    if (
+      payload.tokenCommitment !== undefined &&
+      !evidenceSourceHashesEqual(
+        payload.tokenCommitment.sourceHash,
+        payload.sourceHash
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Hash-only commitment must bind its payload source hash.',
+        path: ['tokenCommitment', 'sourceHash']
+      })
+    }
+  })
+  .readonly()
+
+export type EvidenceHashOnlyPayload = z.infer<
+  typeof EvidenceHashOnlyPayloadSchema
+>
+
+const EvidenceArtifactDraftFields = {
+  mimeType: z.literal('application/json'),
+  role: EvidenceRoleSchema,
+  captureDecisionId: SystemIssuedOpaqueIdSchema,
+  capturePolicyId: DefinitionIdSchema,
+  capturePolicyVersion: ModuleVersionSchema,
+  redactionState: z.literal('redacted'),
+  sourceHash: EvidenceSourceHashSchema
+} as const
+
+export const EvidenceArtifactDraftSchema = z.discriminatedUnion('type', [
+  z
+    .strictObject({
+      ...EvidenceArtifactDraftFields,
+      type: z.literal('evidence-capture-json-selection'),
+      source: z.literal('http-response-body'),
+      payload: EvidenceJsonSelectionPayloadSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceArtifactDraftFields,
+      type: z.literal('evidence-capture-oob-metadata'),
+      source: z.literal('oob-event'),
+      payload: EvidenceOobMetadataPayloadSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceArtifactDraftFields,
+      type: z.literal('evidence-capture-hash-only'),
+      source: EvidenceCaptureSourceSchema,
+      payload: EvidenceHashOnlyPayloadSchema
+    })
+    .readonly()
+]).superRefine((artifact, context) => {
+  if (
+    !evidenceSourceHashesEqual(
+      artifact.sourceHash,
+      artifact.payload.sourceHash
+    )
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Evidence artifact payload must bind its outer source hash.',
+      path: ['payload', 'sourceHash']
+    })
+  }
+  const tokenCommitment =
+    artifact.type === 'evidence-capture-oob-metadata'
+      ? artifact.payload.tokenCommitment
+      : artifact.type === 'evidence-capture-hash-only'
+        ? artifact.payload.tokenCommitment
+        : undefined
+  if (
+    (artifact.source === 'oob-event') !==
+    (tokenCommitment !== undefined)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Only OOB evidence artifacts may carry an OOB token commitment.',
+      path: ['payload', 'tokenCommitment']
+    })
+  }
+  if (
+    tokenCommitment !== undefined &&
+    (tokenCommitment.captureDecisionId !== artifact.captureDecisionId ||
+      tokenCommitment.capturePolicyId !== artifact.capturePolicyId ||
+      tokenCommitment.capturePolicyVersion !== artifact.capturePolicyVersion ||
+      !evidenceSourceHashesEqual(
+        tokenCommitment.sourceHash,
+        artifact.sourceHash
+      ))
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Evidence artifact commitment must match its capture binding.',
+      path: ['payload', 'tokenCommitment']
+    })
+  }
+})
+
+export type EvidenceArtifactDraft = z.infer<
+  typeof EvidenceArtifactDraftSchema
+>
+
+function evidenceSourceHashesEqual(
+  left: EvidenceSourceHash,
+  right: EvidenceSourceHash
+): boolean {
+  return (
+    left.domain === right.domain &&
+    left.algorithm === right.algorithm &&
+    left.digest === right.digest &&
+    left.basis === right.basis &&
+    left.coverage === right.coverage &&
+    left.hashedBytes === right.hashedBytes &&
+    left.knownTotalBytes === right.knownTotalBytes
+  )
+}
+
+function oobCaptureMetadataEqual(
+  left: OobCaptureMetadata,
+  right: OobCaptureMetadata
+): boolean {
+  return (
+    left.channel === right.channel &&
+    left.eventType === right.eventType &&
+    left.receivedAt === right.receivedAt &&
+    left.requestMethod === right.requestMethod &&
+    left.dnsRecordType === right.dnsRecordType &&
+    left.statusCode === right.statusCode
+  )
+}
+
+function oobTokenCommitmentsEqual(
+  left: OobTokenCommitment,
+  right: OobTokenCommitment
+): boolean {
+  return (
+    left.domain === right.domain &&
+    left.algorithm === right.algorithm &&
+    left.keyRef === right.keyRef &&
+    left.keyVersion === right.keyVersion &&
+    left.captureDecisionId === right.captureDecisionId &&
+    left.capturePolicyId === right.capturePolicyId &&
+    left.capturePolicyVersion === right.capturePolicyVersion &&
+    oobCaptureMetadataEqual(
+      left.selectedMetadata,
+      right.selectedMetadata
+    ) &&
+    evidenceSourceHashesEqual(left.sourceHash, right.sourceHash) &&
+    left.digest === right.digest
+  )
+}
+
+export const EvidenceCaptureResultSchema = z
+  .strictObject({
+    state: EvidenceCaptureOutcomeSchema,
+    reason: EvidenceCaptureReasonSchema,
+    role: EvidenceRoleSchema,
+    source: EvidenceCaptureSourceSchema,
+    captureDecisionId: SystemIssuedOpaqueIdSchema,
+    capturePolicyId: DefinitionIdSchema,
+    capturePolicyVersion: ModuleVersionSchema,
+    sourceHash: EvidenceSourceHashSchema,
+    tokenCommitment: OobTokenCommitmentSchema.optional(),
+    artifacts: z.array(EvidenceArtifactDraftSchema).max(1).readonly()
+  })
+  .superRefine((result, context) => {
+    const mustPersistOne =
+      result.state === 'captured' || result.state === 'hash-only'
+    const reasonMatchesState =
+      (result.state === 'captured' &&
+        (result.reason === 'allowlisted-json-selection' ||
+          result.reason === 'allowlisted-oob-metadata')) ||
+      (result.state === 'hash-only' &&
+        EvidenceHashOnlyReasonSchema.safeParse(result.reason).success) ||
+      (result.state === 'discarded' &&
+        result.reason === 'decision-discard') ||
+      (result.state === 'unsupported' &&
+        (result.reason === 'protected-original-unsupported' ||
+          result.reason === 'oob-commitment-unavailable'))
+    if (!reasonMatchesState) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Evidence capture reason must match its outcome state.',
+        path: ['reason']
+      })
+    }
+    if (mustPersistOne && result.artifacts.length !== 1) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Captured and hash-only results must contain exactly one artifact draft.',
+        path: ['artifacts']
+      })
+    }
+    if (!mustPersistOne && result.artifacts.length !== 0) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Discarded or unsupported capture cannot produce persistence drafts.',
+        path: ['artifacts']
+      })
+    }
+    const mustPersistOobCommitment =
+      result.source === 'oob-event' && mustPersistOne
+    if (
+      !mustPersistOobCommitment &&
+      result.tokenCommitment !== undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Token commitments are valid only for persisted OOB evidence.',
+        path: ['tokenCommitment']
+      })
+    }
+    if (mustPersistOobCommitment && result.tokenCommitment === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Persisted OOB evidence must include its keyed token commitment.',
+        path: ['tokenCommitment']
+      })
+    }
+    if (
+      result.source === 'oob-event'
+        ? result.sourceHash.basis !== 'selected-oob-metadata' ||
+          result.sourceHash.coverage !== 'partial' ||
+          result.sourceHash.knownTotalBytes !== undefined
+        : result.sourceHash.basis !== 'source-bytes'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Evidence source hash semantics must match the evidence source.',
+        path: ['sourceHash']
+      })
+    }
+    if (
+      result.reason === 'allowlisted-json-selection' &&
+      result.source !== 'http-response-body'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'JSON selections are valid only for HTTP response body evidence.',
+        path: ['source']
+      })
+    }
+    if (
+      (result.reason === 'allowlisted-oob-metadata' ||
+        result.reason === 'oob-commitment-unavailable') &&
+      result.source !== 'oob-event'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The OOB capture outcome requires an OOB evidence source.',
+        path: ['source']
+      })
+    }
+    if (
+      result.source === 'oob-event' &&
+      result.state === 'hash-only' &&
+      result.reason !== 'decision-hash-only'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'OOB hash-only evidence requires an explicit hash-only decision.',
+        path: ['reason']
+      })
+    }
+    if (result.tokenCommitment) {
+      if (
+        result.tokenCommitment.captureDecisionId !==
+          result.captureDecisionId ||
+        result.tokenCommitment.capturePolicyId !== result.capturePolicyId ||
+        result.tokenCommitment.capturePolicyVersion !==
+          result.capturePolicyVersion ||
+        !evidenceSourceHashesEqual(
+          result.tokenCommitment.sourceHash,
+          result.sourceHash
+        )
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'OOB token commitment must match the capture and source hash binding.',
+          path: ['tokenCommitment']
+        })
+      }
+    }
+    const artifact = result.artifacts[0]
+    if (artifact) {
+      if (
+        artifact.role !== result.role ||
+        artifact.source !== result.source ||
+        artifact.captureDecisionId !== result.captureDecisionId ||
+        artifact.capturePolicyId !== result.capturePolicyId ||
+        artifact.capturePolicyVersion !== result.capturePolicyVersion ||
+        !evidenceSourceHashesEqual(
+          artifact.sourceHash,
+          result.sourceHash
+        ) ||
+        !evidenceSourceHashesEqual(
+          artifact.payload.sourceHash,
+          result.sourceHash
+        )
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Evidence artifact binding must exactly match its capture result.',
+          path: ['artifacts', 0]
+        })
+      }
+      const artifactTypeMatches =
+        (result.state === 'hash-only' &&
+          artifact.type === 'evidence-capture-hash-only') ||
+        (result.state === 'captured' &&
+          result.reason === 'allowlisted-json-selection' &&
+          artifact.type === 'evidence-capture-json-selection') ||
+        (result.state === 'captured' &&
+          result.reason === 'allowlisted-oob-metadata' &&
+          artifact.type === 'evidence-capture-oob-metadata')
+      if (!artifactTypeMatches) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Evidence artifact type must match the capture outcome.',
+          path: ['artifacts', 0, 'type']
+        })
+      }
+      if (
+        artifact.type === 'evidence-capture-hash-only' &&
+        (artifact.payload.reason !== result.reason ||
+          (result.tokenCommitment === undefined) !==
+            (artifact.payload.tokenCommitment === undefined) ||
+          (result.tokenCommitment !== undefined &&
+            artifact.payload.tokenCommitment !== undefined &&
+            !oobTokenCommitmentsEqual(
+              result.tokenCommitment,
+              artifact.payload.tokenCommitment
+            )))
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Hash-only evidence payload must match its result binding.',
+          path: ['artifacts', 0, 'payload']
+        })
+      }
+      if (
+        artifact.type === 'evidence-capture-oob-metadata' &&
+        (result.tokenCommitment === undefined ||
+          !oobTokenCommitmentsEqual(
+            result.tokenCommitment,
+            artifact.payload.tokenCommitment
+          ) ||
+          !oobCaptureMetadataEqual(
+            artifact.payload.metadata,
+            result.tokenCommitment.selectedMetadata
+          ))
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'OOB evidence payload must match its result commitment.',
+          path: ['artifacts', 0, 'payload', 'tokenCommitment']
+        })
+      }
+    }
+  })
+  .readonly()
+
+export type EvidenceCaptureResult = z.infer<
+  typeof EvidenceCaptureResultSchema
+>
 
 export const EvidenceSummarySchema = z.object({
   id: IdSchema,

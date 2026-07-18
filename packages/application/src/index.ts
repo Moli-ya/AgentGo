@@ -83,8 +83,10 @@ import {
 import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
 
 export * from './execution-policy'
+export * from './evidence-capture-policy'
 export * from './execution-service'
 export * from './inventory-service'
+export * from './request-compiler'
 export * from './report-service'
 export * from './agent-prompts'
 export * from './scan-coordinator'
