@@ -4,7 +4,7 @@
 
 - 状态：`partial / in_progress`，不构成 Day4 完成声明。
 - 原计划：[Day 4：纯请求编译、三阶段哈希与 EvidenceCapturePolicy](../planning/Day4.md)。
-- 分支：`main`；本档案与实现的 commit 在提交后补记。
+- 分支：`main`；首个实现切片与本档案初版 commit `8fe55b0963560bfbd0381b32cf8220909e7922ec`。
 - 本切片只建立无联网的合同、纯请求编译器和纯证据捕获策略；没有改变 Coordinator、Runner、数据库或 Renderer 的现有联网/持久化路径。
 
 ## 计划映射
@@ -41,7 +41,7 @@
 | `pnpm check` | 退出码 0；14 个 workspace 与 scripts typecheck 通过；主测试 33 文件/329 项、DB baseline 2 文件/10 项通过；Main/Preload/Renderer production build 通过。 |
 | `git diff --check` | 退出码 0；仅 Windows LF/CRLF 提示，无 whitespace error。 |
 
-提交前工作树只包含本切片合同、application 纯函数/测试和进度文档；最终 commit hash 由提交后的补充记录映射。
+提交前工作树只包含本切片合同、application 纯函数/测试和进度文档；实现与档案初版已由 commit `8fe55b0963560bfbd0381b32cf8220909e7922ec` 固定，本次后续文档提交只补充该映射。
 
 ## 合同与生成物边界
 
