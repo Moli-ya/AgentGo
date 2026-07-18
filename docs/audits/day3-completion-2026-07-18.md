@@ -27,7 +27,7 @@
 - contracts → domain canonicalization/redaction → Application service → repository/SQLite 是唯一 Inventory 写入链；repository 在事务前后校验合同、hash 与同 Scan 绑定，SQLite trigger 提供最后一道不变量防线。
 - Scan 创建时在同一事务写入完整 snapshot 集合并封存；snapshot hash 覆盖选中 Definition、完整 capability descriptor（含 description/risk floor）、Registry、环境与授权语义。未封存、损坏、缺失、语义漂移或 `legacy-unknown` 都不会恢复执行。
 - `reviewStatus` 是人工事实，`executionClass` 是确定性分类；两者不相互覆盖。未审查来源只进入 Inventory，现有四类执行只消费明确 reviewed 的安全 legacy 变体。
-- Coordinator 在 start 时先建立 target-base Inventory；首次等待用户发生在 `intake`，HTTP 请求、模型调用和 AgentRun 均为 0。review 后恢复仍在 active-enum 入口再次核对 pending 变体；link/form 新来源需要下一轮显式 review。
+- Coordinator 在 start 时先建立 target-base Inventory；首次等待用户发生在 `intake`，HTTP 请求、模型调用和 AgentRun 均为 0。review 后恢复仍在 active-enum 入口再次核对 pending 变体；新结构的 link/form variant 需要下一轮显式 review。同结构的新来源复用既有 variant，但 source 记录自身保持 `unreviewed`，不会改变已审查 wire 结构，也不会单独触发 variant-level 等待；详见 [独立补充复核](day3-follow-up-review-2026-07-18.md)。
 - legacy 投影从同一个 reviewed variant 的 preview 与 query selector 重建执行 URL，从该 variant 获取 `contentType` 和已复核 provenance `source`，并从该 selector 读取 `valueType`/`required`；旧 `parameters` 表只提供稳定兼容 ID。它不读取 Endpoint 的跨变体兼容字段或 sibling 参数语义；含非 query selector、legacy runner 不会隐式提供的自定义 header、缺失 reviewed source 或 rejected/retired 状态的变体均不进入 wire。
 - Target/Page/Endpoint、PolicyDecision、ToolCall、请求/响应摘要和脱敏 Evidence 派生中的 URL 与敏感元数据使用脱敏表示；原始请求目标只在授权与实际 Runner 调用之间瞬时流动，不写数据库或报告。V1 仍可能把完整响应 body 保存为不可变 `original` Evidence，再生成文本脱敏派生；Day3 不把它误报为 capture-before-store。
 - Renderer 目录没有功能变化；Main 仅组合注入 `InventoryService`。本次不新增 API provider、依赖型网络调用、主动漏洞类别或 L2 能力。
@@ -41,7 +41,7 @@
 | `pnpm benchmark:verify` | 0 | evaluation manifest/metrics 1 文件/3 项通过。 |
 | `pnpm benchmark:run -- --output benchmark-results/day3-final-projection-fix-2026-07-18` | 0 | legacy 投影的 selector/contentType/source/header 隔离修复后全新 40 Case：TP 20、TN 20、FP/FN/Inconclusive 0，Precision/Recall/F1/Evidence completeness 均为 1；六项 safety counter 均为 0。 |
 | `pnpm db:baseline generate/verify`（忽略目录） | 0 | schema `0006_unified_inventory_and_module_snapshots` 生成后立即复核；数据库与逻辑内容 hash 一致，recordCounts 为 Workspace/Target/Scope/Scan 各 1。 |
-| 多轮只读差异/安全复核 | 0 个未解决 P0/P1/P2 | 复核发现的 URL/标题落库、variant URL/selector/contentType/source 执行绑定、混合 selector/custom header 降格、review-before-GET、Target/selector 迁移、snapshot 封存/语义、Unicode 原子性、legacy review 与文档现时态问题均已修复并回归。 |
+| 多轮只读差异/安全复核 | 当次记录为 0 个未解决 P0/P1/P2 | 该结论对应原完成 commit；后续独立复核补出并修复了固定靶场未覆盖的策略、合同与审计负例，当前结论和新验证数字见 [2026-07-18 独立补充复核](day3-follow-up-review-2026-07-18.md)。 |
 | `git diff --check`、Renderer diff、生成物忽略检查 | 0 | 无 whitespace error；`apps/desktop/src/renderer/**` 无差异；benchmark/合成数据库目录命中 `.gitignore`，Git 未跟踪 SQLite、Evidence、凭据或运行产物；Day3 过时 pending 表述扫描为 0。 |
 
 ## 可复现标识
