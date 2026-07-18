@@ -14,11 +14,27 @@ import {
   computeScanModuleSnapshotHash,
   requireSealedScanModuleSnapshotSet,
   ScanModuleSnapshotError,
-  verifyScanModuleSnapshots
+  verifyScanModuleSnapshots as verifyPersistedScanModuleSnapshots
 } from './scan-module-snapshot'
 import { createDay2VulnerabilityPlatform } from './vulnerability-platform'
 
 const CREATED_AT = '2026-07-17T00:00:00.000Z'
+const SCAN_ID = 'scan-day3'
+
+function verifyScanModuleSnapshots(
+  inputs: readonly ScanModuleSnapshotRecord[],
+  familyIds: Parameters<typeof verifyPersistedScanModuleSnapshots>[2],
+  environment: Parameters<typeof verifyPersistedScanModuleSnapshots>[3],
+  platform: Parameters<typeof verifyPersistedScanModuleSnapshots>[4]
+): void {
+  verifyPersistedScanModuleSnapshots(
+    inputs,
+    SCAN_ID,
+    familyIds,
+    environment,
+    platform
+  )
+}
 
 function asRecords(
   drafts: readonly ScanModuleSnapshotDraft[]
@@ -26,7 +42,7 @@ function asRecords(
   return drafts.map((draft, index) =>
     ScanModuleSnapshotRecordSchema.parse({
       id: `snapshot-${index}`,
-      scanId: 'scan-day3',
+      scanId: SCAN_ID,
       ...draft,
       snapshotHash: computeScanModuleSnapshotHash(draft),
       createdAt: CREATED_AT
@@ -156,6 +172,28 @@ describe('scan module snapshots', () => {
           platform
         ),
       'snapshot-schema-invalid'
+    )
+  })
+
+  it('rejects semantically valid snapshots bound to another scan', () => {
+    const platform = createDay2VulnerabilityPlatform()
+    const records = asRecords(
+      buildScanModuleSnapshotDrafts(
+        ['sqli', 'xss'],
+        'authorized-real-target',
+        platform
+      )
+    )
+
+    expectSnapshotError(
+      () =>
+        verifyScanModuleSnapshots(
+          records.map((record) => ({ ...record, scanId: 'other-scan' })),
+          ['sqli', 'xss'],
+          'authorized-real-target',
+          platform
+        ),
+      'snapshot-scan-mismatch'
     )
   })
 

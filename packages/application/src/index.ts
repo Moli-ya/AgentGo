@@ -377,6 +377,7 @@ export class AgentGoApplicationService {
         requireSealedScanModuleSnapshotSet(row.moduleSnapshotsSealed)
         verifyScanModuleSnapshots(
           snapshots,
+          scanId,
           row.configJson.families,
           this.vulnerabilityExecutionEnvironment,
           this.vulnerabilityPlatform

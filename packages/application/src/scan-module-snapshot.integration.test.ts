@@ -123,6 +123,7 @@ describe('scan-scoped module snapshot persistence gate', () => {
       expect(() =>
         verifyScanModuleSnapshots(
           snapshots,
+          scan.id,
           scan.families,
           'authorized-test-environment',
           platform

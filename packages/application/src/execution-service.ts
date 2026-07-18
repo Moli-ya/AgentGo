@@ -100,10 +100,40 @@ export class ExecutionService {
     const abort = (): void => {
       void this.httpRunner.cancel(requestId)
     }
+    const executionStartedAt = Date.now()
     input.signal?.addEventListener('abort', abort, { once: true })
-    const result = await this.httpRunner.execute(request).finally(() => {
+    let result: HttpExecutionResult
+    try {
+      result = await this.httpRunner.execute(request)
+    } catch (error) {
+      const durationMs = Date.now() - executionStartedAt
+      const status = input.signal?.aborted ? 'cancelled' : 'failed'
+      const message = redactInventoryText(
+        error instanceof Error ? error.message : 'HTTP runner threw an unknown error.'
+      )
+      await this.repository.updateToolCall({
+        id: toolCallId,
+        status,
+        durationMs,
+        error: message
+      })
+      await this.repository.incrementScanUsage({ scanId: input.scanId, requests: 1 })
+      await this.repository.addScanEvent({
+        scanId: input.scanId,
+        type: 'execution',
+        level: 'error',
+        message: `HTTP 执行器异常终止：${message}`,
+        detail: {
+          requestId,
+          toolCallId,
+          policyDecisionId: input.policyDecisionId,
+          endState: status
+        }
+      })
+      throw new Error(`HTTP runner failed: ${message}`)
+    } finally {
       input.signal?.removeEventListener('abort', abort)
-    })
+    }
     const interactionId = randomUUID()
     const responseSummary = {
       requestId,
@@ -282,10 +312,39 @@ export class ExecutionService {
     const abort = (): void => {
       void this.browserRunner.cancel(requestId)
     }
+    const executionStartedAt = Date.now()
     input.signal?.addEventListener('abort', abort, { once: true })
-    const result = await this.browserRunner.execute(request).finally(() => {
+    let result: BrowserExecutionResult
+    try {
+      result = await this.browserRunner.execute(request)
+    } catch (error) {
+      const durationMs = Date.now() - executionStartedAt
+      const status = input.signal?.aborted ? 'cancelled' : 'failed'
+      const message = redactInventoryText(
+        error instanceof Error ? error.message : 'Browser runner threw an unknown error.'
+      )
+      await this.repository.updateToolCall({
+        id: toolCallId,
+        status,
+        durationMs,
+        error: message
+      })
+      await this.repository.addScanEvent({
+        scanId: input.scanId,
+        type: 'execution',
+        level: 'error',
+        message: `隔离浏览器异常终止：${message}`,
+        detail: {
+          requestId,
+          toolCallId,
+          policyDecisionId: input.policyDecisionId,
+          endState: status
+        }
+      })
+      throw new Error(`Browser runner failed: ${message}`)
+    } finally {
       input.signal?.removeEventListener('abort', abort)
-    })
+    }
     const evidenceRefs: string[] = []
     let outputRef: string | undefined
 

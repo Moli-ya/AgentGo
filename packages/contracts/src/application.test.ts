@@ -27,6 +27,17 @@ const baseTarget = {
 }
 
 describe('target Base URL contract', () => {
+  it.each(['not-a-url', '', '://missing-scheme'])(
+    'returns a failed parse instead of throwing for malformed input %j',
+    (value) => {
+      expect(() => TargetBaseUrlSchema.safeParse(value)).not.toThrow()
+      expect(TargetBaseUrlSchema.safeParse(value).success).toBe(false)
+      expect(() =>
+        CreateTargetInputSchema.safeParse({ ...baseTarget, baseUrl: value })
+      ).not.toThrow()
+    }
+  )
+
   it('accepts a credential-free HTTP(S) seed for create and update', () => {
     expect(CreateTargetInputSchema.safeParse(baseTarget).success).toBe(true)
     expect(

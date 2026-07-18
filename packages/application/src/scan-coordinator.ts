@@ -766,13 +766,18 @@ export class DefaultScanCoordinator {
         }
       }
     })
-    const endpointIds = new Set(endpoints.map((endpoint) => endpoint.id))
-    const parameterIds = new Set(endpoints.flatMap((endpoint) => endpoint.parameters.map((item) => item.id)))
+    const parameterIdsByEndpoint = new Map(
+      endpoints.map((endpoint) => [
+        endpoint.id,
+        new Set(endpoint.parameters.map((parameter) => parameter.id))
+      ])
+    )
     const candidates = strategy.value.candidates.filter(
       (candidate) =>
         context.scan.families.includes(candidate.family) &&
-        endpointIds.has(candidate.endpointId) &&
-        parameterIds.has(candidate.parameterId)
+        parameterIdsByEndpoint
+          .get(candidate.endpointId)
+          ?.has(candidate.parameterId) === true
     )
     await this.emit({
       scanId,
@@ -1875,6 +1880,7 @@ export class DefaultScanCoordinator {
       requireSealedScanModuleSnapshotSet(snapshotSetSealed)
       verifyScanModuleSnapshots(
         await this.repository.listScanModuleSnapshots(scanId),
+        scanId,
         families,
         this.vulnerabilityExecutionEnvironment,
         this.vulnerabilityPlatform

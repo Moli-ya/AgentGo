@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BrowserRunner } from '@agentgo/browser-runner'
+import type { HttpRunner } from '@agentgo/http-runner'
 import {
   AgentGoRepository,
   EvidenceStore,
@@ -169,5 +170,121 @@ describe('ExecutionService HTTP evidence loop', () => {
 
     await new Promise<void>((resolve) => server.close(() => resolve()))
     database.close()
+  })
+})
+
+describe('ExecutionService runner failure audit', () => {
+  function throwingFixture() {
+    const updateToolCall = vi.fn(async () => undefined)
+    const addScanEvent = vi.fn(async () => undefined)
+    const incrementScanUsage = vi.fn(async () => undefined)
+    const repository = {
+      getExecutionDecision: vi.fn(async () => ({
+        scanId: 'scan-1',
+        workspaceId: 'workspace-1'
+      })),
+      recordToolCall: vi.fn(async () => 'tool-call-1'),
+      updateToolCall,
+      addScanEvent,
+      incrementScanUsage
+    } as unknown as AgentGoRepository
+    const httpRunner: HttpRunner = {
+      execute: vi.fn(async () => {
+        throw new Error('Authorization: Bearer runner-secret')
+      }),
+      cancel: vi.fn(async () => undefined)
+    }
+    const browserRunner: BrowserRunner = {
+      execute: vi.fn(async () => {
+        throw new Error('Authorization: Bearer runner-secret')
+      }),
+      cancel: vi.fn(async () => undefined)
+    }
+    const service = new ExecutionService(
+      repository,
+      {} as EvidenceStore,
+      httpRunner,
+      browserRunner
+    )
+    return { service, updateToolCall, addScanEvent, incrementScanUsage }
+  }
+
+  it('finalizes a throwing HTTP runner and counts the attempted request', async () => {
+    const fixture = throwingFixture()
+
+    const error = await fixture.service
+      .executeHttp({
+        scanId: 'scan-1',
+        policyDecisionId: 'decision-1',
+        request: {
+          targetUrl: 'https://example.test/',
+          method: 'GET',
+          timeoutMs: 1_000
+        }
+      })
+      .then(
+        () => undefined,
+        (reason: unknown) => reason
+      )
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('HTTP runner failed')
+    expect((error as Error).message).not.toContain('runner-secret')
+
+    expect(fixture.updateToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'tool-call-1',
+        status: 'failed'
+      })
+    )
+    expect(JSON.stringify(fixture.updateToolCall.mock.calls)).not.toContain(
+      'runner-secret'
+    )
+    expect(fixture.incrementScanUsage).toHaveBeenCalledWith({
+      scanId: 'scan-1',
+      requests: 1
+    })
+    expect(fixture.addScanEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scanId: 'scan-1',
+        type: 'execution',
+        level: 'error'
+      })
+    )
+  })
+
+  it('finalizes a throwing Browser runner without persisting its raw error', async () => {
+    const fixture = throwingFixture()
+
+    const error = await fixture.service
+      .executeBrowser({
+        scanId: 'scan-1',
+        policyDecisionId: 'decision-1',
+        request: {
+          baseUrl: 'https://example.test/',
+          html: '<p>fixture</p>',
+          action: 'inspect-dom',
+          timeoutMs: 1_000
+        }
+      })
+      .then(
+        () => undefined,
+        (reason: unknown) => reason
+      )
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('Browser runner failed')
+    expect((error as Error).message).not.toContain('runner-secret')
+
+    expect(fixture.updateToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'tool-call-1',
+        status: 'failed'
+      })
+    )
+    expect(JSON.stringify(fixture.updateToolCall.mock.calls)).not.toContain(
+      'runner-secret'
+    )
+    expect(fixture.incrementScanUsage).not.toHaveBeenCalled()
   })
 })

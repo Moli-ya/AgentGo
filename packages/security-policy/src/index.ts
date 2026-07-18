@@ -30,6 +30,10 @@ const destructiveIndicators = [
   /\b(?:webshell|reverse shell|credential spray|password spray)\b/i
 ]
 
+const ACTIVE_SAFE_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const L2_HTTP_METHODS = new Set(['POST', 'PUT', 'PATCH'])
+const PERMANENTLY_BLOCKED_HTTP_METHODS = new Set(['DELETE', 'TRACE', 'CONNECT'])
+
 function deny(
   code: PolicyDecision['code'],
   reason: string,
@@ -133,6 +137,10 @@ export function evaluateProbe(
     return deny('invalid-target', '目标 URL 无法解析。')
   }
 
+  if (target.username || target.password) {
+    return deny('invalid-target', '目标 URL 不得包含 userinfo 或凭据。')
+  }
+
   const normalizedTarget = target.toString()
 
   if (!['http:', 'https:'].includes(target.protocol)) {
@@ -161,7 +169,6 @@ export function evaluateProbe(
 
   if (
     action.identityId &&
-    scope.allowedIdentityIds.length > 0 &&
     !scope.allowedIdentityIds.includes(action.identityId)
   ) {
     return deny('identity-out-of-scope', '当前测试身份未包含在授权范围内。', normalizedTarget)
@@ -180,10 +187,18 @@ export function evaluateProbe(
 
   const method = action.method.toUpperCase()
 
-  if (['DELETE', 'TRACE', 'CONNECT'].includes(method)) {
+  if (PERMANENTLY_BLOCKED_HTTP_METHODS.has(method)) {
     return deny(
       'http-method-blocked',
       `HTTP ${method} 在默认策略中永久禁止。`,
+      normalizedTarget
+    )
+  }
+
+  if (!ACTIVE_SAFE_HTTP_METHODS.has(method) && !L2_HTTP_METHODS.has(method)) {
+    return deny(
+      'http-method-blocked',
+      `HTTP ${method} 没有经审查的执行语义，已失败关闭。`,
       normalizedTarget
     )
   }
@@ -212,12 +227,11 @@ export function evaluateProbe(
     )
   }
 
-  // POST is not inherently destructive at the HTTP layer, but on a real Web
-  // application it commonly creates state.  Treat it like PUT/PATCH unless an
-  // explicitly approved L2 proposal declares a reversible test object and a
-  // cleanup plan.  V1 automatic validation stays on the safer GET/HEAD path.
+  // V1 automatic validation is limited to the reviewed GET/HEAD/OPTIONS
+  // allowlist. Known mutating methods require L2; unknown methods were rejected
+  // above because the policy has no reviewed semantics for them.
   if (
-    ['POST', 'PUT', 'PATCH'].includes(method) &&
+    L2_HTTP_METHODS.has(method) &&
     action.probeLevel !== 'active-sensitive'
   ) {
     return deny(
@@ -320,6 +334,62 @@ function classifyIpv4(address: string): NetworkAddressClass {
   return 'public'
 }
 
+function parseIpv6Section(section: string): number[] | undefined {
+  if (!section) return []
+
+  const words: number[] = []
+  for (const token of section.split(':')) {
+    if (token.includes('.')) {
+      const octets = token.split('.').map(Number)
+      if (
+        octets.length !== 4 ||
+        octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+      ) {
+        return undefined
+      }
+      words.push((octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!)
+      continue
+    }
+
+    if (!/^[0-9a-f]{1,4}$/i.test(token)) return undefined
+    words.push(Number.parseInt(token, 16))
+  }
+  return words
+}
+
+function expandIpv6(address: string): number[] | undefined {
+  const sections = address.split('::')
+  if (sections.length > 2) return undefined
+
+  const head = parseIpv6Section(sections[0] ?? '')
+  const tail = parseIpv6Section(sections[1] ?? '')
+  if (!head || !tail) return undefined
+
+  if (sections.length === 1) {
+    return head.length === 8 ? head : undefined
+  }
+
+  const omittedWordCount = 8 - head.length - tail.length
+  if (omittedWordCount < 1) return undefined
+  return [...head, ...Array<number>(omittedWordCount).fill(0), ...tail]
+}
+
+function extractMappedIpv4Address(address: string): string | undefined {
+  const words = expandIpv6(address)
+  if (
+    !words ||
+    words.length !== 8 ||
+    words.slice(0, 5).some((word) => word !== 0) ||
+    words[5] !== 0xffff
+  ) {
+    return undefined
+  }
+
+  const high = words[6]!
+  const low = words[7]!
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`
+}
+
 export function classifyNetworkAddress(address: string): NetworkAddressClass {
   const version = isIP(address)
   if (version === 4) return classifyIpv4(address)
@@ -328,9 +398,8 @@ export function classifyNetworkAddress(address: string): NetworkAddressClass {
   const normalized = address.toLowerCase().split('%')[0] ?? address.toLowerCase()
   if (normalized === '::1') return 'loopback'
   if (normalized === '::') return 'unspecified'
-  if (normalized.startsWith('::ffff:')) {
-    return classifyIpv4(normalized.slice('::ffff:'.length))
-  }
+  const mappedIpv4Address = extractMappedIpv4Address(normalized)
+  if (mappedIpv4Address) return classifyIpv4(mappedIpv4Address)
   if (normalized.startsWith('fc') || normalized.startsWith('fd')) return 'private'
   if (/^fe[89ab]/.test(normalized)) return 'link-local'
   if (normalized.startsWith('ff')) return 'multicast'
@@ -359,6 +428,12 @@ export function evaluateResolvedAddresses(
         `地址 ${address} 属于云元数据端点，永久禁止访问。`
       )
     }
+    if (['invalid', 'unspecified', 'multicast'].includes(classification)) {
+      return deny(
+        'network-address-blocked',
+        `地址 ${address} 的网络类别为 ${classification}，默认永久禁止访问。`
+      )
+    }
     if (classification === 'loopback' && !scope.allowLoopbackTargets) {
       return deny(
         'network-address-blocked',
@@ -366,14 +441,7 @@ export function evaluateResolvedAddresses(
       )
     }
     if (
-      [
-        'private',
-        'link-local',
-        'reserved',
-        'unspecified',
-        'multicast',
-        'invalid'
-      ].includes(classification) &&
+      ['private', 'link-local', 'reserved'].includes(classification) &&
       !scope.allowPrivateNetworkTargets
     ) {
       return deny(

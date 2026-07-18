@@ -19,6 +19,7 @@ import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
 export type ScanModuleSnapshotErrorCode =
   | 'snapshot-set-unsealed'
   | 'snapshot-schema-invalid'
+  | 'snapshot-scan-mismatch'
   | 'snapshot-hash-mismatch'
   | 'snapshot-duplicate-family'
   | 'snapshot-family-set-mismatch'
@@ -295,6 +296,7 @@ function expectedBindings(
  */
 export function verifyScanModuleSnapshots(
   inputs: readonly ScanModuleSnapshotRecord[],
+  expectedScanId: string,
   familyIds: readonly VulnerabilityFamilyId[],
   environment: Environment,
   platform: SnapshotPlatform
@@ -314,6 +316,15 @@ export function verifyScanModuleSnapshots(
     }
     return result.data
   })
+  for (const record of records) {
+    if (record.scanId !== expectedScanId) {
+      fail(
+        'snapshot-scan-mismatch',
+        record.familyId,
+        `Persisted module snapshot ${record.id} is not bound to scan ${expectedScanId}.`
+      )
+    }
+  }
   requireUniqueFamilies(
     records.map(({ familyId }) => familyId),
     'snapshot-duplicate-family'

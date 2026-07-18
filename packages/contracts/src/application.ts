@@ -79,7 +79,16 @@ export const TargetBaseUrlSchema = z
   .url()
   .max(16_384)
   .superRefine((value, context) => {
-    const url = new TargetBaseUrl(value)
+    let url: ParsedTargetBaseUrl
+    try {
+      url = new TargetBaseUrl(value)
+    } catch {
+      context.addIssue({
+        code: 'custom',
+        message: 'Target Base URL must be a valid absolute URL.'
+      })
+      return
+    }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       context.addIssue({
         code: 'custom',
