@@ -1,9 +1,5 @@
 import { randomBytes } from 'node:crypto'
 import {
-  buildInertXssMarkerPayload,
-  type BrowserFormSummary
-} from '@agentgo/browser-runner'
-import {
   registerActionResult,
   transitionRuntime,
   type ScanRuntimeState
@@ -14,19 +10,19 @@ import {
   type VulnerabilityFamily,
   type AgentRole,
   type Environment,
-  type IdentityRecord,
   type InventoryEndpoint,
   type InventoryValueType,
   type ScanControlAction,
   type ScanEvent,
+  type CapabilityId,
   type ScanRecord,
   type SelectorRef,
   type TargetScopeRecord
 } from '@agentgo/contracts'
+import { buildInertXssMarkerPayload } from '@agentgo/domain'
 import {
   AgentGoRepository,
   EvidenceStore,
-  FileCredentialStore,
   sha256Text,
   type StoredSignalRecord
 } from '@agentgo/db'
@@ -44,8 +40,13 @@ import {
   type PlannerOutput,
   type StrategyOutput
 } from './agent-prompts'
-import { ExecutionService } from './execution-service'
-import { PolicyBroker } from './execution-policy'
+import type {
+  BrowserFormView,
+  BrowserOfflineExecutionStepInput,
+  ExecutionPort,
+  HttpExecutionStepInput,
+  QueryValueMutation
+} from './execution-port'
 import { InventoryService } from './inventory-service'
 import { ReportService } from './report-service'
 import {
@@ -76,10 +77,8 @@ interface CoordinatorRuntimeState extends ScanRuntimeState {
 
 export interface ScanCoordinatorDependencies {
   repository: AgentGoRepository
-  credentialStore: FileCredentialStore
   evidenceStore: EvidenceStore
-  executionService: ExecutionService
-  policyBroker: PolicyBroker
+  executionPort: ExecutionPort
   modelGateway: ModelGateway
   reportService: ReportService
   vulnerabilityPlatform: Day2VulnerabilityPlatform
@@ -87,8 +86,6 @@ export interface ScanCoordinatorDependencies {
   inventoryService?: InventoryService
   onEvent?: (event: ScanEvent) => void
 }
-
-class PolicyDeniedError extends Error {}
 
 const phaseProgress: Record<ScanRecord['phase'], number> = {
   intake: 8,
@@ -118,13 +115,59 @@ function unique<T>(values: T[]): T[] {
 }
 
 function responseRef(observation: HttpObservation): string {
-  return observation.evidenceRefs[2] ?? observation.evidenceRefs[1] ?? observation.evidenceRefs[0]!
+  const reference = observation.evidenceRefs.at(-1)
+  if (!reference) {
+    throw new Error('ExecutionPort omitted the terminal response Evidence reference.')
+  }
+  return reference
 }
 
-function replaceQueryParameter(urlValue: string, name: string, value: string): string {
+const CALLBACK_TOKEN_PARAMETER = 'agentgo_token'
+const CALLBACK_REVIEW_PLACEHOLDER = 'agentgo-callback-review-placeholder'
+
+function queryValueMutation(
+  urlValue: string,
+  name: string,
+  value: string
+): { desiredUrl: string; mutation: QueryValueMutation } {
   const url = new URL(urlValue)
-  url.searchParams.set(name, value)
+  const entries = [...url.searchParams.entries()]
+  let mutated = false
+  url.search = ''
+  for (const [entryName, entryValue] of entries) {
+    if (!mutated && entryName === name) {
+      url.searchParams.append(entryName, value)
+      mutated = true
+      continue
+    }
+    url.searchParams.append(entryName, entryValue)
+  }
+  if (!mutated) {
+    throw new Error(`Reviewed query selector ${name} is absent from the endpoint URL.`)
+  }
+  return {
+    desiredUrl: url.toString(),
+    mutation: {
+      kind: 'query',
+      name,
+      occurrence: 0,
+      value
+    }
+  }
+}
+
+function controlledCallbackInventoryUrl(urlValue: string): string {
+  const url = new URL(urlValue)
+  url.searchParams.set(CALLBACK_TOKEN_PARAMETER, CALLBACK_REVIEW_PLACEHOLDER)
   return url.toString()
+}
+
+function terminalTraceId(values: readonly string[], label: string): string {
+  const value = values.at(-1)
+  if (!value) {
+    throw new Error(`ExecutionPort omitted the terminal ${label}.`)
+  }
+  return value
 }
 
 function safeBodyText(observation: HttpObservation): string {
@@ -157,10 +200,8 @@ function errorMessage(error: unknown): string {
 
 export class DefaultScanCoordinator {
   private readonly repository: AgentGoRepository
-  private readonly credentialStore: FileCredentialStore
   private readonly evidenceStore: EvidenceStore
-  private readonly executionService: ExecutionService
-  private readonly policyBroker: PolicyBroker
+  private readonly executionPort: ExecutionPort
   private readonly modelGateway: ModelGateway
   private readonly reportService: ReportService
   private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
@@ -172,10 +213,8 @@ export class DefaultScanCoordinator {
 
   constructor(dependencies: ScanCoordinatorDependencies) {
     this.repository = dependencies.repository
-    this.credentialStore = dependencies.credentialStore
     this.evidenceStore = dependencies.evidenceStore
-    this.executionService = dependencies.executionService
-    this.policyBroker = dependencies.policyBroker
+    this.executionPort = dependencies.executionPort
     this.modelGateway = dependencies.modelGateway
     this.reportService = dependencies.reportService
     this.vulnerabilityPlatform = dependencies.vulnerabilityPlatform
@@ -205,7 +244,7 @@ export class DefaultScanCoordinator {
         row.moduleSnapshotsSealed
       )
       if (incompatible) return incompatible
-      await this.upsertTargetBaseInventory(scanId)
+      await this.upsertEntryInventory(scanId)
       const awaitingReview = await this.awaitOnPendingInventoryReview(
         scanId,
         row.phase as ScanRecord['phase'],
@@ -267,6 +306,12 @@ export class DefaultScanCoordinator {
       if (!['paused', 'awaiting-user'].includes(row.status)) {
         throw new Error('只有暂停或等待用户的扫描可以恢复。')
       }
+      const latestCheckpoint = await this.repository.getLatestCheckpoint(scanId)
+      if (latestCheckpoint?.reason === 'execution-interrupted-unknown') {
+        throw new Error(
+          'The latest execution may already have been sent and has an unknown terminal state; automatic resume is forbidden.'
+        )
+      }
       const incompatible = await this.awaitOnIncompatibleModuleSnapshot(
         scanId,
         row.phase as ScanRecord['phase'],
@@ -275,7 +320,7 @@ export class DefaultScanCoordinator {
         row.moduleSnapshotsSealed
       )
       if (incompatible) return incompatible
-      await this.upsertTargetBaseInventory(scanId)
+      await this.upsertEntryInventory(scanId)
       const awaitingReview = await this.awaitOnPendingInventoryReview(
         scanId,
         row.phase as ScanRecord['phase'],
@@ -392,7 +437,7 @@ export class DefaultScanCoordinator {
       const runtime = row.runtimeJson as unknown as CoordinatorRuntimeState
       await this.assertBudget(scanId, runtime)
       if (row.phase === 'active-enum') {
-        await this.upsertTargetBaseInventory(scanId)
+        await this.upsertEntryInventory(scanId)
         const awaitingReview = await this.awaitOnPendingInventoryReview(
           scanId,
           row.phase as ScanRecord['phase'],
@@ -600,6 +645,15 @@ export class DefaultScanCoordinator {
         )
       ).id
     const primaryIdentity = context.identities[0]
+    const inventoryReadFamily = await this.executionFamilyForCapability(
+      scanId,
+      'http.reviewed-read'
+    )
+    const browserOfflineFamily = await this.executionFamilyForCapability(
+      scanId,
+      'browser.offline-replay',
+      false
+    )
     const queue: Array<{ url: string; depth: number; discoveredFrom?: string }> = [
       { url: context.target.baseUrl, depth: 0 }
     ]
@@ -630,9 +684,12 @@ export class DefaultScanCoordinator {
       const http = await this.executeHttpProbe({
         scanId,
         agentRunId,
+        familyId: inventoryReadFamily,
+        stepId: 'inventory.target-base.read',
+        purpose: 'read',
         endpointId,
-        targetUrl: url,
-        identity: primaryIdentity,
+        desiredUrl: url,
+        ...(primaryIdentity ? { identityId: primaryIdentity.id } : {}),
         summary: '低速读取页面并建立接口与参数基线。',
         expectedEvidence: '页面响应摘要、响应体和内容哈希',
         signal
@@ -646,15 +703,21 @@ export class DefaultScanCoordinator {
         stateHash: http.result.responseBodySha256,
         status: 'fetched'
       })
+      if (!browserOfflineFamily) continue
       const browser = await this.executeBrowserProbe({
         scanId,
         agentRunId,
-        targetUrl: url,
+        familyId: browserOfflineFamily,
+        stepId: 'inventory.target-base.offline-inspect',
+        purpose: 'read',
+        baseUrl: url,
         summary: '在断网隔离浏览器中提取页面链接与表单。',
         expectedEvidence: 'DOM 摘要、链接和表单清单',
         html: safeBodyText(http),
         action: 'inspect-dom',
-        contentSecurityPolicy: http.result.responseHeaders['content-security-policy'],
+        ...(http.result.responseHeaders['content-security-policy']
+          ? { contentSecurityPolicy: http.result.responseHeaders['content-security-policy'] }
+          : {}),
         signal
       })
       if (browser.result.pageTitle) {
@@ -841,7 +904,7 @@ export class DefaultScanCoordinator {
         await this.emit({
           scanId,
           type: 'error',
-          level: error instanceof PolicyDeniedError ? 'warning' : 'error',
+          level: 'error',
           message: `${familyLabel(candidate.family)} 候选未完成：${errorMessage(error)}`,
           detail: { fingerprint }
         })
@@ -890,12 +953,25 @@ export class DefaultScanCoordinator {
       const original = numeric ? '1' : 'agentgo'
       const trueValue = numeric ? `${original} AND 1=1` : `${original}' AND '1'='1`
       const falseValue = numeric ? `${original} AND 1=2` : `${original}' AND '1'='2`
+      const trueMutation = queryValueMutation(
+        input.endpoint.url,
+        input.parameter.name,
+        trueValue
+      )
+      const falseMutation = queryValueMutation(
+        input.endpoint.url,
+        input.parameter.name,
+        falseValue
+      )
       baseline = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'sqli.baseline',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: input.endpoint.url,
-        identity,
+        desiredUrl: input.endpoint.url,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'SQLi 只读差异验证：获取基线响应。',
         expectedEvidence: '基线响应摘要和内容哈希',
         signal: input.signal
@@ -903,9 +979,13 @@ export class DefaultScanCoordinator {
       const trueFirst = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'sqli.true',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, trueValue),
-        identity,
+        desiredUrl: trueMutation.desiredUrl,
+        mutation: trueMutation.mutation,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'SQLi 只读布尔真条件差异验证。',
         payloadSummary: '非写入式布尔真条件；不读取业务数据。',
         expectedEvidence: '测试响应摘要和内容哈希',
@@ -914,9 +994,13 @@ export class DefaultScanCoordinator {
       const falseControl = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'sqli.false',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, falseValue),
-        identity,
+        desiredUrl: falseMutation.desiredUrl,
+        mutation: falseMutation.mutation,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'SQLi 只读布尔负对照。',
         payloadSummary: '非写入式布尔假条件；不读取业务数据。',
         expectedEvidence: '负对照响应摘要和内容哈希',
@@ -925,9 +1009,13 @@ export class DefaultScanCoordinator {
       const trueRepeat = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'sqli.repeat',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, trueValue),
-        identity,
+        desiredUrl: trueMutation.desiredUrl,
+        mutation: trueMutation.mutation,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'SQLi 只读布尔真条件重复验证。',
         payloadSummary: '重复非写入式布尔真条件。',
         expectedEvidence: '重复测试响应摘要和内容哈希',
@@ -942,12 +1030,20 @@ export class DefaultScanCoordinator {
     } else if (family === 'xss') {
       const xssMarker = marker()
       const payload = buildInertXssMarkerPayload(xssMarker)
+      const reflectionMutation = queryValueMutation(
+        input.endpoint.url,
+        input.parameter.name,
+        payload
+      )
       baseline = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'xss.baseline',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: input.endpoint.url,
-        identity,
+        desiredUrl: input.endpoint.url,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'XSS 验证：获取未注入标记的基线响应。',
         expectedEvidence: '基线响应摘要和 DOM 输入',
         signal: input.signal
@@ -955,9 +1051,13 @@ export class DefaultScanCoordinator {
       primary = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'xss.reflection',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, payload),
-        identity,
+        desiredUrl: reflectionMutation.desiredUrl,
+        mutation: reflectionMutation.mutation,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'XSS 随机惰性标记反射验证。',
         payloadSummary: `无外传能力的隔离执行标记 ${xssMarker}。`,
         expectedEvidence: 'HTTP 反射、DOM 快照和隔离浏览器截图',
@@ -968,14 +1068,19 @@ export class DefaultScanCoordinator {
         browser = await this.executeBrowserProbe({
           scanId: input.scanId,
           agentRunId: input.agentRunId,
-          targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, payload),
+          familyId: family,
+          stepId: 'xss.offline-verify',
+          purpose: 'read',
+          baseUrl: reflectionMutation.desiredUrl,
           summary: '在断网隔离浏览器中验证随机惰性 XSS 标记。',
           payloadSummary: `仅设置本地 DOM 属性的标记 ${xssMarker}。`,
           expectedEvidence: '标记执行状态、DOM 快照和截图',
           html: safeBodyText(primary),
           action: 'verify-xss',
           marker: xssMarker,
-          contentSecurityPolicy: primary.result.responseHeaders['content-security-policy'],
+          ...(primary.result.responseHeaders['content-security-policy']
+            ? { contentSecurityPolicy: primary.result.responseHeaders['content-security-policy'] }
+            : {}),
           signal: input.signal
         })
       }
@@ -990,12 +1095,41 @@ export class DefaultScanCoordinator {
       if (!callbackUrl) {
         throw new Error('扫描未配置受控回调 URL，SSRF 只能标记为未具备验证条件。')
       }
-      const callback = new URL(callbackUrl)
-      callback.searchParams.set('agentgo_token', callbackToken())
+      const callbackTemplateUrl = controlledCallbackInventoryUrl(callbackUrl)
+      const callbackInventory = await this.upsertReadInventory({
+        scanId: input.scanId,
+        url: callbackTemplateUrl,
+        sourceType: 'controlled-callback'
+      })
+      if (callbackInventory.requestVariant.reviewStatus !== 'reviewed') {
+        throw new Error(
+          'The controlled SSRF callback request variant must be inventoried and reviewed before execution.'
+        )
+      }
+      const callbackMutation = queryValueMutation(
+        callbackTemplateUrl,
+        CALLBACK_TOKEN_PARAMETER,
+        callbackToken()
+      )
+      const primaryMutation = queryValueMutation(
+        input.endpoint.url,
+        input.parameter.name,
+        callbackMutation.desiredUrl
+      )
+      const negativeMutation = queryValueMutation(
+        input.endpoint.url,
+        input.parameter.name,
+        'agentgo-invalid-url'
+      )
       baseline = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
-        targetUrl: callback.toString(),
+        familyId: family,
+        stepId: 'ssrf.callback-read',
+        purpose: 'read',
+        endpointId: callbackInventory.endpoint.id,
+        desiredUrl: callbackMutation.desiredUrl,
+        mutation: callbackMutation.mutation,
         summary: '读取明确授权的受控 SSRF 回调证明。',
         expectedEvidence: '唯一回调证明响应',
         signal: input.signal
@@ -1003,13 +1137,13 @@ export class DefaultScanCoordinator {
       primary = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'ssrf.primary',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(
-          input.endpoint.url,
-          input.parameter.name,
-          callback.toString()
-        ),
-        identity,
+        desiredUrl: primaryMutation.desiredUrl,
+        mutation: primaryMutation.mutation,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'SSRF 受控回调 URL 只读验证。',
         payloadSummary: '仅访问已列入 Scope 的项目控制回调端点。',
         expectedEvidence: '目标响应中的唯一受控证明',
@@ -1018,13 +1152,13 @@ export class DefaultScanCoordinator {
       negative = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'ssrf.negative',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(
-          input.endpoint.url,
-          input.parameter.name,
-          'agentgo-invalid-url'
-        ),
-        identity,
+        desiredUrl: negativeMutation.desiredUrl,
+        mutation: negativeMutation.mutation,
+        ...(identity ? { identityId: identity.id } : {}),
         summary: 'SSRF 非 URL 负对照。',
         payloadSummary: '不触发网络访问的无效 URL 文本。',
         expectedEvidence: '不包含受控证明的负对照响应',
@@ -1051,13 +1185,27 @@ export class DefaultScanCoordinator {
       }
       const ownerResourceId = owner.ownedResourceIds[0]!
       const secondResourceId = second.ownedResourceIds[0]!
+      const ownerMutation = queryValueMutation(
+        input.endpoint.url,
+        input.parameter.name,
+        ownerResourceId
+      )
+      const secondMutation = queryValueMutation(
+        input.endpoint.url,
+        input.parameter.name,
+        secondResourceId
+      )
       affectedResource = ownerResourceId
       baseline = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'idor.owner',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, ownerResourceId),
-        identity: owner,
+        desiredUrl: ownerMutation.desiredUrl,
+        mutation: ownerMutation.mutation,
+        identityId: owner.id,
         summary: 'IDOR 对照：资源所有者只读访问自己的测试资源。',
         expectedEvidence: '所有者基线响应摘要',
         signal: input.signal
@@ -1065,9 +1213,13 @@ export class DefaultScanCoordinator {
       const secondOwn = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'idor.second-own',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, secondResourceId),
-        identity: second,
+        desiredUrl: secondMutation.desiredUrl,
+        mutation: secondMutation.mutation,
+        identityId: second.id,
         summary: 'IDOR 负对照：第二身份只读访问自己的测试资源。',
         expectedEvidence: '第二身份合法资源响应摘要',
         signal: input.signal
@@ -1075,9 +1227,13 @@ export class DefaultScanCoordinator {
       primary = await this.executeHttpProbe({
         scanId: input.scanId,
         agentRunId: input.agentRunId,
+        familyId: family,
+        stepId: 'idor.cross-read',
+        purpose: 'read',
         endpointId: input.endpoint.id,
-        targetUrl: replaceQueryParameter(input.endpoint.url, input.parameter.name, ownerResourceId),
-        identity: second,
+        desiredUrl: ownerMutation.desiredUrl,
+        mutation: ownerMutation.mutation,
+        identityId: second.id,
         summary: 'IDOR 对照：第二身份只读访问第一身份的已知测试资源。',
         expectedEvidence: '跨身份只读响应对照',
         signal: input.signal
@@ -1292,126 +1448,66 @@ export class DefaultScanCoordinator {
     }
   }
 
-  private async executeHttpProbe(input: {
-    scanId: string
-    agentRunId: string
-    endpointId?: string
-    targetUrl: string
-    identity?: IdentityRecord
-    summary: string
-    payloadSummary?: string
-    expectedEvidence: string
-    signal: AbortSignal
-  }): Promise<HttpObservation> {
-    this.assertNotAborted(input.signal)
-    const context = await this.loadContext(input.scanId)
-    const policy = await this.policyBroker.evaluate({
-      scanId: input.scanId,
-      agentRunId: input.agentRunId,
-      action: {
-        kind: 'http-request',
-        targetUrl: input.targetUrl,
-        method: 'GET',
-        ...(input.identity ? { identityId: input.identity.id } : {}),
-        probeLevel: 'active-safe',
-        sideEffect: 'none',
-        summary: input.summary,
-        ...(input.payloadSummary ? { payloadSummary: input.payloadSummary } : {}),
-        expectedEvidence: input.expectedEvidence,
-        requestedRequestsPerMinute: Math.min(
-          context.scope.maxRequestsPerMinute,
-          context.scan.budget.maxRequestsPerMinute
-        ),
-        requestedConcurrency: 1,
-        maxRequests: 1,
-        timeoutMs: 10_000,
-        userApproved: false
-      },
-      stopConditions: ['取得当前最小证据后停止', '出现阻断、越界或副作用立即停止']
+  private async executeHttpProbe(
+    input: Omit<
+      HttpExecutionStepInput,
+      'adapterKind' | 'timeoutMs' | 'maxResponseBytes' | 'maxRedirects'
+    >
+  ): Promise<HttpObservation> {
+    if (input.signal) this.assertNotAborted(input.signal)
+    const execution = await this.executionPort.execute({
+      ...input,
+      adapterKind: 'http',
+      timeoutMs: 10_000,
+      maxResponseBytes: 2 * 1024 * 1024,
+      maxRedirects: 5
     })
-    if (!policy.decision.allowed || policy.decision.requiresApproval) {
-      throw new PolicyDeniedError(policy.decision.reasons.join('；'))
-    }
-    const execution = await this.executionService.executeHttp({
-      scanId: input.scanId,
-      policyDecisionId: policy.decision.id,
-      ...(input.endpointId ? { endpointId: input.endpointId } : {}),
-      signal: input.signal,
-      request: {
-        targetUrl: input.targetUrl,
-        method: 'GET',
-        headers: this.headersForIdentity(input.identity),
-        timeoutMs: 10_000,
-        maxResponseBytes: 2 * 1024 * 1024,
-        maxRedirects: 5
-      }
-    })
+    const toolCallId = terminalTraceId(execution.toolCallIds, 'tool call')
+    const proposalId = terminalTraceId(execution.proposalIds, 'proposal')
+    const policyDecisionId = terminalTraceId(
+      execution.policyDecisionIds,
+      'policy decision'
+    )
+    terminalTraceId(execution.grantIds, 'execution grant')
+    terminalTraceId(execution.leaseIds, 'execution lease')
+    const interactionId = execution.interactionIds.at(-1)
     return {
       result: execution.result,
-      evidenceRefs: execution.evidenceRefs,
-      ...(execution.interactionId ? { interactionId: execution.interactionId } : {}),
-      toolCallId: execution.toolCallId,
-      proposalId: policy.proposal.id,
-      policyDecisionId: policy.decision.id
+      evidenceRefs: [...execution.evidenceRefs],
+      ...(interactionId ? { interactionId } : {}),
+      toolCallId,
+      proposalId,
+      policyDecisionId
     }
   }
 
-  private async executeBrowserProbe(input: {
-    scanId: string
-    agentRunId: string
-    targetUrl: string
-    summary: string
-    payloadSummary?: string
-    expectedEvidence: string
-    html: string
-    action: 'inspect-dom' | 'verify-xss' | 'capture-evidence'
-    marker?: string
-    contentSecurityPolicy?: string
-    signal: AbortSignal
-  }): Promise<BrowserObservation> {
-    const policy = await this.policyBroker.evaluate({
-      scanId: input.scanId,
-      agentRunId: input.agentRunId,
-      action: {
-        kind: 'browser-action',
-        targetUrl: input.targetUrl,
-        method: 'GET',
-        probeLevel: 'active-safe',
-        sideEffect: 'none',
-        summary: input.summary,
-        ...(input.payloadSummary ? { payloadSummary: input.payloadSummary } : {}),
-        expectedEvidence: input.expectedEvidence,
-        maxRequests: 1,
-        timeoutMs: 10_000,
-        userApproved: false
-      },
-      stopConditions: ['完成本地隔离渲染后立即关闭浏览器上下文']
+  private async executeBrowserProbe(
+    input: Omit<
+      BrowserOfflineExecutionStepInput,
+      'adapterKind' | 'timeoutMs' | 'maxDomBytes'
+    >
+  ): Promise<BrowserObservation> {
+    if (input.signal) this.assertNotAborted(input.signal)
+    const execution = await this.executionPort.execute({
+      ...input,
+      adapterKind: 'browser-offline',
+      timeoutMs: 10_000,
+      maxDomBytes: 1024 * 1024
     })
-    if (!policy.decision.allowed || policy.decision.requiresApproval) {
-      throw new PolicyDeniedError(policy.decision.reasons.join('；'))
-    }
-    const execution = await this.executionService.executeBrowser({
-      scanId: input.scanId,
-      policyDecisionId: policy.decision.id,
-      signal: input.signal,
-      request: {
-        baseUrl: input.targetUrl,
-        html: input.html,
-        action: input.action,
-        ...(input.marker ? { marker: input.marker } : {}),
-        ...(input.contentSecurityPolicy
-          ? { contentSecurityPolicy: input.contentSecurityPolicy }
-          : {}),
-        timeoutMs: 10_000,
-        maxDomBytes: 1024 * 1024
-      }
-    })
+    const toolCallId = terminalTraceId(execution.toolCallIds, 'tool call')
+    const proposalId = terminalTraceId(execution.proposalIds, 'proposal')
+    const policyDecisionId = terminalTraceId(
+      execution.policyDecisionIds,
+      'policy decision'
+    )
+    terminalTraceId(execution.grantIds, 'execution grant')
+    terminalTraceId(execution.leaseIds, 'execution lease')
     return {
       result: execution.result,
-      evidenceRefs: execution.evidenceRefs,
-      toolCallId: execution.toolCallId,
-      proposalId: policy.proposal.id,
-      policyDecisionId: policy.decision.id
+      evidenceRefs: [...execution.evidenceRefs],
+      toolCallId,
+      proposalId,
+      policyDecisionId
     }
   }
 
@@ -1536,6 +1632,66 @@ export class DefaultScanCoordinator {
     })
   }
 
+  private executionFamilyForCapability(
+    scanId: string,
+    capabilityId: CapabilityId
+  ): Promise<LegacyV1VulnerabilityFamily>
+  private executionFamilyForCapability(
+    scanId: string,
+    capabilityId: CapabilityId,
+    required: false
+  ): Promise<LegacyV1VulnerabilityFamily | undefined>
+
+  private async executionFamilyForCapability(
+    scanId: string,
+    capabilityId: CapabilityId,
+    required = true
+  ): Promise<LegacyV1VulnerabilityFamily | undefined> {
+    const row = await this.repository.getScanRow(scanId)
+    if (!row) throw new Error('扫描不存在。')
+    const snapshots = await this.repository.listScanModuleSnapshots(scanId)
+    const configuredFamilies = new Set(row.configJson.families)
+
+    if (snapshots.some((snapshot) => !configuredFamilies.has(snapshot.familyId))) {
+      throw new Error('Scan module snapshots contain an unconfigured family.')
+    }
+
+    const orderedSnapshots = row.configJson.families.map((familyId) => {
+      const matches = snapshots.filter(
+        (snapshot) => snapshot.familyId === familyId
+      )
+      if (matches.length !== 1) {
+        throw new Error(
+          `Scan family ${familyId} must have exactly one module snapshot.`
+        )
+      }
+      return { familyId, snapshot: matches[0]! }
+    })
+
+    for (const { familyId, snapshot } of orderedSnapshots) {
+      if (
+        !snapshot.capabilityDescriptors.some(
+          (descriptor) => descriptor.id === capabilityId
+        )
+      ) {
+        continue
+      }
+      if (!isLegacyV1VulnerabilityFamily(familyId)) {
+        throw new Error(
+          `Capability ${capabilityId} is not bound to a legacy V1 execution family.`
+        )
+      }
+      return familyId
+    }
+
+    if (required) {
+      throw new Error(
+        `No configured scan family snapshot authorizes capability ${capabilityId}.`
+      )
+    }
+    return undefined
+  }
+
   private querySelectors(urlValue: string): SelectorRef[] {
     const grouped = new Map<string, InventoryValueType>()
     for (const [name, value] of new URL(urlValue).searchParams) {
@@ -1585,7 +1741,7 @@ export class DefaultScanCoordinator {
     scanId: string
     pageId?: string
     url: string
-    sourceType: 'target-base' | 'link'
+    sourceType: 'target-base' | 'link' | 'controlled-callback'
     initiator?: string
   }) {
     return this.inventoryService.upsertInventory({
@@ -1618,16 +1774,26 @@ export class DefaultScanCoordinator {
     })
   }
 
-  private async upsertTargetBaseInventory(scanId: string): Promise<void> {
+  private async upsertEntryInventory(scanId: string): Promise<void> {
     const context = await this.loadContext(scanId)
     await this.upsertReadInventory({
       scanId,
       url: context.target.baseUrl,
       sourceType: 'target-base'
     })
+    if (
+      context.row.configJson.families.includes('ssrf') &&
+      context.row.configJson.callbackUrl
+    ) {
+      await this.upsertReadInventory({
+        scanId,
+        url: controlledCallbackInventoryUrl(context.row.configJson.callbackUrl),
+        sourceType: 'controlled-callback'
+      })
+    }
   }
 
-  private async persistForm(scanId: string, pageId: string, form: BrowserFormSummary): Promise<void> {
+  private async persistForm(scanId: string, pageId: string, form: BrowserFormView): Promise<void> {
     const method = form.method.toUpperCase()
     const url = new URL(form.action)
     if (method === 'GET') {
@@ -1710,26 +1876,6 @@ export class DefaultScanCoordinator {
         confidence: 1
       }
     })
-  }
-
-  private headersForIdentity(identity?: IdentityRecord): Record<string, string> {
-    const headers: Record<string, string> = {
-      'User-Agent': 'AgentGo/0.1 Authorized Security Validation',
-      Accept: 'text/html,application/json;q=0.9,*/*;q=0.8'
-    }
-    if (!identity || identity.authType === 'none') return headers
-    if (!identity.credentialId) throw new Error(`身份 ${identity.label} 缺少凭据引用。`)
-    const secret = this.credentialStore.get(identity.credentialId)
-    if (!secret) throw new Error(`身份 ${identity.label} 的凭据不可用。`)
-    if (identity.authType === 'bearer') headers.Authorization = `Bearer ${secret}`
-    else if (identity.authType === 'cookie') headers.Cookie = secret
-    else if (identity.authType === 'basic') {
-      headers.Authorization = `Basic ${Buffer.from(secret).toString('base64')}`
-    } else if (identity.authType === 'header') {
-      if (!identity.headerName) throw new Error(`身份 ${identity.label} 缺少 Header 名称。`)
-      headers[identity.headerName] = secret
-    }
-    return headers
   }
 
   private async buildKnowledgeOutput(

@@ -1,28 +1,34 @@
-import { createServer } from 'node:http'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
-import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDefaultScanPlan } from '@agentgo/agent-runtime'
-import { PlaywrightBrowserRunner } from '@agentgo/browser-runner'
+import type { LegacyV1VulnerabilityFamily } from '@agentgo/contracts'
 import {
   AgentGoRepository,
   EvidenceStore,
   FileCredentialStore,
-  agentRuns,
   openAgentGoDatabase,
   type SecretProtector
 } from '@agentgo/db'
-import { UndiciHttpRunner } from '@agentgo/http-runner'
 import { DefaultModelGateway } from '@agentgo/model-gateway'
 import { AgentPromptCatalog } from './agent-prompts'
+import type {
+  BrowserExecutionResultView,
+  BrowserOfflineExecutionStepInput,
+  ExecutionPort,
+  ExecutionPortInput,
+  HttpExecutionResultView,
+  HttpExecutionStepInput,
+  StoredExecutionResult,
+  UnsupportedExecutionStepInput
+} from './execution-port'
 import {
   AgentGoApplicationService,
   createDay2VulnerabilityPlatform
 } from './index'
-import { PolicyBroker, PolicyExecutionGuard } from './execution-policy'
-import { ExecutionService } from './execution-service'
+import { PolicyBroker } from './execution-policy'
 import { ReportService } from './report-service'
 import { DefaultScanCoordinator } from './scan-coordinator'
 
@@ -40,375 +46,717 @@ const protector: SecretProtector = {
   unprotect: (value) => value.toString('utf8')
 }
 
-describe('DefaultScanCoordinator V1 vertical loop', () => {
-  it('completes SQLi, XSS, SSRF and IDOR signal-to-report flows on an authorized local fixture', async () => {
-    let baseUrl = ''
-    let fixtureRequestCount = 0
-    const server = createServer(async (request, response) => {
-      fixtureRequestCount += 1
-      const url = new URL(request.url ?? '/', baseUrl)
-      if (url.pathname === '/') {
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        response.end(`<!doctype html><html><head><title>AgentGo Lab</title></head><body>
-          <a href="/sqli?id=1">SQLi</a>
-          <a href="/xss?q=hello">XSS</a>
-          <a href="/ssrf?url=none">SSRF</a>
-          <a href="/resource?id=resource-a">Resource</a>
-          <form action="/sqli" method="get"><input name="id" required></form>
-        </body></html>`)
-        return
+const expectedStepIds = new Set([
+  'inventory.target-base.read',
+  'inventory.target-base.offline-inspect',
+  'sqli.baseline',
+  'sqli.true',
+  'sqli.false',
+  'sqli.repeat',
+  'xss.baseline',
+  'xss.reflection',
+  'xss.offline-verify',
+  'ssrf.callback-read',
+  'ssrf.primary',
+  'ssrf.negative',
+  'idor.owner',
+  'idor.second-own',
+  'idor.cross-read'
+])
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+function isHttpInput(input: ExecutionPortInput): input is HttpExecutionStepInput {
+  return input.adapterKind === 'http'
+}
+
+class StrictExecutionPort implements ExecutionPort {
+  readonly inputs: ExecutionPortInput[] = []
+  readonly #baseUrl: string
+  readonly #repository: AgentGoRepository
+  readonly #evidenceStore: EvidenceStore
+  readonly #policyBroker: PolicyBroker
+
+  constructor(
+    baseUrl: string,
+    repository: AgentGoRepository,
+    evidenceStore: EvidenceStore
+  ) {
+    this.#baseUrl = baseUrl
+    this.#repository = repository
+    this.#evidenceStore = evidenceStore
+    this.#policyBroker = new PolicyBroker(repository)
+  }
+
+  execute(
+    input: HttpExecutionStepInput
+  ): Promise<StoredExecutionResult<HttpExecutionResultView>>
+  execute(
+    input: BrowserOfflineExecutionStepInput
+  ): Promise<StoredExecutionResult<BrowserExecutionResultView>>
+  execute(input: UnsupportedExecutionStepInput): Promise<never>
+  async execute(
+    input: ExecutionPortInput
+  ): Promise<
+    | StoredExecutionResult<HttpExecutionResultView>
+    | StoredExecutionResult<BrowserExecutionResultView>
+  > {
+    this.#assertEnvelope(input)
+    this.inputs.push(input)
+    const trace = await this.#persistTrace(input)
+    if (input.adapterKind === 'http') {
+      return this.#stored(this.#httpResult(input), trace)
+    }
+    if (input.adapterKind === 'browser-offline') {
+      return this.#stored(this.#browserResult(input), trace)
+    }
+    throw new Error(`StrictExecutionPort rejected unsupported adapter ${input.adapterKind}.`)
+  }
+
+  #assertEnvelope(input: ExecutionPortInput): void {
+    if (
+      !input.scanId ||
+      !input.agentRunId ||
+      !input.familyId ||
+      !expectedStepIds.has(input.stepId) ||
+      input.purpose !== 'read' ||
+      !input.summary ||
+      !input.expectedEvidence ||
+      input.signal?.aborted
+    ) {
+      throw new Error('StrictExecutionPort rejected an incomplete execution envelope.')
+    }
+    if (input.adapterKind === 'http') {
+      if (
+        !input.endpointId ||
+        input.timeoutMs !== 10_000 ||
+        input.maxResponseBytes !== 2 * 1024 * 1024 ||
+        input.maxRedirects !== 5
+      ) {
+        throw new Error('StrictExecutionPort rejected HTTP limits or endpoint binding.')
       }
-      if (url.pathname === '/sqli') {
-        const value = url.searchParams.get('id') ?? ''
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        response.end(
-          /AND\s+1=2|AND\s+'1'='2'/i.test(value)
+      if (input.mutation) {
+        const values = new URL(input.desiredUrl).searchParams.getAll(
+          input.mutation.name
+        )
+        if (
+          input.mutation.kind !== 'query' ||
+          input.mutation.occurrence !== 0 ||
+          values[0] !== input.mutation.value
+        ) {
+          throw new Error('StrictExecutionPort rejected an inexact query mutation.')
+        }
+      }
+      return
+    }
+    if (input.adapterKind === 'browser-offline') {
+      if (
+        input.timeoutMs !== 10_000 ||
+        input.maxDomBytes !== 1024 * 1024
+      ) {
+        throw new Error('StrictExecutionPort rejected browser limits.')
+      }
+      return
+    }
+    throw new Error(`StrictExecutionPort rejected unsupported adapter ${input.adapterKind}.`)
+  }
+
+  #httpResult(input: HttpExecutionStepInput): HttpExecutionResultView {
+    const { body, contentType } = this.#httpBody(input)
+    const responseBody = Buffer.from(body, 'utf8')
+    return {
+      requestId: randomUUID(),
+      status: 'succeeded',
+      finalUrl: input.desiredUrl,
+      method: 'GET',
+      statusCode: 200,
+      requestHeaders: [],
+      responseHeaders: { 'content-type': contentType },
+      responseBody,
+      responseBodySha256: sha256(responseBody),
+      responseBytes: responseBody.byteLength,
+      durationMs: 1,
+      resolvedAddresses: ['203.0.113.10'],
+      redirectChain: []
+    }
+  }
+
+  #httpBody(input: HttpExecutionStepInput): {
+    body: string
+    contentType: string
+  } {
+    if (input.stepId === 'inventory.target-base.read') {
+      return {
+        body: '<!doctype html><html><head><title>AgentGo Fixture</title></head><body>fixture</body></html>',
+        contentType: 'text/html; charset=utf-8'
+      }
+    }
+    if (input.stepId.startsWith('sqli.')) {
+      return {
+        body:
+          input.stepId === 'sqli.false'
             ? '<html><body>no rows</body></html>'
-            : '<html><body>product: visible</body></html>'
-        )
-        return
+            : '<html><body>product: visible</body></html>',
+        contentType: 'text/html; charset=utf-8'
       }
-      if (url.pathname === '/xss') {
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        response.end(`<html><body>Search: ${url.searchParams.get('q') ?? ''}</body></html>`)
-        return
+    }
+    if (input.stepId === 'xss.baseline') {
+      return {
+        body: '<html><body>Search: baseline</body></html>',
+        contentType: 'text/html; charset=utf-8'
       }
-      if (url.pathname === '/callback') {
-        const token = url.searchParams.get('agentgo_token') ?? 'missing'
-        response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
-        response.end(`AGENTGO_CALLBACK_PROOF_${token}`)
-        return
+    }
+    if (input.stepId === 'xss.reflection') {
+      return {
+        body: `<html><body>Search: ${input.mutation?.value ?? ''}</body></html>`,
+        contentType: 'text/html; charset=utf-8'
       }
-      if (url.pathname === '/ssrf') {
-        const target = url.searchParams.get('url') ?? ''
-        if (!target.startsWith(baseUrl)) {
-          response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
-          response.end('invalid url')
-          return
-        }
-        const fetched = await fetch(target)
-        response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
-        response.end(await fetched.text())
-        return
+    }
+    if (input.stepId === 'ssrf.callback-read') {
+      const token = new URL(input.desiredUrl).searchParams.get('agentgo_token')
+      if (!token) throw new Error('Controlled callback token was not compiled.')
+      return {
+        body: `AGENTGO_CALLBACK_PROOF_${token}`,
+        contentType: 'text/plain; charset=utf-8'
       }
-      if (url.pathname === '/resource') {
-        const authorization = request.headers.authorization
-        if (!['Bearer owner-token', 'Bearer second-token'].includes(authorization ?? '')) {
-          response.writeHead(401, { 'content-type': 'application/json' })
-          response.end('{"error":"unauthorized"}')
-          return
-        }
-        const id = url.searchParams.get('id') ?? ''
-        response.writeHead(200, { 'content-type': 'application/json' })
-        response.end(JSON.stringify({ id, value: `test-only-${id}` }))
-        return
+    }
+    if (input.stepId === 'ssrf.primary') {
+      const callbackUrl = input.mutation?.value
+      const token = callbackUrl
+        ? new URL(callbackUrl).searchParams.get('agentgo_token')
+        : undefined
+      if (!token) throw new Error('SSRF primary mutation omitted the callback token.')
+      return {
+        body: `AGENTGO_CALLBACK_PROOF_${token}`,
+        contentType: 'text/plain; charset=utf-8'
       }
-      response.writeHead(404, { 'content-type': 'text/plain' })
-      response.end('not found')
-    })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const address = server.address() as AddressInfo
-    baseUrl = `http://127.0.0.1:${address.port}`
+    }
+    if (input.stepId === 'ssrf.negative') {
+      return {
+        body: 'invalid url',
+        contentType: 'text/plain; charset=utf-8'
+      }
+    }
+    if (input.stepId.startsWith('idor.')) {
+      const resourceId = input.mutation?.value
+      if (!resourceId) throw new Error('IDOR mutation omitted the test resource.')
+      return {
+        body: JSON.stringify({ id: resourceId, value: `test-only-${resourceId}` }),
+        contentType: 'application/json'
+      }
+    }
+    throw new Error(`StrictExecutionPort has no HTTP fixture for ${input.stepId}.`)
+  }
 
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-coordinator-'))
-    directories.push(directory)
-    const database = openAgentGoDatabase(join(directory, 'agentgo.sqlite'))
-    const repository = new AgentGoRepository(database)
-    const evidenceStore = new EvidenceStore(database, join(directory, 'artifacts'))
-    const credentialStore = new FileCredentialStore(
-      join(directory, 'credentials.json'),
-      protector
-    )
-    const guard = new PolicyExecutionGuard(repository)
-    const executionService = new ExecutionService(
-      repository,
-      evidenceStore,
-      new UndiciHttpRunner(guard),
-      new PlaywrightBrowserRunner(guard, { headless: true })
-    )
-    const reportService = new ReportService(repository, evidenceStore)
-    let plannerRequestUrl = ''
-    let plannerRequestBody = ''
-    let plannerInvocationCount = 0
-    const modelGateway = new DefaultModelGateway({
-      profiles: repository,
-      credentials: credentialStore,
-      prompts: new AgentPromptCatalog(),
-      invocations: repository,
-      fetchImplementation: async (input, init) => {
-        plannerInvocationCount += 1
-        plannerRequestUrl = String(input)
-        plannerRequestBody = String(init?.body ?? '')
-        return new Response(
+  #browserResult(
+    input: BrowserOfflineExecutionStepInput
+  ): BrowserExecutionResultView {
+    if (input.stepId === 'inventory.target-base.offline-inspect') {
+      return {
+        requestId: randomUUID(),
+        status: 'succeeded',
+        finalUrl: input.baseUrl,
+        pageTitle: 'AgentGo Fixture',
+        links: [
+          `${this.#baseUrl}/sqli?filter=1&filter=shadow`,
+          `${this.#baseUrl}/xss?message=hello&message=shadow`,
+          `${this.#baseUrl}/ssrf?url=none&url=shadow`,
+          `${this.#baseUrl}/resource?resource_id=resource-a&resource_id=shadow`
+        ],
+        forms: [],
+        domSnapshot: '<html><body>fixture</body></html>',
+        networkRequestsBlocked: 0,
+        resultBytes: Buffer.byteLength(
+          '<html><body>fixture</body></html>',
+          'utf8'
+        ),
+        durationMs: 1
+      }
+    }
+    if (input.stepId === 'xss.offline-verify') {
+      if (!input.marker || !input.html.includes(input.marker)) {
+        throw new Error('Offline XSS verification lost its marker.')
+      }
+      return {
+        requestId: randomUUID(),
+        status: 'succeeded',
+        finalUrl: input.baseUrl,
+        links: [],
+        forms: [],
+        domSnapshot: `<html data-agentgo-xss="${input.marker}"></html>`,
+        markerExecuted: true,
+        screenshot: new Uint8Array([1, 2, 3]),
+        networkRequestsBlocked: 0,
+        resultBytes:
+          Buffer.byteLength(
+            `<html data-agentgo-xss="${input.marker}"></html>`,
+            'utf8'
+          ) + 3,
+        durationMs: 1
+      }
+    }
+    throw new Error(`StrictExecutionPort has no browser fixture for ${input.stepId}.`)
+  }
+
+  async #persistTrace(input: ExecutionPortInput): Promise<{
+    proposalId: string
+    policyDecisionId: string
+    toolCallId: string
+    evidenceRefs: string[]
+  }> {
+    if (
+      input.adapterKind !== 'http' &&
+      input.adapterKind !== 'browser-offline'
+    ) {
+      throw new Error('StrictExecutionPort cannot persist an unsupported trace.')
+    }
+    const targetUrl =
+      input.adapterKind === 'http' ? input.desiredUrl : input.baseUrl
+    const evaluated = await this.#policyBroker.evaluate({
+      scanId: input.scanId,
+      agentRunId: input.agentRunId,
+      action: {
+        kind:
+          input.adapterKind === 'http'
+            ? 'http-request'
+            : 'browser-action',
+        targetUrl,
+        method: 'GET',
+        ...(input.adapterKind === 'http' && input.identityId
+          ? { identityId: input.identityId }
+          : {}),
+        probeLevel: 'active-safe',
+        sideEffect: 'none',
+        summary: input.summary,
+        ...(input.payloadSummary
+          ? { payloadSummary: input.payloadSummary }
+          : {}),
+        expectedEvidence: input.expectedEvidence,
+        maxRequests: 1,
+        timeoutMs: input.timeoutMs,
+        userApproved: false
+      },
+      stopConditions: ['Stop after this strict fixture execution.']
+    })
+    if (
+      !evaluated.decision.allowed ||
+      evaluated.decision.requiresApproval
+    ) {
+      throw new Error('StrictExecutionPort fixture policy rejected execution.')
+    }
+    const toolCallId = await this.#repository.recordToolCall({
+      scanId: input.scanId,
+      policyDecisionId: evaluated.decision.id,
+      toolName:
+        input.adapterKind === 'http'
+          ? 'strict-http-fixture'
+          : 'strict-browser-fixture',
+      toolVersion: '1.0.0',
+      argumentHash: sha256(
+        Buffer.from(
           JSON.stringify({
-            model: 'planner-integration-model',
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify({
-                    phaseObjectives: [
-                      { phase: 'intake', objective: '确认授权、范围和预算。' },
-                      { phase: 'hypothesis', objective: '形成低影响验证候选。' },
-                      { phase: 'report', objective: '输出证据化三态结论。' }
-                    ],
-                    candidateFamilies: ['sqli', 'xss', 'ssrf', 'idor'],
-                    stopConditions: ['达到确认规则或预算后停止。']
-                  })
-                }
-              }
-            ],
-            usage: { prompt_tokens: 120, completion_tokens: 60 }
+            adapterKind: input.adapterKind,
+            stepId: input.stepId,
+            targetUrl
           }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
+          'utf8'
         )
-      }
+      ),
+      status: 'succeeded',
+      durationMs: 1
     })
-    const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
-    const application = new AgentGoApplicationService({
-      repository,
-      credentialStore,
-      evidenceStore,
-      modelGateway,
-      reportService,
-      vulnerabilityPlatform,
-      vulnerabilityExecutionEnvironment: 'attested-fixture'
-    })
-    const coordinator = new DefaultScanCoordinator({
-      repository,
-      credentialStore,
-      evidenceStore,
-      executionService,
-      policyBroker: new PolicyBroker(repository),
-      modelGateway,
-      reportService,
-      vulnerabilityPlatform,
-      vulnerabilityExecutionEnvironment: 'attested-fixture'
-    })
-    application.setScanCoordinator(coordinator)
+    const context = await this.#repository.getExecutionDecision(
+      evaluated.decision.id
+    )
+    if (!context) {
+      throw new Error('StrictExecutionPort fixture lost its policy context.')
+    }
+    const evidenceRefs: string[] = []
+    for (const role of ['request-summary', 'result-summary'] as const) {
+      const evidence = await this.#evidenceStore.save({
+        workspaceId: context.workspaceId,
+        scanId: input.scanId,
+        policyDecisionId: evaluated.decision.id,
+        type: 'strict-execution-summary',
+        mimeType: 'application/json',
+        content: JSON.stringify({
+          schemaVersion: 'strict-execution-summary.v1',
+          adapterKind: input.adapterKind,
+          stepId: input.stepId,
+          role
+        }),
+        source: role,
+        createdBy: 'strict-execution-port-fixture',
+        captureTool: 'strict-execution-port-fixture',
+        captureToolVersion: '1.0.0',
+        redactionState: 'redacted'
+      })
+      evidenceRefs.push(evidence.id)
+    }
+    return {
+      proposalId: evaluated.proposal.id,
+      policyDecisionId: evaluated.decision.id,
+      toolCallId,
+      evidenceRefs
+    }
+  }
 
+  #stored<TResult>(
+    result: TResult,
+    trace: {
+      proposalId: string
+      policyDecisionId: string
+      toolCallId: string
+      evidenceRefs: string[]
+    }
+  ): StoredExecutionResult<TResult> {
+    return {
+      result,
+      interactionIds: [],
+      evidenceRefs: trace.evidenceRefs,
+      toolCallId: trace.toolCallId,
+      toolCallIds: [trace.toolCallId],
+      proposalIds: [trace.proposalId],
+      policyDecisionIds: [trace.policyDecisionId],
+      grantIds: [randomUUID()],
+      leaseIds: [randomUUID()]
+    }
+  }
+}
+
+async function createHarness(
+  families: readonly LegacyV1VulnerabilityFamily[] = [
+    'sqli',
+    'xss',
+    'ssrf',
+    'idor'
+  ]
+) {
+  const baseUrl = 'https://fixture.agentgo.test'
+  const directory = mkdtempSync(join(tmpdir(), 'agentgo-coordinator-'))
+  directories.push(directory)
+  const database = openAgentGoDatabase(join(directory, 'agentgo.sqlite'))
+  const repository = new AgentGoRepository(database)
+  const evidenceStore = new EvidenceStore(database, join(directory, 'artifacts'))
+  const credentialStore = new FileCredentialStore(
+    join(directory, 'credentials.json'),
+    protector
+  )
+  const modelGateway = new DefaultModelGateway({
+    profiles: repository,
+    credentials: credentialStore,
+    prompts: new AgentPromptCatalog(),
+    invocations: repository
+  })
+  const reportService = new ReportService(repository, evidenceStore)
+  const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
+  const executionPort = new StrictExecutionPort(
+    baseUrl,
+    repository,
+    evidenceStore
+  )
+  const application = new AgentGoApplicationService({
+    repository,
+    credentialStore,
+    evidenceStore,
+    modelGateway,
+    reportService,
+    vulnerabilityPlatform,
+    vulnerabilityExecutionEnvironment: 'attested-fixture'
+  })
+  const coordinator = new DefaultScanCoordinator({
+    repository,
+    evidenceStore,
+    executionPort,
+    modelGateway,
+    reportService,
+    vulnerabilityPlatform,
+    vulnerabilityExecutionEnvironment: 'attested-fixture'
+  })
+  application.setScanCoordinator(coordinator)
+  await application.initialize()
+
+  const workspace = await application.createWorkspace({
+    name: 'Coordinator fixture',
+    description: 'Authorized synthetic ExecutionPort fixture'
+  })
+  const target = await application.createTarget({
+    workspaceId: workspace.id,
+    name: 'Authorized synthetic fixture',
+    baseUrl,
+    description: '',
+    authorizationReference: 'coordinator-test-owner',
+    scope: {
+      allowedOrigins: [baseUrl],
+      allowedPathPrefixes: ['/'],
+      deniedPathPrefixes: [],
+      allowedPorts: [443],
+      allowedIdentityIds: [],
+      allowActiveProbing: true,
+      allowSensitiveProbing: false,
+      allowPrivateNetworkTargets: false,
+      allowLoopbackTargets: false,
+      maxRequestsPerMinute: 120,
+      maxConcurrency: 1
+    }
+  })
+  const owner = await application.saveIdentity({
+    targetId: target.target.id,
+    label: 'Owner',
+    role: 'owner',
+    authType: 'bearer',
+    secret: 'owner-secret-must-not-cross-the-port',
+    isTestIdentity: true,
+    ownedResourceIds: ['resource-a']
+  })
+  const second = await application.saveIdentity({
+    targetId: target.target.id,
+    label: 'Second',
+    role: 'member',
+    authType: 'bearer',
+    secret: 'second-secret-must-not-cross-the-port',
+    isTestIdentity: true,
+    ownedResourceIds: ['resource-b']
+  })
+  await application.updateTarget({
+    id: target.target.id,
+    scope: {
+      allowedOrigins: [baseUrl],
+      allowedPathPrefixes: ['/'],
+      deniedPathPrefixes: [],
+      allowedPorts: [443],
+      allowedIdentityIds: [owner.id, second.id],
+      allowActiveProbing: true,
+      allowSensitiveProbing: false,
+      allowPrivateNetworkTargets: false,
+      allowLoopbackTargets: false,
+      maxRequestsPerMinute: 120,
+      maxConcurrency: 1,
+      authorizationReference: 'coordinator-test-owner'
+    }
+  })
+  const plan = createDefaultScanPlan()
+  const scan = await application.createScan({
+    targetId: target.target.id,
+    name: 'Strict ExecutionPort scan',
+    description: 'Validate exact Coordinator execution envelopes.',
+    families: [...families],
+    identityIds: [owner.id, second.id],
+    ...(families.includes('ssrf')
+      ? { callbackUrl: `${baseUrl}/callback?tenant=fixture` }
+      : {}),
+    budget: {
+      ...plan.budget,
+      maxRequests: 100,
+      maxRequestsPerMinute: 120,
+      maxConcurrency: 1,
+      maxDurationMinutes: 5
+    }
+  })
+
+  return {
+    application,
+    baseUrl,
+    coordinator,
+    database,
+    executionPort,
+    owner,
+    repository,
+    scan,
+    second
+  }
+}
+
+describe('DefaultScanCoordinator ExecutionPort boundary', () => {
+  it('routes enumeration and all V1 validation steps through exact reviewed envelopes', async () => {
+    const harness = await createHarness()
     try {
-      await application.initialize()
-      const externalPlannerProfile = await application.saveModelProfile({
-        name: 'Planner integration provider',
-        agentRole: 'planner',
-        provider: 'openai-compatible',
-        baseUrl: 'https://planner.example.test/v1/',
-        model: 'planner-integration-model',
-        apiKey: 'planner-integration-key',
-        timeoutMs: 5_000,
-        rpmLimit: 30,
-        tpmLimit: 100_000,
-        tokenBudget: 1_000_000,
-        costBudget: 1
-      })
-      const workspace = await application.createWorkspace({
-        name: 'V1 fixture',
-        description: 'Authorized local test'
-      })
-      const target = await application.createTarget({
-        workspaceId: workspace.id,
-        name: 'Authorized local fixture',
-        baseUrl,
-        description: '',
-        authorizationReference: 'automated-test-owner',
-        scope: {
-          allowedOrigins: [baseUrl],
-          allowedPathPrefixes: ['/'],
-          deniedPathPrefixes: [],
-          allowedPorts: [address.port],
-          allowedIdentityIds: [],
-          allowActiveProbing: true,
-          allowSensitiveProbing: false,
-          allowPrivateNetworkTargets: true,
-          allowLoopbackTargets: true,
-          maxRequestsPerMinute: 120,
-          maxConcurrency: 1
-        }
-      })
-      const owner = await application.saveIdentity({
-        targetId: target.target.id,
-        label: 'Owner',
-        role: 'owner',
-        authType: 'bearer',
-        secret: 'owner-token',
-        isTestIdentity: true,
-        ownedResourceIds: ['resource-a']
-      })
-      const second = await application.saveIdentity({
-        targetId: target.target.id,
-        label: 'Second',
-        role: 'member',
-        authType: 'bearer',
-        secret: 'second-token',
-        isTestIdentity: true,
-        ownedResourceIds: ['resource-b']
-      })
-      await application.updateTarget({
-        id: target.target.id,
-        scope: {
-          allowedOrigins: [baseUrl],
-          allowedPathPrefixes: ['/'],
-          deniedPathPrefixes: [],
-          allowedPorts: [address.port],
-          allowedIdentityIds: [owner.id, second.id],
-          allowActiveProbing: true,
-          allowSensitiveProbing: false,
-          allowPrivateNetworkTargets: true,
-          allowLoopbackTargets: true,
-          maxRequestsPerMinute: 120,
-          maxConcurrency: 1,
-          authorizationReference: 'automated-test-owner'
-        }
-      })
-      const plan = createDefaultScanPlan()
-      const scan = await application.createScan({
-        targetId: target.target.id,
-        name: 'Four-family vertical test',
-        description: '验证授权本地靶场的四类漏洞，并优先关注只读、低影响证据链。',
-        families: ['sqli', 'xss', 'ssrf', 'idor'],
-        identityIds: [owner.id, second.id],
-        modelProfileIds: { planner: externalPlannerProfile.id },
-        callbackUrl: `${baseUrl}/callback`,
-        budget: {
-          ...plan.budget,
-          maxRequests: 100,
-          maxRequestsPerMinute: 120,
-          maxConcurrency: 1,
-          maxDurationMinutes: 5
-        }
-      })
+      await harness.application.controlScan(harness.scan.id, 'start')
+      let current = await harness.coordinator.waitForScan(harness.scan.id)
 
-      await application.controlScan(scan.id, 'start')
-      let completed = await coordinator.waitForScan(scan.id)
-      expect(completed.status).toBe('awaiting-user')
-      expect(completed.phase).toBe('intake')
-      expect(fixtureRequestCount).toBe(0)
-      expect(plannerInvocationCount).toBe(0)
-      expect(await database.orm.select().from(agentRuns)).toHaveLength(0)
-      const targetBaseReviewVariantIds =
-        await repository.listPendingActiveL1ReviewVariantIds(scan.id)
-      expect(targetBaseReviewVariantIds).toHaveLength(1)
+      expect(current).toMatchObject({ status: 'awaiting-user', phase: 'intake' })
+      expect(harness.executionPort.inputs).toHaveLength(0)
       expect(
-        (await repository.listInventorySources(scan.id)).map((source) => source.type)
-      ).toEqual(['target-base'])
-      await expect(application.controlScan(scan.id, 'resume')).resolves.toMatchObject({
-        status: 'awaiting-user'
-      })
-      expect(fixtureRequestCount).toBe(0)
-      expect(plannerInvocationCount).toBe(0)
+        (await harness.repository.listInventorySources(harness.scan.id))
+          .map((source) => source.type)
+          .sort()
+      ).toEqual(['controlled-callback', 'target-base'])
 
-      const reviewedVariantIds = new Set<string>()
       let reviewRounds = 0
-      while (completed.status === 'awaiting-user' && reviewRounds < 4) {
-        const pendingReviewVariantIds =
-          await repository.listPendingActiveL1ReviewVariantIds(scan.id)
-        expect(pendingReviewVariantIds.length).toBeGreaterThan(0)
-        for (const requestVariantId of pendingReviewVariantIds) {
-          await application.reviewVariant({
-            scanId: scan.id,
+      while (current.status === 'awaiting-user' && reviewRounds < 4) {
+        const pending =
+          await harness.repository.listPendingActiveL1ReviewVariantIds(
+            harness.scan.id
+          )
+        expect(pending.length).toBeGreaterThan(0)
+        for (const requestVariantId of pending) {
+          await harness.application.reviewVariant({
+            scanId: harness.scan.id,
             requestVariantId,
             reviewStatus: 'reviewed',
-            reviewedBy: 'fixture-manifest:scan-coordinator-test'
+            reviewedBy: 'fixture-manifest:strict-execution-port'
           })
-          reviewedVariantIds.add(requestVariantId)
         }
         reviewRounds += 1
-        await application.controlScan(scan.id, 'resume')
-        completed = await coordinator.waitForScan(scan.id)
-        if (reviewRounds === 1) {
-          expect(completed.status).toBe('awaiting-user')
-          expect(fixtureRequestCount).toBeGreaterThan(0)
-          expect(plannerInvocationCount).toBe(1)
-          expect(
-            new Set(
-              (await repository.listInventorySources(scan.id)).map((source) => source.type)
-            )
-          ).toEqual(new Set(['target-base', 'link', 'form']))
+        await harness.application.controlScan(harness.scan.id, 'resume')
+        current = await harness.coordinator.waitForScan(harness.scan.id)
+      }
+
+      expect(current.status).toBe('completed')
+      expect(reviewRounds).toBe(2)
+      expect(
+        new Set(harness.executionPort.inputs.map((input) => input.stepId))
+      ).toEqual(expectedStepIds)
+      expect(
+        JSON.stringify(harness.executionPort.inputs)
+      ).not.toContain('secret-must-not-cross-the-port')
+
+      for (const input of harness.executionPort.inputs) {
+        expect(input.purpose).toBe('read')
+        if (input.stepId === 'inventory.target-base.read') {
+          expect(input).toMatchObject({
+            adapterKind: 'http',
+            familyId: 'sqli',
+            identityId: harness.owner.id
+          })
+        } else if (input.stepId === 'inventory.target-base.offline-inspect') {
+          expect(input).toMatchObject({
+            adapterKind: 'browser-offline',
+            familyId: 'xss'
+          })
+        } else {
+          expect(input.familyId).toBe(input.stepId.split('.')[0])
         }
       }
-      expect(reviewRounds).toBeGreaterThanOrEqual(2)
-      const findings = await application.listFindings({ scanId: scan.id })
+
+      const browserInputs = harness.executionPort.inputs.filter(
+        (input): input is BrowserOfflineExecutionStepInput =>
+          input.adapterKind === 'browser-offline'
+      )
+      expect(
+        browserInputs.every(
+          (input) =>
+            input.timeoutMs === 10_000 && input.maxDomBytes === 1024 * 1024
+        )
+      ).toBe(true)
+
+      const httpInputs = harness.executionPort.inputs.filter(isHttpInput)
+      expect(
+        httpInputs.every(
+          (input) =>
+            input.timeoutMs === 10_000 &&
+            input.maxResponseBytes === 2 * 1024 * 1024 &&
+            input.maxRedirects === 5 &&
+            Boolean(input.endpointId)
+        )
+      ).toBe(true)
+
+      for (const input of httpInputs.filter((candidate) => candidate.mutation)) {
+        expect(input.mutation).toMatchObject({
+          kind: 'query',
+          occurrence: 0
+        })
+        const values = new URL(input.desiredUrl).searchParams.getAll(
+          input.mutation!.name
+        )
+        expect(values[0]).toBe(input.mutation!.value)
+        if (input.stepId !== 'ssrf.callback-read') {
+          expect(values[1], input.stepId).toBe('[REDACTED]')
+        }
+      }
+
+      for (const input of httpInputs.filter((candidate) =>
+        candidate.stepId.startsWith('sqli.')
+      )) {
+        expect(input.identityId).toBe(harness.owner.id)
+      }
+      for (const input of httpInputs.filter((candidate) =>
+        candidate.stepId.startsWith('xss.')
+      )) {
+        expect(input.identityId).toBe(harness.owner.id)
+      }
+      expect(
+        httpInputs.find((input) => input.stepId === 'ssrf.callback-read')
+      ).not.toHaveProperty('identityId')
+      for (const stepId of ['ssrf.primary', 'ssrf.negative']) {
+        expect(
+          httpInputs.find((input) => input.stepId === stepId)?.identityId
+        ).toBe(harness.owner.id)
+      }
+      expect(
+        httpInputs.find((input) => input.stepId === 'idor.owner')?.identityId
+      ).toBe(harness.owner.id)
+      for (const stepId of ['idor.second-own', 'idor.cross-read']) {
+        expect(
+          httpInputs.find((input) => input.stepId === stepId)?.identityId
+        ).toBe(harness.second.id)
+      }
+
+      const findings = await harness.application.listFindings({
+        scanId: harness.scan.id
+      })
       const confirmedFamilies = new Set(
         findings
           .filter((finding) => finding.verdict === 'confirmed')
           .map((finding) => finding.family)
       )
-
-      expect(completed.status).toBe('completed')
-      expect(confirmedFamilies).toEqual(new Set(['sqli', 'xss', 'ssrf', 'idor']))
-      expect(findings.every((finding) => finding.evidenceRefs.length > 0)).toBe(true)
-      expect((await application.listReports(scan.id)).some((report) => report.redacted)).toBe(true)
-      const detail = await application.getScanDetail(scan.id)
-      expect(detail.endpoints.length).toBeGreaterThanOrEqual(4)
-      const variants = await repository.listInventoryRequestVariants(scan.id)
-      const sources = await repository.listInventorySources(scan.id)
-      expect(
-        variants.some(
-          (variant) => variant.reviewStatus === 'reviewed'
-        )
-      ).toBe(true)
-      expect(
-        variants
-          .filter((variant) => variant.reviewStatus === 'reviewed')
-          .every((variant) => variant.executionClass === 'active-l1')
-      ).toBe(true)
-      expect(
-        sources
-          .filter((source) => source.reviewStatus === 'reviewed')
-          .every((source) =>
-            reviewedVariantIds.has(source.requestVariantId)
-          )
-      ).toBe(true)
-      expect(
-        (await repository.listScanModuleSnapshots(scan.id)).every(
-          (snapshot) =>
-            snapshot.environment === 'attested-fixture' &&
-            snapshot.authorization === 'legacy-v1-compatibility'
-        )
-      ).toBe(true)
-      expect(scan.modelProfileIds.planner).toBe(externalPlannerProfile.id)
-      expect(plannerRequestUrl).toBe('https://planner.example.test/v1/chat/completions')
-      const plannerPayload = JSON.parse(plannerRequestBody) as {
-        messages: Array<{ role: string; content: string }>
-      }
-      const plannerInput = plannerPayload.messages.find((message) => message.role === 'user')
-      expect(plannerInput?.content).toContain(
-        '验证授权本地靶场的四类漏洞，并优先关注只读、低影响证据链。'
+      const errors = (
+        await harness.repository.listScanEvents(harness.scan.id)
       )
-      const plannerUsage = (await application.listModelProfileUsage()).find(
-        (item) => item.profileId === externalPlannerProfile.id
+        .filter(({ level }) => level === 'error')
+        .map(({ message }) => message)
+      expect(errors).toEqual([])
+      expect(confirmedFamilies).toEqual(
+        new Set(['sqli', 'ssrf', 'idor'])
       )
-      expect(plannerUsage?.promptTokens).toBe(120)
-      expect(plannerUsage?.completionTokens).toBe(60)
-      expect(plannerUsage?.totalTokens).toBe(180)
-
-      const runs = await database.orm.select().from(agentRuns)
-      const plannerRun = runs.find((run) => run.role === 'planner')
-      const knowledgeRun = runs.find((run) => run.role === 'knowledge')
-      const strategyRun = runs.find((run) => run.role === 'strategy')
-      expect(plannerRun?.modelProfileId).toBe(externalPlannerProfile.id)
-      expect(knowledgeRun?.parentRunId).toBe(plannerRun?.id)
-      expect(knowledgeRun?.inputRefs).toContain(plannerRun?.outputRefs[0])
-      expect(strategyRun?.parentRunId).toBe(knowledgeRun?.id)
-      expect(strategyRun?.inputRefs).toContain(knowledgeRun?.outputRefs[0])
-      const analysisRuns = runs.filter((run) => run.role === 'analysis')
-      const verifierRuns = runs.filter((run) => run.role === 'verifier')
-      expect(analysisRuns.length).toBeGreaterThan(0)
-      expect(analysisRuns.every((run) => run.parentRunId === strategyRun?.id)).toBe(true)
-      expect(verifierRuns.length).toBe(analysisRuns.length)
       expect(
-        verifierRuns.every((run) =>
-          analysisRuns.some(
-            (analysisRun) =>
-              run.parentRunId === analysisRun.id &&
-              run.inputRefs.includes(analysisRun.outputRefs[0]!)
-          )
+        findings.find(({ family }) => family === 'xss')
+      ).toMatchObject({
+        verdict: 'inconclusive'
+      })
+      expect(
+        (await harness.application.listReports(harness.scan.id)).some(
+          (report) => report.redacted
         )
       ).toBe(true)
     } finally {
-      await coordinator.shutdown()
-      database.close()
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await harness.coordinator.shutdown()
+      harness.database.close()
     }
-  }, 60_000)
+  })
+
+  it('blocks unknown interrupted execution before inventory or execution I/O', async () => {
+    const harness = await createHarness(['sqli'])
+    try {
+      const row = await harness.repository.getScanRow(harness.scan.id)
+      if (!row) throw new Error('Fixture scan disappeared.')
+      const pausedState = {
+        ...row.runtimeJson,
+        status: 'paused'
+      }
+      await harness.repository.updateScan(harness.scan.id, {
+        status: 'paused',
+        runtimeJson: pausedState
+      })
+      await harness.repository.addCheckpoint({
+        scanId: harness.scan.id,
+        phase: harness.scan.phase,
+        state: pausedState,
+        reason: 'execution-interrupted-unknown'
+      })
+
+      await expect(
+        harness.coordinator.control(harness.scan.id, 'resume')
+      ).rejects.toThrow('automatic resume is forbidden')
+      expect(harness.executionPort.inputs).toHaveLength(0)
+      expect(
+        await harness.repository.listInventorySources(harness.scan.id)
+      ).toHaveLength(0)
+    } finally {
+      await harness.coordinator.shutdown()
+      harness.database.close()
+    }
+  })
 })

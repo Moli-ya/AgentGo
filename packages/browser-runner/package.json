@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@agentgo/domain": "workspace:*",
     "playwright-core": "1.61.1"
   },
   "devDependencies": {

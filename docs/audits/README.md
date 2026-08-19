@@ -32,8 +32,8 @@
 | Day1 | [Day1 最终提交前复核](day1-final-review-2026-07-15.md) | 已完成并提交；commit `e82caf49e1985670022479b347abcc39329d5295`。 |
 | Day2 | [Day2 完成审计](day2-completion-2026-07-15.md)；[2026-07-17 补充复核](day2-review-2026-07-17.md) | 已完成并提交；原实现 commit `cef43bb5b5339a0fdd7243fb9562a03be6ad2803`，补充门禁与现时态修正为 `15638f1`、`295ace9`。 |
 | Day3 | [Day3 完成审计](day3-completion-2026-07-18.md)；[commit 映射复核](day3-commit-review-2026-07-18.md)；[独立补充复核](day3-follow-up-review-2026-07-18.md) | 已完成并提交；原实现与完成档案 commit `7b25b2bdfe8fee351f4bf915eba5efd8c2da2865`，补充安全/合同/审计修复 commit `50181583f89b48d163830576805671e04884a44d`。 |
-| Day4 | [首个实现切片](day4-progress-2026-07-19.md) | `partial / in_progress`；实现 commit `8fe55b0963560bfbd0381b32cf8220909e7922ec`，未声明完成，尚未接入 legacy 执行/证据路径。 |
-| Day5 | 尚无完成档案 | 未声明完成。 |
+| Day4 | [首个实现切片](day4-progress-2026-07-19.md)；[protected-original 收口前历史复核](day4-completion-2026-07-28.md)；[2026-07-30 最终复核](day4-final-review-2026-07-30.md) | `completed / uncommitted`；Compiler、三阶段 proof、legacy adapter、默认 hash-only 捕获，以及 protected-original 的加密/后端访问/配额/保留/派生/crypto-erase 已完成并通过最终门禁。首个切片 commit `8fe55b0963560bfbd0381b32cf8220909e7922ec`；本轮未创建 commit。 |
+| Day5 | [Day5 实现与历史验证档案](day5-completion-2026-07-28.md)；[2026-07-30 post-Day4 最终复验](day5-post-day4-review-2026-07-30.md) | `completed / uncommitted`；统一 Grant/Lease/Guard/ExecutionPort、fresh redirect authority、no-replay recovery 与持久化 Evidence GC 已收口，并在 Day4 最终代码上重新通过 typecheck/test/build/smoke 和全新 40 Case；本轮未创建 commit。 |
 | Day6 | 尚无完成档案 | 未声明完成。 |
 | Day7 | 尚无完成档案 | 未声明完成。 |
 | Day8 | 尚无完成档案 | 未声明完成。 |

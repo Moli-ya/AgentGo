@@ -56,9 +56,30 @@ Verifier 不复用 StrategyAgent 的自由推理结论作为证据，必须读�
 - ActivationCatalog：Day2 只提供由冻结定义派生的 registered-only 只读视图，不生成 qualification record。
 - VulnerabilityExecutionGate：在 CreateScan、start、resume 和 Candidate 执行前同时核对冻结定义、精确运行时映射及 Activation/兼容允许表；兼容路径额外固定 module/technique 版本、canonical definition hash 和 `active-l1` 模式。
 - AgentRuntime：阶段门禁、预算、失败恢复、检查点、去重和循环检测。
-- BrowserRunner / HttpRunner：只执行带 policyDecisionId 的已批准动作。
-- EvidenceStore：保存请求响应、截图、DOM、受控回连证明、Agent 输出、报告和哈希。
+- RequestCompiler / ExecutionAuthority：把 reviewed request 编译为
+  Template/Resolved/Wire proof，并为每个实际 I/O 签发绑定 scope、模块、
+  capability、opaque refs、purpose、预算、PolicyDecision 和 capture
+  authority 的不可变 Grant 与单次 Lease。
+- ExecutionPort / Runner Guard：Coordinator 唯一执行入口；Runner 发送前
+  原子 claim Lease、复核 exact wire 和授权上下文。HTTP redirect 每跳
+  fresh policy/grant/lease/DNS，Runner 不自动跟随。
+- BrowserRunner / HttpRunner：只消费由 Guard claim 的 lease。Browser
+  只做断网离线渲染；HTTP 只做单跳 transport，不能自行取得授权。
+- EvidenceStore：保存 CapturePolicy 授权的证据、Agent 输出和报告。
+  Day4 已提供 protected-original 后端边界：完整 context/decision 封套、
+  OS-wrapped AES-256-GCM、内容寻址 ciphertext、普通 read/Renderer/report
+  拒绝、metadata-only redacted derivative、scan/workspace 配额、
+  retention/crypto-erase 与审计；数据库结构由 migration `0010` 建立。
+  Day5 在线路径仍固定持久化 hash-only 摘要，不把真实 DOM/截图接入该后端。
 - Reporting：同时输出 Confirmed、Inconclusive 和已排除项摘要，避免只报告成功案例。
+
+claimed-but-unknown 的执行不得自动重放。Application 启动恢复会把 lease
+终结为 `interrupted / unknown`、把 Scan 置为 `awaiting-user` 并记录
+checkpoint/event；恢复 Evidence 不可用时也必须安全终结。没有 claimed
+lease 的普通 queued/running 中断任务恢复为 `paused`。protected-original
+后端能力本身不构成执行证据：真实 DOM/截图采集、与 Lease 的 provenance
+绑定和确认规则接线仍属于 Day18。当前 XSS 没有这条在线证据链，因此 marker
+executed 仍只能 Inconclusive。
 
 Day2 的当前运行时仍只有四个 V1 adapter：`sqli/xss/ssrf/idor`。为了保持 V1 行为，它们可在定义已注册、精确 `legacy-v1` runtime mapping 存在且 Application 固定允许表命中时继续执行；Activation 状态仍是 `registered`，不得宣称 qualified/supported。`security.headers` 用开放 ID 注册为 `signal-only` 被动描述符，但没有当前运行时映射，因此不能创建或启动扫描。Day7 产生有效、环境匹配的 qualification record 后必须由正式 ActivationCatalog 路径接管并移除该临时例外。
 

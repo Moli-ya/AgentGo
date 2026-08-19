@@ -2,6 +2,12 @@ import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { TargetBaseUrlSchema } from '@agentgo/contracts'
 import { redactInventoryText } from '@agentgo/domain'
+import {
+  DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION,
+  DAY5_EXECUTION_MIGRATION,
+  DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION
+} from './execution-migration'
+import { DAY4_PROTECTED_EVIDENCE_MIGRATION } from './protected-evidence-migration'
 
 export interface DatabaseMigration {
   id: string
@@ -2338,5 +2344,9 @@ BEGIN
   SELECT RAISE(ABORT, 'scan module snapshots are immutable');
 END;
 `
-  }
+  },
+  DAY5_EXECUTION_MIGRATION,
+  DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION,
+  DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION,
+  DAY4_PROTECTED_EVIDENCE_MIGRATION
 ]

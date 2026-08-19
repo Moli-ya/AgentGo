@@ -136,12 +136,18 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
+      '@babel/parser':
+        specifier: 7.29.7
+        version: 7.29.7
       '@types/node':
         specifier: 26.1.1
         version: 26.1.1
 
   packages/browser-runner:
     dependencies:
+      '@agentgo/domain':
+        specifier: workspace:*
+        version: link:../domain
       playwright-core:
         specifier: 1.61.1
         version: 1.61.1

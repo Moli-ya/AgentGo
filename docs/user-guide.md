@@ -24,7 +24,9 @@ pnpm dev
 
 免安装构建位于 `release/win-unpacked/AgentGo.exe`，NSIS 安装器由 `pnpm dist:win` 生成。XSS 隔离验证会调用系统 Microsoft Edge 或 Google Chrome；浏览器只用于断网渲染已取得的 HTML，不会从页面继续发起网络请求。
 
-首次启动会自动完成数据库迁移、内置知识索引和五个本地确定性模型 Profile 的初始化。
+首次启动会自动完成数据库迁移、内置知识索引和五个本地确定性模型 Profile
+的初始化。migration `0010` 会为 Day4 protected-original 后端建立独立加密
+封套；它不会把既有普通 Evidence 重新标记成受保护原件。
 
 ## 3. 工作区与安全自检
 
@@ -103,7 +105,7 @@ MCP Token、环境变量和自定义请求头只进入 `safeStorage`，SQLite �
 -> 低影响验证 -> 独立复核 -> 证据报告
 ```
 
-任务支持暂停、恢复和取消。暂停会中止当前执行并保存 Checkpoint；恢复从已保存状态继续。若应用异常退出，下次启动会将 queued/running 任务恢复为 paused，并记录恢复 Checkpoint 和警告事件，由用户确认后再恢复。
+任务支持暂停、恢复和取消。暂停会中止当前执行并保存 Checkpoint；恢复从已保存状态继续。若应用异常退出，没有 claimed lease 的 queued/running 任务会恢复为 paused；若存在 claimed-but-unknown 执行，系统会把租约终结为 `interrupted / unknown`、将任务置为 `awaiting-user` 并记录 Inconclusive 恢复事实。两种情况都不会自动重放实际 I/O。
 
 ## 10. 理解结论和证据
 
@@ -111,11 +113,28 @@ MCP Token、环境变量和自定义请求头只进入 `safeStorage`，SQLite �
 - `Not Confirmed`：已经执行安全验证，但未达到确认标准。
 - `Inconclusive`：条件、环境、预算或安全边界不足，不能可靠判断。
 
-扫描详情显示阶段事件、发现的接口、证据数量和 Findings。原始证据采用内容寻址和 SHA-256 完整性校验；文本、JSON 和请求响应会生成脱敏派生。任何单次异常都只能形成 Signal，不能直接成为 Confirmed。
+扫描详情显示阶段事件、发现的接口、证据数量和 Findings。普通 Evidence
+采用内容寻址和 SHA-256 完整性校验，只保存已脱敏内容。
+
+Day4 已具备 protected-original 后端：获准原件必须携带完整 capture
+context/decision，由随机数据密钥执行 AES-256-GCM，再用操作系统安全存储
+封装该密钥；磁盘只保存内容寻址 ciphertext。普通读取、桌面 Renderer、
+报告和导出都不能查看原件，只能使用不含内容的 metadata-only redacted
+derivative。系统按 scan/workspace 检查配额，并在 retention 到期时先
+crypto-erase wrapped key、再清理 ciphertext，同时写入审计。
+
+这不表示当前在线扫描已保存 DOM 或截图。Day5 实际执行仍固定保存
+hash-only 摘要；真实 DOM/截图采集、与 Lease 的 provenance 绑定及确认规则
+接线属于 Day18。因此当前 XSS 即使观察到 marker executed，只要缺少该证据
+链仍显示 `Inconclusive`。任何单次异常都只能形成 Signal，不能直接成为
+Confirmed。
 
 ## 11. 生成和导出报告
 
-扫描完成后可生成 Markdown、JSON 或 HTML 报告。桌面界面只生成脱敏版本；HTML 报告会转义不可信内容并带严格 CSP。导出时选择本地路径，应用会记录报告已导出，但不会自动上传或发送给第三方。
+扫描完成后可生成 Markdown、JSON 或 HTML 报告。桌面界面只生成脱敏版本；
+报告只引用 hash-only Evidence 或 metadata-only redacted derivative，不读取、
+嵌入或导出 protected original。HTML 报告会转义不可信内容并带严格 CSP。
+导出时选择本地路径，应用会记录报告已导出，但不会自动上传或发送给第三方。
 
 报告应由测试人员复核后再提交，尤其要检查授权引用、复现条件、身份、证据引用、影响范围和修复建议。
 
@@ -123,9 +142,11 @@ MCP Token、环境变量和自定义请求头只进入 `safeStorage`，SQLite �
 
 生产运行数据位于 Electron 的 `userData` 目录，Windows 通常为 `%APPDATA%\AgentGo`，主要包括：
 
-- `data/agentgo.sqlite`：工作区、Scope、任务、事件、审计和索引；
+- `data/agentgo.sqlite`：工作区、Scope、任务、事件、审计、索引和受保护
+  Evidence 封套元数据；其中数据密钥仅以操作系统封装后的形式保存；
 - `credentials/credentials.json`：操作系统加密后的凭据；
-- `artifacts/`：原始和脱敏证据、报告内容。
+- `artifacts/`：脱敏证据、报告内容，以及 protected-original 后端生成的
+  内容寻址 ciphertext；该目录中的 `.bin` 不是可直接读取的原文。
 
 删除 Target 会清理其数据库记录、未被其他扫描引用的证据文件和测试身份凭据；删除 Workspace 会清理整个工作区目录。运行中任务必须先暂停或取消。安装器配置为卸载时保留应用数据，升级、卸载或迁移前仍建议在应用退出后备份整个目录。不要把这些运行数据、`benchmark-results/`、`release/` 或原始计划书提交到代码仓库。
 
@@ -143,6 +164,13 @@ MCP Token、环境变量和自定义请求头只进入 `safeStorage`，SQLite �
 
 先运行 Profile 连接测试，检查 Base URL、模型名和 API Key。该测试会产生一次真实的最小 `chat/completions` 请求。外部模型失败不会让应用绕过本地安全策略；请新建扫描并为该角色选择确定性 Profile，已经创建的扫描仍保留其冻结路由。
 
-### 扫描重启后变为暂停
+### 扫描重启后变为暂停或等待确认
 
-这是安全恢复机制。查看最后一个警告事件和 Checkpoint，确认目标仍处于授权有效期内，再手动恢复。
+这是安全恢复机制。普通未完成任务恢复为暂停；存在可能已发送但结束状态未知的执行时，任务进入等待确认。查看最后一个警告事件、Checkpoint 和 interrupted Evidence，确认目标仍处于授权有效期内，再决定是否恢复；恢复不会重放旧 Lease。
+
+### XSS 已观察到 marker executed，为什么仍是 Inconclusive
+
+Day4 提供的是受保护原件的后端存储能力；Day5 在线执行仍只生成 hash-only
+Browser 摘要。真实 DOM/截图及其 Lease provenance 尚未接入当前确认链，
+该工作属于 Day18。在缺少可复核在线证据时，系统必须保持
+`Inconclusive`，不能因为后端能够加密保存原件就自动升级为 Confirmed。

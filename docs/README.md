@@ -21,9 +21,13 @@
 - [security/threat-model.md](security/threat-model.md)：恶意页面、外部模型、Electron、MCP 和执行器威胁
 - [workflows/src-hunting.md](workflows/src-hunting.md)：授权 SRC 阶段门禁和证据纪律
 - [evaluation/benchmark-plan.md](evaluation/benchmark-plan.md)：固定靶场、Ground Truth、指标和消融实验
-- [audits/v1-current-capability-audit.md](audits/v1-current-capability-audit.md)：当前代码与计划书功能满足度核查
+- [audits/v1-current-capability-audit.md](audits/v1-current-capability-audit.md)：2026-07-13 V1 历史能力快照
 - [audits/day1-final-review-2026-07-15.md](audits/day1-final-review-2026-07-15.md)：Day1 正式提交前补强、最终数据库 hash 与门禁复核
 - [audits/day2-completion-2026-07-15.md](audits/day2-completion-2026-07-15.md)：Day2 开放 ID、Registry、Activation/compatibility 门禁与完整回归证据
+- [audits/day4-completion-2026-07-28.md](audits/day4-completion-2026-07-28.md)：Day4 在 protected-original 收口前的历史完成度复核
+- [audits/day4-final-review-2026-07-30.md](audits/day4-final-review-2026-07-30.md)：Day4 protected-original 后端收口、边界与最终门禁档案
+- [audits/day5-completion-2026-07-28.md](audits/day5-completion-2026-07-28.md)：Day5 实现及 post-Day4 变更前的历史验证档案
+- [audits/day5-post-day4-review-2026-07-30.md](audits/day5-post-day4-review-2026-07-30.md)：Day4 变更后的 Day5 全回归与正式闭环档案
 
 ## 知识与研究
 
@@ -45,3 +49,5 @@
 - [planning/complex-web-interface-capability-matrix.md](planning/complex-web-interface-capability-matrix.md)：复杂 Web/API 协议的解析、盘点、重放、主动验证与安全边界
 - [planning/post-20-day-vulnerability-roadmap.md](planning/post-20-day-vulnerability-roadmap.md)：20 天后的七波纯后端覆盖路线
 - [adr/](adr/)：重大技术与安全决策记录
+- [adr/0006-deterministic-execution-authority.md](adr/0006-deterministic-execution-authority.md)：确定性执行授权、单次 Lease、统一 ExecutionPort 与 crash no-replay
+- [adr/0007-protected-evidence-envelope.md](adr/0007-protected-evidence-envelope.md)：protected-original 加密封套、访问、配额、保留与派生

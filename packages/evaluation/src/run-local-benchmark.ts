@@ -8,8 +8,12 @@ import {
   AgentGoApplicationService,
   AgentPromptCatalog,
   DefaultScanCoordinator,
+  EphemeralRequestHashKeyProvider,
+  EvidenceCapturePolicy,
+  ExecutionAuthority,
   ExecutionService,
   InventoryService,
+  LegacyV1RequestCompilerAdapter,
   PolicyBroker,
   PolicyExecutionGuard,
   ReportService,
@@ -256,13 +260,33 @@ async function run(): Promise<void> {
     createEphemeralProtector()
   )
   const evidenceStore = new EvidenceStore(database, artifactRoot)
-  const executionGuard = new PolicyExecutionGuard(repository)
-  const executionService = new ExecutionService(
+  const requestHashKeyProvider = new EphemeralRequestHashKeyProvider()
+  const requestAdapter = new LegacyV1RequestCompilerAdapter({
+    repository,
+    credentialStore,
+    hashKeyProvider: requestHashKeyProvider,
+    hashKey: requestHashKeyProvider.reference
+  })
+  const authority = new ExecutionAuthority(repository, requestHashKeyProvider)
+  const policyBroker = new PolicyBroker(repository)
+  const executionGuard = new PolicyExecutionGuard(
+    repository,
+    requestHashKeyProvider,
+    credentialStore
+  )
+  const evidenceCapturePolicy = new EvidenceCapturePolicy()
+  const executionService = new ExecutionService({
     repository,
     evidenceStore,
-    new UndiciHttpRunner(executionGuard),
-    new PlaywrightBrowserRunner(executionGuard, { headless: true })
-  )
+    httpRunner: new UndiciHttpRunner(executionGuard),
+    browserRunner: new PlaywrightBrowserRunner({ headless: true }),
+    requestAdapter,
+    authority,
+    policyBroker,
+    executionGuard,
+    evidenceCapturePolicy,
+    hashKeyProvider: requestHashKeyProvider
+  })
   const reportService = new ReportService(repository, evidenceStore)
   const modelGateway = new DefaultModelGateway({
     profiles: repository,
@@ -281,16 +305,15 @@ async function run(): Promise<void> {
     evidenceStore,
     modelGateway,
     reportService,
+    evidenceCapturePolicy,
     inventoryService,
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'attested-fixture'
   })
   const coordinator = new DefaultScanCoordinator({
     repository,
-    credentialStore,
     evidenceStore,
-    executionService,
-    policyBroker: new PolicyBroker(repository),
+    executionPort: executionService,
     modelGateway,
     reportService,
     inventoryService,
@@ -402,6 +425,11 @@ async function run(): Promise<void> {
           `Scan ${scan.id} exceeded ${maximumReviewRounds} inventory review rounds.`
         )
       }
+      if (completed.status !== 'completed') {
+        throw new Error(
+          `Benchmark case ${item.caseId} ended with non-completed scan status ${completed.status}.`
+        )
+      }
       const finding = (await application.listFindings({ scanId: scan.id })).find(
         (candidate) => candidate.family === item.family
       )
@@ -478,10 +506,22 @@ async function run(): Promise<void> {
         safetyPassed: summary.safety.passed
       })
     )
+    if (!summary.safety.passed) {
+      throw new Error(
+        'Benchmark safety gates failed; generated artifacts are retained for audit.'
+      )
+    }
   } finally {
-    await coordinator.shutdown()
-    await fixture.close()
-    database.close()
+    try {
+      await coordinator.shutdown()
+    } finally {
+      try {
+        await fixture.close()
+      } finally {
+        requestHashKeyProvider.dispose()
+        database.close()
+      }
+    }
   }
 }
 

@@ -19,6 +19,8 @@ import {
 import {
   ProbeRequestCompileError,
   ProbeRequestCompiler,
+  computeWireRequestHmac,
+  verifyWireRequestHmac,
   type MutationGenerator,
   type ProbeRequestCompilerDependencies,
   type ProbeRequestCompilerInput,
@@ -32,6 +34,8 @@ const SECRET_REF = 'b7b76e72-16dc-499a-b16a-4a43e14a0d36'
 const OWNER_REF = '1f3b82e1-bc3d-45a8-9a71-c4aa47c12f82'
 const SCOPE_REF = '2f3b82e1-bc3d-45a8-9a71-c4aa47c12f83'
 const SESSION_REF = '3f3b82e1-bc3d-45a8-9a71-c4aa47c12f84'
+const IDENTITY_REF = '4f3b82e1-bc3d-45a8-9a71-c4aa47c12f85'
+const TEST_OBJECT_REF = '5f3b82e1-bc3d-45a8-9a71-c4aa47c12f86'
 const SECRET_SENTINEL = 'DAY4_SENTINEL_SECRET_must-not-leak'
 const READ_CAPABILITY = 'http.reviewed-read'
 const EXTRA_CAPABILITY = 'http.extra-safe'
@@ -60,6 +64,21 @@ function urlTemplate(endpoint: InventoryEndpointRecord): ProbeRequestTemplate['u
           value: decodeURIComponent(segment)
         }
       }))
+  }
+}
+
+function secretValueSource(
+  generation = 1
+): ProbeRequestTemplate['query'][number]['value'] {
+  return {
+    kind: 'secret-ref',
+    secretRef: SECRET_REF,
+    generation,
+    resolver: {
+      kind: 'secret-ref-resolver',
+      resolverId: 'test.secret-resolver',
+      version: '1.0.0'
+    }
   }
 }
 
@@ -220,6 +239,49 @@ function createInput(
     },
     enabledCapabilityIds: [READ_CAPABILITY],
     hashKey: { keyRef: KEY_REF, keyVersion: 1 },
+    ...(requestVariant.executionClass === 'active-l2'
+      ? {
+          ownerRef: OWNER_REF,
+          scopeSnapshotId: SCOPE_REF,
+          testObjectRef: {
+            id: TEST_OBJECT_REF,
+            version: 1,
+            ownerRef: OWNER_REF,
+            scopeSnapshotId: SCOPE_REF,
+            statusSummary: 'ready' as const
+          }
+        }
+      : {}),
+    ...overrides
+  }
+}
+
+function createBaselineInput(
+  endpoint: InventoryEndpointRecord,
+  requestVariant: RequestVariantRecord,
+  requestTemplate: ProbeRequestTemplate,
+  overrides: Partial<ProbeRequestCompilerInput> = {}
+): ProbeRequestCompilerInput {
+  return {
+    scanId: endpoint.scanId,
+    endpoint,
+    requestVariant,
+    requestTemplate,
+    enabledCapabilityIds: [READ_CAPABILITY],
+    hashKey: { keyRef: KEY_REF, keyVersion: 1 },
+    ...(requestVariant.executionClass === 'active-l2'
+      ? {
+          ownerRef: OWNER_REF,
+          scopeSnapshotId: SCOPE_REF,
+          testObjectRef: {
+            id: TEST_OBJECT_REF,
+            version: 1,
+            ownerRef: OWNER_REF,
+            scopeSnapshotId: SCOPE_REF,
+            statusSummary: 'ready' as const
+          }
+        }
+      : {}),
     ...overrides
   }
 }
@@ -331,7 +393,16 @@ describe('ProbeRequestCompiler phased binding', () => {
     })
     const activeL2 = createCompiler(mutationGenerator).compile({
       ...input,
-      requestVariant: { ...variant, executionClass: 'active-l2' }
+      requestVariant: { ...variant, executionClass: 'active-l2' },
+      ownerRef: OWNER_REF,
+      scopeSnapshotId: SCOPE_REF,
+      testObjectRef: {
+        id: TEST_OBJECT_REF,
+        version: 1,
+        ownerRef: OWNER_REF,
+        scopeSnapshotId: SCOPE_REF,
+        statusSummary: 'ready'
+      }
     })
     const capabilityOrderOne = createCompiler(mutationGenerator).compile({
       ...input,
@@ -340,6 +411,23 @@ describe('ProbeRequestCompiler phased binding', () => {
     const capabilityOrderTwo = createCompiler(mutationGenerator).compile({
       ...input,
       enabledCapabilityIds: [EXTRA_CAPABILITY, READ_CAPABILITY]
+    })
+    const unboundExecutionContext = createCompiler(
+      mutationGenerator
+    ).compile({
+      ...input,
+      ownerRef: OWNER_REF,
+      scopeSnapshotId: SCOPE_REF
+    })
+    const executionBound = createCompiler(mutationGenerator).compile({
+      ...input,
+      ownerRef: OWNER_REF,
+      scopeSnapshotId: SCOPE_REF,
+      executionBinding: {
+        stepId: 'step.read',
+        purpose: 'read',
+        adapterKind: 'http'
+      }
     })
 
     expect(first.request.url).toBe(
@@ -393,13 +481,37 @@ describe('ProbeRequestCompiler phased binding', () => {
     expect(capabilityOrderOne.wireRequestHmac).toEqual(
       capabilityOrderTwo.wireRequestHmac
     )
+    expect(executionBound.templateIntentHash).toEqual(
+      unboundExecutionContext.templateIntentHash
+    )
+    expect(executionBound.resolvedIntentHash).toEqual(
+      unboundExecutionContext.resolvedIntentHash
+    )
+    expect(executionBound.wireRequestHmac.digest).not.toBe(
+      unboundExecutionContext.wireRequestHmac.digest
+    )
+    expect(executionBound.authorizationContext.executionBinding).toEqual({
+      stepId: 'step.read',
+      purpose: 'read',
+      adapterKind: 'http'
+    })
+    expect(first.authorizationContext).toMatchObject({
+      templateIntentHash: first.templateIntentHash,
+      enabledCapabilityIds: [READ_CAPABILITY],
+      ownerRef: null,
+      scopeSnapshotId: null,
+      identityRef: null,
+      sessionRef: null,
+      testObjectRef: null,
+      executionBinding: null
+    })
     expect(first.resolvedIntentHash).toMatchObject({
       domain: 'agentgo.resolved-intent.v1',
       commitmentKeyRef: KEY_REF,
       commitmentKeyVersion: 1
     })
     expect(first.wireRequestHmac).toMatchObject({
-      domain: 'agentgo.wire-request.v1',
+      domain: 'agentgo.wire-request.v2',
       keyRef: KEY_REF,
       keyVersion: 1
     })
@@ -887,13 +999,17 @@ describe('ProbeRequestCompiler phased binding', () => {
         url: urlTemplate(endpoint),
         query: [],
         headers: [],
-        cookies: [header('sid', 'one'), header('sid', 'two')],
+        cookies: [
+          { name: 'sid', value: secretValueSource(1) },
+          { name: 'sid', value: secretValueSource(2) }
+        ],
         body: { encoding: 'none' }
       },
       { kind: 'cookie', name: 'sid', occurrence: 1, onMissing: 'reject' }
     )
     const cookieCompiled = createCompiler(
-      generator(['cookie'], ['none'], () => 'next')
+      generator(['cookie'], ['none'], () => 'next'),
+      { secret: 'one' }
     ).compile(cookieInput)
     expect(cookieCompiled.request.headers).toEqual([
       { name: 'cookie', value: 'sid=one; sid=next' }
@@ -901,7 +1017,8 @@ describe('ProbeRequestCompiler phased binding', () => {
     expectCompileCode(
       () =>
         createCompiler(
-          generator(['cookie'], ['none'], () => 'bad;value')
+          generator(['cookie'], ['none'], () => 'bad;value'),
+          { secret: 'one' }
         ).compile(cookieInput),
       'generator-rejected'
     )
@@ -1642,6 +1759,113 @@ describe('ProbeRequestCompiler fail-closed boundaries', () => {
     )
   })
 
+  it('requires explicit controlled-OOB metadata and capability at active L1', () => {
+    const oobCapability = 'oob.controlled-observe'
+    const endpoint = createEndpoint()
+    const variant = createVariant({
+      endpoint,
+      selectors: [
+        { kind: 'query', name: 'id', valueType: 'string', required: true }
+      ]
+    })
+    const template: ProbeRequestTemplate = {
+      url: urlTemplate(endpoint),
+      query: [
+        {
+          name: 'id',
+          value: {
+            kind: 'literal',
+            sensitivity: 'public',
+            value: 'baseline'
+          }
+        }
+      ],
+      headers: [],
+      cookies: [],
+      body: { encoding: 'none' }
+    }
+    const target = {
+      kind: 'query' as const,
+      name: 'id',
+      occurrence: 0,
+      onMissing: 'reject' as const
+    }
+    const base = generator(['query'], ['none'], () => 'controlled-callback')
+    const controlled: MutationGenerator = {
+      ...base,
+      metadata: MutationGeneratorMetadataSchema.parse({
+        ...base.metadata,
+        safety: {
+          ...base.metadata.safety,
+          networkTarget: 'controlled-oob'
+        },
+        requiredCapabilityIds: [oobCapability]
+      })
+    }
+    const compilerOptions = {
+      dependencyOverrides: {
+        knownCapabilityIds: [
+          READ_CAPABILITY,
+          EXTRA_CAPABILITY,
+          FORBIDDEN_CAPABILITY,
+          oobCapability
+        ]
+      }
+    }
+    expect(
+      createCompiler(controlled, compilerOptions).compile(
+        createInput(endpoint, variant, template, target, {
+          enabledCapabilityIds: [READ_CAPABILITY, oobCapability]
+        })
+      ).request.url
+    ).toContain('controlled-callback')
+
+    expectCompileCode(
+      () =>
+        createCompiler(controlled, compilerOptions).compile(
+          createInput(endpoint, variant, template, target)
+        ),
+      'generator-rejected'
+    )
+
+    const undeclared: MutationGenerator = {
+      ...controlled,
+      metadata: MutationGeneratorMetadataSchema.parse({
+        ...controlled.metadata,
+        requiredCapabilityIds: []
+      })
+    }
+    expectCompileCode(
+      () =>
+        createCompiler(undeclared, compilerOptions).compile(
+          createInput(endpoint, variant, template, target, {
+            enabledCapabilityIds: [READ_CAPABILITY, oobCapability]
+          })
+        ),
+      'generator-rejected'
+    )
+
+    const arbitrary: MutationGenerator = {
+      ...controlled,
+      metadata: MutationGeneratorMetadataSchema.parse({
+        ...controlled.metadata,
+        safety: {
+          ...controlled.metadata.safety,
+          networkTarget: 'arbitrary'
+        }
+      })
+    }
+    expectCompileCode(
+      () =>
+        createCompiler(arbitrary, compilerOptions).compile(
+          createInput(endpoint, variant, template, target, {
+            enabledCapabilityIds: [READ_CAPABILITY, oobCapability]
+          })
+        ),
+      'generator-rejected'
+    )
+  })
+
   it('rejects oversized resolver values in every supported location and oversized generator output', () => {
     const oversized = 'x'.repeat(262_145)
     const dynamicValue = {
@@ -1856,6 +2080,608 @@ describe('ProbeRequestCompiler fail-closed boundaries', () => {
           )
         ),
       'generator-rejected'
+    )
+  })
+
+  it('compiles a deterministic baseline without invoking a mutation generator', () => {
+    const endpoint = createEndpoint()
+    const variant = createVariant({ endpoint, selectors: [] })
+    const template: ProbeRequestTemplate = {
+      url: urlTemplate(endpoint),
+      query: [],
+      headers: [],
+      cookies: [],
+      body: { encoding: 'none' }
+    }
+    const generate = vi.fn(() => 'must-not-run')
+    const mutationGenerator = generator(['query'], ['none'], generate)
+    const compiler = createCompiler(mutationGenerator)
+    const baseline = createBaselineInput(endpoint, variant, template)
+    const first = compiler.compile(baseline)
+    const repeat = compiler.compile(baseline)
+
+    expect(generate).not.toHaveBeenCalled()
+    expect(first.request.materialize()).toEqual({
+      method: 'GET',
+      url: endpoint.canonicalRoute,
+      headers: []
+    })
+    expect(first.templateIntentHash).toEqual(repeat.templateIntentHash)
+    expect(first.resolvedIntentHash).toEqual(repeat.resolvedIntentHash)
+    expect(first.wireRequestHmac).toEqual(repeat.wireRequestHmac)
+
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          createBaselineInput(endpoint, variant, template, {
+            mutationTarget: {
+              kind: 'query',
+              name: 'id',
+              occurrence: 0,
+              onMissing: 'reject'
+            }
+          })
+        ),
+      'invalid-input'
+    )
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          createBaselineInput(endpoint, variant, template, {
+            mutationGenerator: {
+              generatorId: 'test.fixed-mutation',
+              version: '1.0.0'
+            }
+          })
+        ),
+      'invalid-input'
+    )
+  })
+
+  it('computes and verifies the exact ordered wire HMAC with provider-owned keys intact', () => {
+    const endpoint = createEndpoint()
+    const variant = createVariant({
+      endpoint,
+      selectors: [],
+      allowedHeaders: [
+        { name: 'x-a', valueType: 'string', required: true },
+        { name: 'x-b', valueType: 'string', required: true }
+      ]
+    })
+    const template: ProbeRequestTemplate = {
+      url: urlTemplate(endpoint),
+      query: [],
+      headers: [
+        {
+          name: 'x-b',
+          value: { kind: 'literal', sensitivity: 'public', value: 'two' }
+        },
+        {
+          name: 'x-a',
+          value: { kind: 'literal', sensitivity: 'public', value: 'one' }
+        }
+      ],
+      cookies: [],
+      body: { encoding: 'none' }
+    }
+    const providerOwnedKey = new Uint8Array(32).fill(0x6d)
+    const compiler = createCompiler(
+      generator(['query'], ['none'], () => 'unused'),
+      { key: providerOwnedKey }
+    )
+    const baseline = createBaselineInput(endpoint, variant, template)
+    const compiled = compiler.compile(baseline)
+    const provider = { resolveKey: () => providerOwnedKey }
+    const proofInput = {
+      hashKey: baseline.hashKey,
+      resolvedIntentHash: compiled.resolvedIntentHash,
+      authorizationContext: compiled.authorizationContext,
+      request: compiled.request.materialize()
+    }
+
+    expect(computeWireRequestHmac(proofInput, provider)).toEqual(
+      compiled.wireRequestHmac
+    )
+    expect(
+      verifyWireRequestHmac(proofInput, compiled.wireRequestHmac, provider)
+    ).toBe(true)
+    const authorizationContextTampering = [
+      {
+        ...compiled.authorizationContext,
+        templateIntentHash: {
+          ...compiled.templateIntentHash,
+          digest: '0'.repeat(64)
+        }
+      },
+      {
+        ...compiled.authorizationContext,
+        enabledCapabilityIds: [EXTRA_CAPABILITY, READ_CAPABILITY].sort()
+      },
+      {
+        ...compiled.authorizationContext,
+        ownerRef: OWNER_REF,
+        scopeSnapshotId: SCOPE_REF
+      },
+      {
+        ...compiled.authorizationContext,
+        ownerRef: OWNER_REF,
+        scopeSnapshotId: SCOPE_REF,
+        identityRef: {
+          id: IDENTITY_REF,
+          version: 1,
+          ownerRef: OWNER_REF,
+          scopeSnapshotId: SCOPE_REF,
+          statusSummary: 'active' as const
+        }
+      },
+      {
+        ...compiled.authorizationContext,
+        ownerRef: OWNER_REF,
+        scopeSnapshotId: SCOPE_REF,
+        sessionRef: {
+          id: SESSION_REF,
+          generation: 1,
+          ownerRef: OWNER_REF,
+          scopeSnapshotId: SCOPE_REF,
+          statusSummary: 'active' as const
+        }
+      },
+      {
+        ...compiled.authorizationContext,
+        ownerRef: OWNER_REF,
+        scopeSnapshotId: SCOPE_REF,
+        testObjectRef: {
+          id: TEST_OBJECT_REF,
+          version: 1,
+          ownerRef: OWNER_REF,
+          scopeSnapshotId: SCOPE_REF,
+          statusSummary: 'ready' as const
+        }
+      },
+      {
+        ...compiled.authorizationContext,
+        executionBinding: {
+          stepId: 'step.tampered',
+          purpose: 'read' as const,
+          adapterKind: 'http' as const
+        }
+      }
+    ]
+    for (const authorizationContext of authorizationContextTampering) {
+      expect(
+        verifyWireRequestHmac(
+          {
+            ...proofInput,
+            authorizationContext
+          },
+          compiled.wireRequestHmac,
+          provider
+        )
+      ).toBe(false)
+    }
+    expect(
+      verifyWireRequestHmac(
+        {
+          ...proofInput,
+          authorizationContext: {
+            ...compiled.authorizationContext,
+            unexpected: true
+          } as never
+        },
+        compiled.wireRequestHmac,
+        provider
+      )
+    ).toBe(false)
+    expect(
+      verifyWireRequestHmac(
+        {
+          ...proofInput,
+          request: { ...proofInput.request, method: 'POST' }
+        },
+        compiled.wireRequestHmac,
+        provider
+      )
+    ).toBe(false)
+    expect(
+      verifyWireRequestHmac(
+        {
+          ...proofInput,
+          request: { ...proofInput.request, url: `${proofInput.request.url}?x=1` }
+        },
+        compiled.wireRequestHmac,
+        provider
+      )
+    ).toBe(false)
+    expect(
+      verifyWireRequestHmac(
+        {
+          ...proofInput,
+          request: {
+            ...proofInput.request,
+            headers: proofInput.request.headers.map((header, index) =>
+              index === 0 ? { ...header, value: 'tampered' } : header
+            )
+          }
+        },
+        compiled.wireRequestHmac,
+        provider
+      )
+    ).toBe(false)
+    expect(
+      verifyWireRequestHmac(
+        {
+          ...proofInput,
+          request: {
+            ...proofInput.request,
+            headers: [...proofInput.request.headers].reverse()
+          }
+        },
+        compiled.wireRequestHmac,
+        provider
+      )
+    ).toBe(false)
+    expect(
+      verifyWireRequestHmac(
+        {
+          ...proofInput,
+          request: { ...proofInput.request, bodyBytes: [] }
+        },
+        compiled.wireRequestHmac,
+        provider
+      )
+    ).toBe(false)
+
+    const bodyInput = {
+      ...proofInput,
+      request: { ...proofInput.request, bodyBytes: [0x61] }
+    }
+    const bodyProof = computeWireRequestHmac(bodyInput, provider)
+    expect(
+      verifyWireRequestHmac(
+        {
+          ...bodyInput,
+          request: { ...bodyInput.request, bodyBytes: [0x62] }
+        },
+        bodyProof,
+        provider
+      )
+    ).toBe(false)
+    expect(
+      verifyWireRequestHmac(
+        proofInput,
+        { ...compiled.wireRequestHmac, digest: 'malformed' } as never,
+        provider
+      )
+    ).toBe(false)
+    expect([...providerOwnedKey].every((value) => value === 0x6d)).toBe(true)
+  })
+
+  it('requires a ready or in-use TestObjectRef for every active-l2 compilation', () => {
+    const endpoint = createEndpoint()
+    const reviewed = createVariant({ endpoint, selectors: [] })
+    const l2Variant: RequestVariantRecord = {
+      ...reviewed,
+      executionClass: 'active-l2'
+    }
+    const template: ProbeRequestTemplate = {
+      url: urlTemplate(endpoint),
+      query: [],
+      headers: [],
+      cookies: [],
+      body: { encoding: 'none' }
+    }
+    const compiler = createCompiler(
+      generator(['query'], ['none'], () => 'unused')
+    )
+    const valid = createBaselineInput(endpoint, l2Variant, template)
+    const { testObjectRef: _testObjectRef, ...withoutTestObject } = valid
+
+    expectCompileCode(
+      () => compiler.compile(withoutTestObject),
+      'opaque-ref-rejected'
+    )
+    for (const statusSummary of ['cleanup-required', 'retired'] as const) {
+      expectCompileCode(
+        () =>
+          compiler.compile({
+            ...valid,
+            testObjectRef: {
+              ...valid.testObjectRef!,
+              statusSummary
+            }
+          }),
+        'opaque-ref-rejected'
+      )
+    }
+    for (const statusSummary of ['ready', 'in-use'] as const) {
+      expect(() =>
+        compiler.compile({
+          ...valid,
+          testObjectRef: {
+            ...valid.testObjectRef!,
+            statusSummary
+          }
+        })
+      ).not.toThrow()
+    }
+  })
+
+  it('rejects public literals in credential-shaped channels and accepts resolver-backed values', () => {
+    const endpoint = createEndpoint()
+    const compiler = createCompiler(
+      generator(['query'], ['none'], () => 'unused'),
+      { secret: 'Bearer resolver-owned' }
+    )
+    for (const name of [
+      'authorization',
+      'proxy-authorization',
+      'x-api-key',
+      'x-auth-token',
+      'x-session-token'
+    ]) {
+      const variant = createVariant({
+        endpoint,
+        selectors: [],
+        allowedHeaders: [
+          { name, valueType: 'string', required: true }
+        ]
+      })
+      const template: ProbeRequestTemplate = {
+        url: urlTemplate(endpoint),
+        query: [],
+        headers: [
+          {
+            name,
+            value: {
+              kind: 'literal',
+              sensitivity: 'public',
+              value: 'caller-labelled-public'
+            }
+          }
+        ],
+        cookies: [],
+        body: { encoding: 'none' }
+      }
+      expectCompileCode(
+        () =>
+          compiler.compile(
+            createBaselineInput(endpoint, variant, template)
+          ),
+        'template-mismatch'
+      )
+    }
+
+    const cookieVariant = createVariant({
+      endpoint,
+      selectors: [
+        { kind: 'cookie', name: 'sid', valueType: 'string', required: true }
+      ]
+    })
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          createBaselineInput(endpoint, cookieVariant, {
+            url: urlTemplate(endpoint),
+            query: [],
+            headers: [],
+            cookies: [
+              {
+                name: 'sid',
+                value: {
+                  kind: 'literal',
+                  sensitivity: 'public',
+                  value: 'caller-labelled-public'
+                }
+              }
+            ],
+            body: { encoding: 'none' }
+          })
+        ),
+      'template-mismatch'
+    )
+
+    const authorizationVariant = createVariant({
+      endpoint,
+      selectors: [],
+      allowedHeaders: [
+        { name: 'authorization', valueType: 'string', required: true }
+      ]
+    })
+    const resolved = compiler.compile(
+      createBaselineInput(endpoint, authorizationVariant, {
+        url: urlTemplate(endpoint),
+        query: [],
+        headers: [
+          { name: 'authorization', value: secretValueSource() }
+        ],
+        cookies: [],
+        body: { encoding: 'none' }
+      })
+    )
+    expect(resolved.request.headers).toEqual([
+      { name: 'authorization', value: 'Bearer resolver-owned' }
+    ])
+  })
+
+  it('keeps authorized identity headers secret-ref-only, normalized, disjoint, and hash-bound', () => {
+    const endpoint = createEndpoint()
+    const variant = createVariant({ endpoint, selectors: [] })
+    const template: ProbeRequestTemplate = {
+      url: urlTemplate(endpoint),
+      query: [],
+      headers: [],
+      cookies: [],
+      body: { encoding: 'none' }
+    }
+    const compiler = createCompiler(
+      generator(['query'], ['none'], () => 'unused')
+    )
+    const identityBinding = {
+      ownerRef: OWNER_REF,
+      scopeSnapshotId: SCOPE_REF,
+      identityRef: {
+        id: IDENTITY_REF,
+        version: 1,
+        ownerRef: OWNER_REF,
+        scopeSnapshotId: SCOPE_REF,
+        statusSummary: 'active' as const
+      }
+    }
+    const identityInput = (
+      authorizedIdentityHeaders: NonNullable<
+        ProbeRequestCompilerInput['authorizedIdentityHeaders']
+      >,
+      requestVariant = variant,
+      requestTemplate = template,
+      credentialGeneration = 1
+    ) =>
+      createBaselineInput(endpoint, requestVariant, requestTemplate, {
+        ...identityBinding,
+        credentialRef: {
+          id: SECRET_REF,
+          kind: 'identity',
+          generation: credentialGeneration
+        },
+        authorizedIdentityHeaders
+      })
+
+    const successful = compiler.compile(
+      identityInput([
+        { name: 'Authorization', value: secretValueSource(1) }
+      ])
+    )
+    const changedGeneration = compiler.compile(
+      identityInput([
+        { name: 'authorization', value: secretValueSource(2) }
+      ], variant, template, 2)
+    )
+    expect(successful.request.headers).toEqual([
+      { name: 'authorization', value: SECRET_SENTINEL }
+    ])
+    expect(successful.templateIntentHash.digest).not.toBe(
+      changedGeneration.templateIntentHash.digest
+    )
+    expect(JSON.stringify(successful)).not.toContain(SECRET_SENTINEL)
+    expect(JSON.stringify(successful.templateIntentHash)).not.toContain(
+      SECRET_SENTINEL
+    )
+    expect(JSON.stringify(successful.resolvedIntentHash)).not.toContain(
+      SECRET_SENTINEL
+    )
+
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          createBaselineInput(endpoint, variant, template, {
+            authorizedIdentityHeaders: [
+              { name: 'authorization', value: secretValueSource() }
+            ]
+          })
+        ),
+      'opaque-ref-rejected'
+    )
+
+    const invalidIdentityValues: Array<
+      NonNullable<
+        ProbeRequestCompilerInput['authorizedIdentityHeaders']
+      >[number]['value']
+    > = [
+      {
+        kind: 'literal',
+        sensitivity: 'public',
+        value: 'caller-labelled-public'
+      },
+      {
+        kind: 'dynamic',
+        slotId: 'identity-header',
+        resolver: {
+          kind: 'dynamic-value-resolver',
+          resolverId: 'test.dynamic-resolver',
+          version: '1.0.0'
+        }
+      }
+    ]
+    for (const value of invalidIdentityValues) {
+      expectCompileCode(
+        () =>
+          compiler.compile(
+            identityInput([{ name: 'authorization', value }])
+          ),
+        'opaque-ref-rejected'
+      )
+    }
+
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          identityInput([
+            { name: 'Authorization', value: secretValueSource(1) },
+            { name: 'authorization', value: secretValueSource(1) }
+          ])
+        ),
+      'template-mismatch'
+    )
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          identityInput([
+            { name: 'content-type', value: secretValueSource() }
+          ])
+        ),
+      'template-mismatch'
+    )
+
+    const businessVariant = createVariant({
+      endpoint,
+      selectors: [],
+      allowedHeaders: [
+        { name: 'accept', valueType: 'string', required: true }
+      ]
+    })
+    const businessTemplate: ProbeRequestTemplate = {
+      ...template,
+      headers: [
+        {
+          name: 'accept',
+          value: { kind: 'literal', sensitivity: 'public', value: 'text/plain' }
+        }
+      ]
+    }
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          identityInput(
+            [{ name: 'accept', value: secretValueSource() }],
+            businessVariant,
+            businessTemplate
+          )
+        ),
+      'template-mismatch'
+    )
+
+    const cookieVariant = createVariant({
+      endpoint,
+      selectors: [
+        { kind: 'cookie', name: 'sid', valueType: 'string', required: true }
+      ]
+    })
+    const cookieTemplate: ProbeRequestTemplate = {
+      ...template,
+      cookies: [
+        { name: 'sid', value: secretValueSource() }
+      ]
+    }
+    expectCompileCode(
+      () =>
+        compiler.compile(
+          identityInput(
+            [{ name: 'cookie', value: secretValueSource(2) }],
+            cookieVariant,
+            cookieTemplate,
+            2
+          )
+        ),
+      'template-mismatch'
     )
   })
 })

@@ -6,10 +6,15 @@ import {
   AgentGoApplicationService,
   AgentPromptCatalog,
   DefaultScanCoordinator,
+  EphemeralRequestHashKeyProvider,
+  EvidenceCapturePolicy,
+  ExecutionAuthority,
   ExecutionService,
   InventoryService,
+  LegacyV1RequestCompilerAdapter,
   PolicyBroker,
   PolicyExecutionGuard,
+  ProtectedEvidenceRetentionScheduler,
   ReportService,
   createDay2VulnerabilityPlatform
 } from '@agentgo/application'
@@ -74,6 +79,8 @@ interface MainInfrastructure {
   repository: AgentGoRepository
   applicationService: AgentGoApplicationService
   scanCoordinator: DefaultScanCoordinator
+  retentionScheduler: ProtectedEvidenceRetentionScheduler
+  requestHashKeyProvider: EphemeralRequestHashKeyProvider
   dataDirectory: string
 }
 
@@ -463,14 +470,44 @@ function createInfrastructure(): MainInfrastructure {
   const artifactRoot = isSmokeTest
     ? join(app.getPath('temp'), `agentgo-smoke-artifacts-${process.pid}`)
     : join(dataDirectory, 'artifacts')
-  const evidenceStore = new EvidenceStore(database, artifactRoot)
-  const guard = new PolicyExecutionGuard(repository)
-  const executionService = new ExecutionService(
+  const evidenceStore = new EvidenceStore(database, artifactRoot, {
+    protector
+  })
+  const retentionScheduler = new ProtectedEvidenceRetentionScheduler(
+    evidenceStore,
+    {
+      onError: () => {
+        console.error('Protected Evidence retention sweep failed.')
+      }
+    }
+  )
+  const requestHashKeyProvider = new EphemeralRequestHashKeyProvider()
+  const requestAdapter = new LegacyV1RequestCompilerAdapter({
+    repository,
+    credentialStore,
+    hashKeyProvider: requestHashKeyProvider,
+    hashKey: requestHashKeyProvider.reference
+  })
+  const authority = new ExecutionAuthority(repository, requestHashKeyProvider)
+  const policyBroker = new PolicyBroker(repository)
+  const executionGuard = new PolicyExecutionGuard(
+    repository,
+    requestHashKeyProvider,
+    credentialStore
+  )
+  const evidenceCapturePolicy = new EvidenceCapturePolicy()
+  const executionService = new ExecutionService({
     repository,
     evidenceStore,
-    new UndiciHttpRunner(guard),
-    new PlaywrightBrowserRunner(guard, { headless: true })
-  )
+    httpRunner: new UndiciHttpRunner(executionGuard),
+    browserRunner: new PlaywrightBrowserRunner({ headless: true }),
+    requestAdapter,
+    authority,
+    policyBroker,
+    executionGuard,
+    evidenceCapturePolicy,
+    hashKeyProvider: requestHashKeyProvider
+  })
   const reportService = new ReportService(repository, evidenceStore)
   const modelGateway = new DefaultModelGateway({
     profiles: repository,
@@ -487,6 +524,7 @@ function createInfrastructure(): MainInfrastructure {
     credentialStore,
     evidenceStore,
     modelGateway,
+    evidenceCapturePolicy,
     reportService,
     inventoryService,
     vulnerabilityPlatform,
@@ -494,10 +532,8 @@ function createInfrastructure(): MainInfrastructure {
   })
   const scanCoordinator = new DefaultScanCoordinator({
     repository,
-    credentialStore,
     evidenceStore,
-    executionService,
-    policyBroker: new PolicyBroker(repository),
+    executionPort: executionService,
     modelGateway,
     reportService,
     inventoryService,
@@ -518,6 +554,8 @@ function createInfrastructure(): MainInfrastructure {
     repository,
     applicationService,
     scanCoordinator,
+    retentionScheduler,
+    requestHashKeyProvider,
     dataDirectory
   }
 }
@@ -567,6 +605,7 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   infrastructure = createInfrastructure()
   await infrastructure.applicationService.initialize()
+  infrastructure.retentionScheduler.start()
   registerIpcHandlers(infrastructure.applicationService)
   createWindow()
 
@@ -581,7 +620,11 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   shutdownStarted = true
   const current = infrastructure
-  void current.scanCoordinator.shutdown().finally(() => {
+  void Promise.allSettled([
+    current.scanCoordinator.shutdown(),
+    current.retentionScheduler.stop()
+  ]).finally(() => {
+    current.requestHashKeyProvider.dispose()
     current.database.close()
     infrastructure = undefined
     app.quit()

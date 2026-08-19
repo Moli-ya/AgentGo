@@ -31,7 +31,7 @@ describe('Day 4 phased request proof contracts', () => {
       digest
     })
     const wire = WireRequestHmacSchema.parse({
-      domain: 'agentgo.wire-request.v1',
+      domain: 'agentgo.wire-request.v2',
       algorithm: 'hmac-sha256',
       keyRef,
       keyVersion: 3,
@@ -63,7 +63,7 @@ describe('Day 4 phased request proof contracts', () => {
     ).toBe(false)
     expect(
       WireRequestHmacSchema.safeParse({
-        domain: 'agentgo.wire-request.v1',
+        domain: 'agentgo.wire-request.v2',
         algorithm: 'sha256',
         keyRef,
         keyVersion: 1,
@@ -72,7 +72,7 @@ describe('Day 4 phased request proof contracts', () => {
     ).toBe(false)
     expect(
       WireRequestHmacSchema.safeParse({
-        domain: 'agentgo.wire-request.v1',
+        domain: 'agentgo.wire-request.v2',
         algorithm: 'hmac-sha256',
         keyRef: 'vault-key-name',
         keyVersion: 1,

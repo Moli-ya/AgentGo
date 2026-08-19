@@ -17,6 +17,17 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 
 2026-07-13 Day1 修复 Scope 同毫秒竞态后，从最终代码在三个全新输出目录连续运行：每次均为 TP 20、TN 20、FP/FN/Inconclusive 0，Precision/Recall/F1/证据完整率为 1，六项安全计数均为 0。该结果建立了固定 fixture 的重复稳定性基线，但仍是 deterministic、自建、同分布 GET Case；版本、时间与限制见 [Day1 事实基线](../planning/day1-baseline.md#5-三次全新目录-benchmark)。
 
+2026-07-30 Day4/Day5 最终工作树再次从全新目录运行 40 Case：TP 15、
+TN 20、FP/FN 0，五个需要真实 DOM/截图审阅的 XSS 正例保持
+`Inconclusive`；Precision 1、Recall 0.75、F1 0.8571428571、整体
+Evidence completeness 1，六项安全计数均为 0。该三态结果是当前证据边界的
+预期表现，不应把缺少 Day18 证据链的 XSS 强行计作 Confirmed。完整命令、
+生成物 hash 和限制见
+[Day4 终验](../audits/day4-final-review-2026-07-30.md) 与
+[Day5 post-Day4 复验](../audits/day5-post-day4-review-2026-07-30.md)。
+benchmark runner 现在会在 Case 未完成或任一安全门禁失败时保留审计产物并以
+非零错误结束，不能再仅打印失败后返回成功。
+
 ## 2. 固定测试环境
 
 优先使用本地、可重置、版本固定的授权环境，例如：

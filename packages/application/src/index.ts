@@ -10,6 +10,7 @@ import {
   KnowledgeIntelligenceCandidateSchema
 } from '@agentgo/contracts'
 import type {
+  EvidenceArtifactDraft,
   AgentModelProfileSelection,
   AgentRole,
   CreateKnowledgeImportInput,
@@ -48,6 +49,7 @@ import type {
   UpsertInventoryResult,
   ExtractKnowledgeImportInput,
   Environment,
+  ExecutionLease,
   WorkspaceRecord
 } from '@agentgo/contracts'
 import {
@@ -71,8 +73,18 @@ import {
   KNOWLEDGE_INGESTION_PROMPTS,
   KnowledgeReviewerOutputSchema
 } from './agent-prompts'
+import { EvidenceCapturePolicy } from './evidence-capture-policy'
 import { InventoryService } from './inventory-service'
-import { ReportService, type ReportContent } from './report-service'
+import {
+  ReportService,
+  projectEvidenceSummary,
+  type ReportContent
+} from './report-service'
+import {
+  ProtectedEvidenceCaptureService,
+  type PersistedProtectedEvidenceCapture,
+  type ProtectedEvidenceCaptureInput
+} from './protected-evidence-capture-service'
 import {
   ScanModuleSnapshotError,
   buildScanModuleSnapshotDrafts,
@@ -83,11 +95,17 @@ import {
 import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
 
 export * from './execution-policy'
+export * from './execution-authority'
+export * from './execution-port'
 export * from './evidence-capture-policy'
 export * from './execution-service'
 export * from './inventory-service'
+export * from './legacy-v1-request-compiler-adapter'
 export * from './request-compiler'
+export * from './request-hash-key-provider'
 export * from './report-service'
+export * from './protected-evidence-capture-service'
+export * from './protected-evidence-retention-scheduler'
 export * from './agent-prompts'
 export * from './scan-coordinator'
 export * from './scan-module-snapshot'
@@ -104,6 +122,24 @@ function applicationErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '未知错误。'
 }
 
+function isRecoveredInterruptedLease(
+  lease: ExecutionLease | undefined
+): lease is ExecutionLease {
+  return (
+    lease?.state === 'failed' &&
+    lease.terminalReason === 'interrupted' &&
+    lease.deliveryState === 'unknown' &&
+    lease.outcomeSummary?.executionState === 'interrupted' &&
+    lease.outcomeSummary.verdictImpact === 'inconclusive'
+  )
+}
+
+interface InterruptedScanRecoverySummary {
+  leaseIds: string[]
+  evidenceRefs: string[]
+  evidenceUnavailableLeaseIds: string[]
+}
+
 export interface AgentGoApplicationDependencies {
   repository: AgentGoRepository
   credentialStore: FileCredentialStore
@@ -111,6 +147,8 @@ export interface AgentGoApplicationDependencies {
   modelGateway?: ModelGateway
   mcpHub?: McpHub
   reportService?: ReportService
+  evidenceCapturePolicy?: EvidenceCapturePolicy
+  protectedEvidenceCaptureService?: ProtectedEvidenceCaptureService
   scanCoordinator?: ScanCoordinator
   inventoryService?: InventoryService
   vulnerabilityPlatform: Day2VulnerabilityPlatform
@@ -124,6 +162,8 @@ export class AgentGoApplicationService {
   private readonly modelGateway?: ModelGateway
   private readonly mcpHub: McpHub
   private readonly reportService?: ReportService
+  private readonly evidenceCapturePolicy: EvidenceCapturePolicy
+  private readonly protectedEvidenceCaptureService?: ProtectedEvidenceCaptureService
   private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
   private readonly vulnerabilityExecutionEnvironment: Environment
   private readonly inventoryService: InventoryService
@@ -140,6 +180,16 @@ export class AgentGoApplicationService {
       (dependencies.evidenceStore
         ? new ReportService(dependencies.repository, dependencies.evidenceStore)
         : undefined)
+    this.evidenceCapturePolicy =
+      dependencies.evidenceCapturePolicy ?? new EvidenceCapturePolicy()
+    this.protectedEvidenceCaptureService =
+      dependencies.protectedEvidenceCaptureService ??
+      (dependencies.evidenceStore
+        ? new ProtectedEvidenceCaptureService(
+            this.evidenceCapturePolicy,
+            dependencies.evidenceStore
+          )
+        : undefined)
     this.scanCoordinator = dependencies.scanCoordinator
     this.vulnerabilityPlatform = dependencies.vulnerabilityPlatform
     this.vulnerabilityExecutionEnvironment = dependencies.vulnerabilityExecutionEnvironment
@@ -155,11 +205,45 @@ export class AgentGoApplicationService {
     this.scanCoordinator = coordinator
   }
 
+  captureProtectedEvidence(
+    input: ProtectedEvidenceCaptureInput
+  ): Promise<PersistedProtectedEvidenceCapture> {
+    if (!this.protectedEvidenceCaptureService) {
+      return Promise.reject(
+        new Error('Protected Evidence persistence is unavailable.')
+      )
+    }
+    return this.protectedEvidenceCaptureService.captureAndPersist(input)
+  }
+
   async initialize(): Promise<void> {
     await this.repository.initializeDefaults()
+    if (this.evidenceStore) {
+      try {
+        await this.evidenceStore.sweepExpiredProtectedOriginals()
+      } catch {
+        // Key erasure is transactional and ciphertext cleanup is retried on
+        // the next startup. Initialization must not restore expired access.
+      }
+      try {
+        await this.evidenceStore.sweepUnreferencedContentFiles()
+      } catch {
+        // Exact content-addressed candidates remain queued for a later
+        // EvidenceStore mutation and are rediscovered on the next startup.
+      }
+    }
+    await this.repository.expireIssuedExecutionLeases()
+    const interruptedLeases =
+      await this.repository.listClaimedExecutionLeasesForRecovery()
+    const interruptedExecutions =
+      await this.persistInterruptedLeaseEvidence(interruptedLeases)
+    this.mergeInterruptedScanRecoveries(
+      interruptedExecutions,
+      await this.repository.listInterruptedExecutionLeasesForScanRecovery()
+    )
     await this.ensureBuiltInKnowledgeIndex()
     await this.ensureDefaultModelProfiles()
-    await this.recoverInterruptedScans()
+    await this.recoverInterruptedScans(interruptedExecutions)
   }
 
   getDashboard(workspaceId?: string): Promise<DashboardSnapshot> {
@@ -194,7 +278,7 @@ export class AgentGoApplicationService {
       )) {
         this.credentialStore.delete(credentialId)
       }
-      this.evidenceStore?.deleteWorkspaceArtifacts(id)
+      await this.evidenceStore?.deleteWorkspaceArtifacts(id)
     }
     return { deleted }
   }
@@ -323,7 +407,7 @@ export class AgentGoApplicationService {
     const endpoints = await this.repository.listInventoryEndpoints(scanId)
     const events = await this.repository.listScanEvents(scanId)
     const evidence = this.evidenceStore
-      ? await this.evidenceStore.list(scanId)
+      ? (await this.evidenceStore.list(scanId)).map(projectEvidenceSummary)
       : []
     const findings = await this.repository.listFindings({ scanId })
     return { scan, target, scope, identities, endpoints, events, evidence, findings }
@@ -364,6 +448,14 @@ export class AgentGoApplicationService {
   async controlScan(scanId: string, action: ScanControlAction): Promise<ScanRecord> {
     const row = await this.repository.getScanRow(scanId)
     if (!row) throw new Error('扫描不存在。')
+    if (action === 'resume') {
+      const checkpoint = await this.repository.getLatestCheckpoint(scanId)
+      if (checkpoint?.reason === 'execution-interrupted-unknown') {
+        throw new Error(
+          '上次执行在可能已发送后中断，结果为 Inconclusive；为避免自动重放，请创建新的扫描。'
+        )
+      }
+    }
     if (action === 'start' || action === 'resume') {
       if (action === 'start' && row.status !== 'draft') {
         throw new Error('只有草稿扫描可以启动。')
@@ -1053,7 +1145,273 @@ export class AgentGoApplicationService {
     )
   }
 
-  private async recoverInterruptedScans(): Promise<void> {
+  private async persistInterruptedLeaseEvidence(
+    contexts: Awaited<
+      ReturnType<AgentGoRepository['listClaimedExecutionLeasesForRecovery']>
+    >
+  ): Promise<Map<string, InterruptedScanRecoverySummary>> {
+    const byScan = new Map<string, InterruptedScanRecoverySummary>()
+    for (const { lease, grant, captureDecision } of contexts) {
+      const recovery = byScan.get(grant.scanId) ?? {
+        leaseIds: [],
+        evidenceRefs: [],
+        evidenceUnavailableLeaseIds: []
+      }
+      recovery.leaseIds.push(lease.id)
+      byScan.set(grant.scanId, recovery)
+
+      let recoveredLease: ExecutionLease | undefined
+      let savedEvidence:
+        | Awaited<ReturnType<EvidenceStore['save']>>
+        | undefined
+      const discardedEvidencePaths: string[] = []
+      let evidenceFailure: unknown =
+        this.evidenceStore
+          ? undefined
+          : new Error('EvidenceStore is unavailable during recovery.')
+
+      if (this.evidenceStore) {
+        try {
+          const scan = await this.repository.getScanRow(grant.scanId)
+          const target = scan
+            ? await this.repository.getTarget(scan.targetId)
+            : undefined
+          if (!scan || !target) {
+            throw new Error(
+              'Interrupted execution scan or target is unavailable.'
+            )
+          }
+          const recoveredAtMs = Date.now()
+          const validFromMs = Date.parse(captureDecision.validFrom)
+          const occurredAtMs = Math.min(
+            recoveredAtMs,
+            Date.parse(lease.expiresAt),
+            Date.parse(captureDecision.validUntil)
+          )
+          if (
+            !Number.isSafeInteger(recoveredAtMs) ||
+            !Number.isFinite(validFromMs) ||
+            !Number.isFinite(occurredAtMs) ||
+            occurredAtMs < validFromMs
+          ) {
+            throw new Error(
+              'Interrupted execution recovery has no valid occurrence bound.'
+            )
+          }
+          const summary = {
+            schemaVersion: 'execution-interruption-summary.v2',
+            grantId: grant.id,
+            leaseId: lease.id,
+            stepId: grant.stepId,
+            adapterKind: grant.adapterKind,
+            purpose: grant.purpose,
+            executionState: 'interrupted',
+            lastKnownDeliveryState: lease.deliveryState,
+            deliveryState: 'unknown',
+            verdictImpact: 'inconclusive',
+            terminalReason: 'interrupted',
+            interruptionTime: 'unknown',
+            occurredAtSemantics: 'authorization-window-upper-bound',
+            recoveredAt: new Date(recoveredAtMs).toISOString()
+          } as const
+          const content = Buffer.from(stableJson(summary), 'utf8')
+          const capture = this.evidenceCapturePolicy.capture({
+            kind: 'bytes',
+            context: {
+              scanId: grant.scanId,
+              policyDecisionId: grant.policyDecisionId,
+              techniqueId: grant.techniqueId,
+              techniqueVersion: grant.techniqueVersion,
+              stepId: grant.stepId,
+              executionState: 'interrupted',
+              source: 'execution-interruption-summary',
+              role: 'interruption-summary',
+              occurredAt: new Date(occurredAtMs).toISOString(),
+              content: {
+                mediaType: 'application/json',
+                charset: 'utf-8',
+                contentEncoding: 'identity',
+                declaredSizeBytes: content.byteLength
+              }
+            },
+            decision: captureDecision,
+            content,
+            completeness: 'complete',
+            knownTotalBytes: content.byteLength
+          })
+          if (
+            capture.state !== 'hash-only' ||
+            capture.artifacts.length !== 1
+          ) {
+            throw new Error(
+              'Interrupted execution recovery did not produce one hash-only artifact.'
+            )
+          }
+          const artifact = capture.artifacts[0] as EvidenceArtifactDraft
+          savedEvidence = await this.evidenceStore.save({
+            workspaceId: target.workspaceId,
+            scanId: grant.scanId,
+            policyDecisionId: grant.policyDecisionId,
+            type: artifact.type,
+            mimeType: artifact.mimeType,
+            content: stableJson(artifact),
+            source: artifact.source,
+            createdBy: 'application-service',
+            captureTool: 'evidence-capture-policy',
+            captureToolVersion: '2.0.0',
+            redactionState: 'redacted'
+          })
+          const recovered =
+            await this.repository.recoverInterruptedExecutionLeaseWithCleanup({
+              leaseId: lease.id,
+              evidenceId: savedEvidence.id,
+              discardUnboundStagedEvidence: true
+            })
+          recoveredLease = recovered.lease
+          discardedEvidencePaths.push(
+            ...recovered.discardedEvidence.map(({ filePath }) => filePath)
+          )
+        } catch (error) {
+          evidenceFailure = error
+          try {
+            const current = await this.repository.getExecutionLease(lease.id)
+            if (isRecoveredInterruptedLease(current)) {
+              recoveredLease = current
+              evidenceFailure = undefined
+            }
+          } catch {
+            // The fallback below is the authoritative fail-closed path.
+          }
+        }
+      }
+
+      if (!recoveredLease) {
+        try {
+          const recovered =
+            await this.repository.recoverInterruptedExecutionLeaseWithCleanup({
+              leaseId: lease.id,
+              discardUnboundStagedEvidence: Boolean(this.evidenceStore),
+              ...(savedEvidence
+                ? { discardUnboundEvidenceId: savedEvidence.id }
+                : {})
+            })
+          recoveredLease = recovered.lease
+          discardedEvidencePaths.push(
+            ...recovered.discardedEvidence.map(({ filePath }) => filePath)
+          )
+        } catch (fallbackError) {
+          try {
+            const current = await this.repository.getExecutionLease(lease.id)
+            if (isRecoveredInterruptedLease(current)) {
+              recoveredLease = current
+            }
+          } catch {
+            // Preserve the recovery failure below.
+          }
+          if (!recoveredLease) {
+            let cleanupError: unknown
+            if (savedEvidence && this.evidenceStore) {
+              try {
+                await this.evidenceStore.discardUnboundEvidence(savedEvidence)
+              } catch (error) {
+                cleanupError = error
+              }
+            }
+            throw new AggregateError(
+              [
+                ...(evidenceFailure ? [evidenceFailure] : []),
+                fallbackError,
+                ...(cleanupError ? [cleanupError] : [])
+              ],
+              `Interrupted execution lease ${lease.id} could not be terminalized.`
+            )
+          }
+        }
+
+        recovery.evidenceUnavailableLeaseIds.push(lease.id)
+        try {
+          const scan = await this.repository.getScanRow(grant.scanId)
+          if (scan) {
+            await this.repository.addScanEvent({
+              scanId: grant.scanId,
+              type: 'error',
+              level: 'error',
+              message:
+                '中断执行的最小恢复证据无法持久化；扫描仍保持 Inconclusive 且禁止自动重放。',
+              detail: {
+                leaseId: lease.id,
+                endState: 'inconclusive',
+                evidenceState: 'unavailable'
+              }
+            })
+          }
+        } catch {
+          // recoverInterruptedScans persists the authoritative checkpoint next.
+        }
+      }
+
+      if (this.evidenceStore && discardedEvidencePaths.length > 0) {
+        try {
+          await this.evidenceStore.deleteUnreferencedFiles(
+            discardedEvidencePaths
+          )
+        } catch {
+          // The database rows were atomically discarded with terminalization.
+          // A file cleanup failure must not resurrect or replay the lease.
+        }
+      }
+
+      for (const evidenceRef of recoveredLease.evidenceRefs) {
+        if (!recovery.evidenceRefs.includes(evidenceRef)) {
+          recovery.evidenceRefs.push(evidenceRef)
+        }
+      }
+    }
+    return byScan
+  }
+
+  private mergeInterruptedScanRecoveries(
+    byScan: Map<string, InterruptedScanRecoverySummary>,
+    contexts: Awaited<
+      ReturnType<
+        AgentGoRepository['listInterruptedExecutionLeasesForScanRecovery']
+      >
+    >
+  ): void {
+    for (const { lease, grant, interruptionEvidenceId } of contexts) {
+      const recovery = byScan.get(grant.scanId) ?? {
+        leaseIds: [],
+        evidenceRefs: [],
+        evidenceUnavailableLeaseIds: []
+      }
+      if (!recovery.leaseIds.includes(lease.id)) {
+        recovery.leaseIds.push(lease.id)
+      }
+      for (const evidenceRef of lease.evidenceRefs) {
+        if (!recovery.evidenceRefs.includes(evidenceRef)) {
+          recovery.evidenceRefs.push(evidenceRef)
+        }
+      }
+      if (
+        !interruptionEvidenceId &&
+        !recovery.evidenceUnavailableLeaseIds.includes(lease.id)
+      ) {
+        recovery.evidenceUnavailableLeaseIds.push(lease.id)
+      }
+      byScan.set(grant.scanId, recovery)
+    }
+  }
+
+  private async recoverInterruptedScans(
+    interruptedExecutions: ReadonlyMap<
+      string,
+      {
+        leaseIds: readonly string[]
+        evidenceRefs: readonly string[]
+        evidenceUnavailableLeaseIds: readonly string[]
+      }
+    >
+  ): Promise<void> {
     const interrupted = (await this.repository.listScans()).filter((scan) =>
       ['queued', 'running'].includes(scan.status)
     )
@@ -1061,6 +1419,35 @@ export class AgentGoApplicationService {
       const row = await this.repository.getScanRow(scan.id)
       if (!row) continue
       const runtime = row.runtimeJson as unknown as ScanRuntimeState
+      const executionRecovery = interruptedExecutions.get(scan.id)
+      if (executionRecovery) {
+        const awaiting = transitionRuntime(runtime, {
+          type: 'await-user'
+        })
+        await this.repository.markScanAwaitingUser({
+          scanId: scan.id,
+          phase: scan.phase,
+          runtimeState: awaiting as unknown as Record<string, unknown>,
+          reason: 'execution-interrupted-unknown',
+          message:
+            '检测到可能已经发送但未确定结束的执行；已标记为 Inconclusive，禁止自动重放。',
+          detail: {
+            recoveredPhase: scan.phase,
+            executionState: 'interrupted',
+            deliveryState: 'unknown',
+            verdictImpact: 'inconclusive',
+            leaseIds: executionRecovery.leaseIds,
+            evidenceRefs: executionRecovery.evidenceRefs,
+            evidenceState:
+              executionRecovery.evidenceUnavailableLeaseIds.length > 0
+                ? 'partially-unavailable'
+                : 'captured',
+            evidenceUnavailableLeaseIds:
+              executionRecovery.evidenceUnavailableLeaseIds
+          }
+        })
+        continue
+      }
       const paused: ScanRuntimeState =
         runtime.status === 'running'
           ? transitionRuntime(runtime, { type: 'pause' })

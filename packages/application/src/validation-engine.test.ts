@@ -55,6 +55,7 @@ describe('V1 deterministic confirmation rules', () => {
         forms: [],
         markerExecuted: false,
         networkRequestsBlocked: 0,
+        resultBytes: 0,
         durationMs: 20
       },
       evidenceRefs: ['browser-summary', 'dom-snapshot'],
@@ -64,8 +65,26 @@ describe('V1 deterministic confirmation rules', () => {
     }
 
     expect(assessXss({ marker, http, browser }).verdict).toBe('not-confirmed')
-    browser.result.markerExecuted = true
-    expect(assessXss({ marker, http, browser }).verdict).toBe('confirmed')
+    const executedBrowser: BrowserObservation = {
+      ...browser,
+      result: { ...browser.result, markerExecuted: true }
+    }
+    const executedWithoutReviewableEvidence = assessXss({
+      marker,
+      http,
+      browser: executedBrowser
+    })
+    expect(executedWithoutReviewableEvidence.verdict).toBe('inconclusive')
+    expect(executedWithoutReviewableEvidence.explanation).toContain(
+      '缺少可审阅的 DOM/截图证据'
+    )
+    const reviewedBrowser: BrowserObservation = {
+      ...executedBrowser,
+      reviewableDomOrScreenshotEvidence: true
+    }
+    expect(assessXss({ marker, http, browser: reviewedBrowser }).verdict).toBe(
+      'confirmed'
+    )
   })
 
   it('confirms SSRF only when controlled proof is relayed and absent in negative control', () => {

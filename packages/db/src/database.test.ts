@@ -1616,7 +1616,9 @@ describe('AgentGo SQLite repository', () => {
     const native = new DatabaseSync(filePath, {
       enableForeignKeyConstraints: true
     })
-    const migration = DATABASE_MIGRATIONS.at(-1)
+    const migration = DATABASE_MIGRATIONS.find(
+      ({ id }) => id === '0006_unified_inventory_and_module_snapshots'
+    )
     expect(migration?.id).toBe('0006_unified_inventory_and_module_snapshots')
     const failingMigration: DatabaseMigration = {
       ...migration!,
@@ -1942,5 +1944,63 @@ describe('AgentGo SQLite repository', () => {
     expect(tested.status).toBe('ready')
     expect(tested.tools).toEqual([{ name: 'ping' }])
     database.close()
+  })
+
+  it('upgrades a Day 5 database to the additive protected Evidence schema exactly once', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day4-migration-'))
+    temporaryDirectories.push(directory)
+    const filePath = join(directory, 'agentgo.sqlite')
+    const database = new DatabaseSync(filePath, {
+      enableForeignKeyConstraints: true
+    })
+    try {
+      const previousMigrations = DATABASE_MIGRATIONS.slice(0, -1)
+      applyDatabaseMigrations(database, {
+        migrations: previousMigrations,
+        appliedAt: () => 1_785_340_800_000
+      })
+      expect(
+        database
+          .prepare(
+            `SELECT name FROM sqlite_master
+              WHERE type = 'table'
+                AND name = 'protected_evidence_items'`
+          )
+          .get()
+      ).toBeUndefined()
+
+      applyDatabaseMigrations(database, {
+        migrations: DATABASE_MIGRATIONS,
+        appliedAt: () => 1_785_340_800_001
+      })
+      const columns = database
+        .prepare('PRAGMA table_info(protected_evidence_items)')
+        .all() as unknown as Array<{ name: string }>
+      expect(columns.map(({ name }) => name)).toEqual(
+        expect.arrayContaining([
+          'evidence_id',
+          'derivative_evidence_id',
+          'derivative_sha256',
+          'capture_artifact_json',
+          'wrapped_data_key',
+          'availability_state',
+          'retention_until'
+        ])
+      )
+      applyDatabaseMigrations(database, {
+        migrations: DATABASE_MIGRATIONS,
+        appliedAt: () => 1_785_340_800_002
+      })
+      const ledger = database
+        .prepare(
+          `SELECT count(*) AS count
+             FROM __agentgo_migrations
+            WHERE id = '0010_protected_evidence_envelopes'`
+        )
+        .get() as { count: number }
+      expect(ledger.count).toBe(1)
+    } finally {
+      database.close()
+    }
   })
 })

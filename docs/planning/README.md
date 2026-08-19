@@ -7,12 +7,17 @@
 
 “覆盖完整 Web 漏洞分类”不等于承诺在真实业务上自动确认所有漏洞。业务逻辑、协议差异、未知漏洞和高风险类别无法由固定规则穷尽；系统必须明确区分 `active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 与 `forbidden`，不能把未执行或不安全的验证写成 `Confirmed`。
 
-当前执行状态：DAY0 与 [Day1](Day1.md) 已于 2026-07-13 完成；Day2 已于 2026-07-15 完成并提交；Day3 已于 2026-07-18 完成；Day4 于 2026-07-19 进入 `in_progress`，Day5～Day20 仍为 `pending`。Day1 已用单调 Scope revision、显式 current pointer、迁移/回填和并发回归消除 DAY0 的同毫秒竞态，并从最终代码连续完成三次全新 40 Case；事实与限制见 [Day1 基线](day1-baseline.md)。Day2 的逐项实现、固定兼容边界和验证证据见 [Day2 完成审计](../audits/day2-completion-2026-07-15.md)，其 `legacy-v1` 例外仍不构成 qualified/supported 声明。Day3 的统一 Inventory、不可变 Scan 模块快照、旧库迁移、数据最小化和验证证据见 [Day3 完成审计](../audits/day3-completion-2026-07-18.md)；它没有提前实现请求编译、资格化、Vault、导入或浏览器发现。Day4 当前只完成首个纯函数切片，范围与残余风险见 [进度档案](../audits/day4-progress-2026-07-19.md)，不得把它写成 Day4 合格交付。
+当前执行状态：DAY0 与 [Day1](Day1.md) 已于 2026-07-13 完成；Day2 已于 2026-07-15 完成并提交；Day3 已于 2026-07-18 完成。2026-07-28，Day4 的 Compiler、legacy adapter 与 hash-only capture/audit/recovery 已接入实际链路；2026-07-30，`protected-original` 后端能力补齐加密/后端访问边界、hash、配额、保留期、脱敏派生和到期清理并完成实现收口。Day4 的正式状态和最终门禁不得由本索引推断，只以 [2026-07-30 终验档案](../audits/day4-final-review-2026-07-30.md) 为准；[2026-07-28 完成度复核](../audits/day4-completion-2026-07-28.md) 是收口前历史记录。
+
+Day5 的 Grant/Lease/Guard/ExecutionPort、fresh redirect authority、crash no-replay 与持久化 Evidence GC 已实现，2026-07-29 的验证作为 Day4 新变更前历史证据保留在 [原完成档案](../audits/day5-completion-2026-07-28.md)。按照 DAY0 的顺序硬门，Day5 已于 2026-07-30 在 Day4 最终代码上重新完成全量回归，并由 [post-Day4 复验档案](../audits/day5-post-day4-review-2026-07-30.md) 正式闭环。Day6～Day20 仍为 `pending`，其中受保护原件的后端存储能力不等于 Day18 的 DOM/截图实际执行与 XSS 证据链已完成。
+
+Day1 已用单调 Scope revision、显式 current pointer、迁移/回填和并发回归消除 DAY0 的同毫秒竞态，并从最终代码连续完成三次全新 40 Case；事实与限制见 [Day1 基线](day1-baseline.md)。Day2 的逐项实现、固定兼容边界和验证证据见 [Day2 完成审计](../audits/day2-completion-2026-07-15.md)，其 `legacy-v1` 例外仍不构成 qualified/supported 声明。Day3 的统一 Inventory、不可变 Scan 模块快照、旧库迁移、数据最小化和验证证据见 [Day3 完成审计](../audits/day3-completion-2026-07-18.md)。
 
 ## 开工前必读
 
 - [DAY0 复核、撤销与重排记录](Day0.md)：当前真实能力、Day1/Day2 撤销证据、依赖修正和本轮边界；
 - [Day1 完成记录](Day1.md) 与 [可复现事实基线](day1-baseline.md)：Scope 修复、工具版本、测试/benchmark、合成数据库 hash、Renderer/Git 边界；
+- [Day4 终验档案](../audits/day4-final-review-2026-07-30.md) 与 [Day5 post-Day4 复验档案](../audits/day5-post-day4-review-2026-07-30.md)：按顺序确认 protected-original 收口与下游全回归，不用旧结果代替当前验证；
 - [需求追踪](requirements-traceability.md) 与 [机器可读覆盖目录](web-vulnerability-coverage-catalog.json)：稳定需求/漏洞 ID、当前实现、环境安全上限、资格状态与主责工作包；
 - [20 个工作包总览](complex-web-20-day-plan.md)：目标、边界、依赖、共同安全规则和最终验收；
 - [后端 V2 架构](backend-v2-architecture.md)：Family/Technique Registry、ValidationPlan、执行与证据模型；
@@ -26,7 +31,7 @@
 | 阶段 | 工作包 | 结果 |
 |---|---|---|
 | 分类与扩展底座 | [Day1](Day1.md) ～ [Day3](Day3.md) | 已完成：Day1 建立 Scope/事实/前端冻结，Day2 建立开放 ID、DefinitionRegistry 与执行门禁，Day3 建立统一 Inventory、opaque refs 与已封存 Scan 模块快照。 |
-| 确定性执行硬门禁 | [Day4](Day4.md) ～ [Day6](Day6.md) | 请求编译、三阶段哈希、证据捕获、单次租约、原子预算和网络边界。 |
+| 确定性执行硬门禁 | [Day4](Day4.md) ～ [Day6](Day6.md) | Day4 已完成 protected-original 后端终验，Day5 已完成 post-Day4 全回归并正式闭环；Day6 原子预算和资源门禁仍待实施。 |
 | 评测与 L2 闭环 | [Day7](Day7.md) ～ [Day10](Day10.md) | Ground Truth v2、L2 状态模型、会话/身份/CSRF、可信审批和首条可清理闭环。 |
 | 真实 Web 发现与通用运行时 | [Day11](Day11.md) ～ [Day15](Day15.md) | 离线导入、静态资产发现、受策略代理的浏览器发现、ValidationPlan、V1 行为等价适配与通用 Coordinator。 |
 | 参考漏洞模块与总验收 | [Day16](Day16.md) ～ [Day20](Day20.md) | 在 Day15 parity bundle 上增强 SQLi、IDOR/BOLA、XSS、SSRF 复杂场景，资格化被动扩展示例并完成全量门禁。 |

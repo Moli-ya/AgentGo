@@ -21,6 +21,10 @@ import type {
   CreateTargetInput,
   CreateWorkspaceInput,
   DashboardSnapshot,
+  ExecutionClaimBinding,
+  ExecutionCaptureDecisionSet,
+  ExecutionGrant,
+  ExecutionLease,
   FindingRecord,
   IdentityRecord,
   InventoryBodyShape,
@@ -58,6 +62,7 @@ import type {
   TransportKind,
   UpsertInventoryResult,
   VersionedDefinitionRef,
+  WireRequestHmac,
   WorkspaceRecord
 } from '@agentgo/contracts'
 import {
@@ -65,7 +70,8 @@ import {
   InventorySourceRecordSchema,
   RequestVariantRecordSchema,
   SelectorRefSchema,
-  TargetBaseUrlSchema
+  TargetBaseUrlSchema,
+  WireRequestHmacSchema
 } from '@agentgo/contracts'
 import {
   INVENTORY_REDACTION_MARKER,
@@ -74,6 +80,21 @@ import {
   stableInventoryHash
 } from '@agentgo/domain'
 import type { AgentGoDatabase } from './database'
+import {
+  ExecutionLeaseRepository,
+  type ClaimedExecutionLease,
+  type ExecutionGrantIntegrityKey,
+  type ExecutionLeaseEvidenceLink,
+  type FinalizeExecutionLeaseInput,
+  type InterruptedExecutionRecoveryContext,
+  type InterruptedExecutionRecoveryResult,
+  type InterruptedExecutionScanRecoveryContext,
+  type IssueExecutionGrantInput,
+  type RecordExecutionInteractionAuditInput,
+  type RecoverInterruptedExecutionLeaseInput,
+  type RecoverInterruptedExecutionLeaseWithCleanupInput,
+  type RecoverInterruptedExecutionLeaseWithEvidenceInput
+} from './execution-repository'
 import {
   agentRuns,
   auditLogs,
@@ -98,6 +119,7 @@ import {
   parameters,
   policyDecisions,
   probeProposals,
+  protectedEvidenceItems,
   reports,
   requestVariantSelectors,
   requestVariants,
@@ -377,6 +399,30 @@ export interface ProbeProposalRecord {
   createdAt: string
 }
 
+export {
+  executionClaimBindingForGrant,
+  executionGrantIntegrityBindingForGrant,
+  hashExecutionCaptureDecisionSet,
+  signExecutionGrantIntegrity,
+  verifyExecutionCaptureDecisionSetHash,
+  verifyExecutionGrantIntegrity
+} from './execution-repository'
+
+export type {
+  ClaimedExecutionLease,
+  ExecutionGrantIntegrityKey,
+  ExecutionLeaseEvidenceLink,
+  FinalizeExecutionLeaseInput,
+  InterruptedExecutionRecoveryContext,
+  InterruptedExecutionRecoveryResult,
+  InterruptedExecutionScanRecoveryContext,
+  IssueExecutionGrantInput,
+  RecordExecutionInteractionAuditInput,
+  RecoverInterruptedExecutionLeaseInput,
+  RecoverInterruptedExecutionLeaseWithCleanupInput,
+  RecoverInterruptedExecutionLeaseWithEvidenceInput
+} from './execution-repository'
+
 export interface StoredPolicyDecision extends PolicyDecision {
   id: string
   proposalId: string
@@ -384,7 +430,14 @@ export interface StoredPolicyDecision extends PolicyDecision {
   approvedBy?: string
   approvedAt?: string
   validUntil?: string
+  authorizedWireRequestHmac?: WireRequestHmac
   createdAt: string
+}
+
+export interface LegacyV1ExecutionBinding {
+  endpoint: InventoryEndpoint
+  endpointRecord: InventoryEndpointRecord
+  requestVariant: RequestVariantRecord
 }
 
 export interface ExecutionDecisionContext {
@@ -690,6 +743,9 @@ function mapPolicyDecision(
     ...(row.approvedBy ? { approvedBy: row.approvedBy } : {}),
     ...(row.approvedAt !== null ? { approvedAt: toIso(row.approvedAt) } : {}),
     ...(row.validUntil !== null ? { validUntil: toIso(row.validUntil) } : {}),
+    ...(row.authorizedWireRequestHmac
+      ? { authorizedWireRequestHmac: row.authorizedWireRequestHmac }
+      : {}),
     createdAt: toIso(row.createdAt)
   }
 }
@@ -928,8 +984,20 @@ function reviewedLegacyExecutionUrl(
   queryNames: ReadonlySet<string>
 ): string {
   const url = new URL(previewUrl)
+  const reviewedOccurrences = [...url.searchParams.keys()]
+    .filter((name) => queryNames.has(name))
+    .sort(compareBinary)
+  const representedNames = new Set(reviewedOccurrences)
+  if (
+    representedNames.size !== queryNames.size ||
+    [...queryNames].some((name) => !representedNames.has(name))
+  ) {
+    throw new Error(
+      'Reviewed query selector structure is absent from its redacted preview.'
+    )
+  }
   url.search = ''
-  for (const name of [...queryNames].sort(compareBinary)) {
+  for (const name of reviewedOccurrences) {
     url.searchParams.append(name, INVENTORY_REDACTION_MARKER)
   }
   return url.toString()
@@ -985,9 +1053,11 @@ function scopeSnapshotHash(scope: Omit<TargetScope, 'id'>): string {
 
 export class AgentGoRepository {
   private readonly scopeLockKey: string
+  private readonly executionRepository: ExecutionLeaseRepository
 
   constructor(private readonly database: AgentGoDatabase) {
     this.scopeLockKey = scopeSnapshotLockKey(database.filePath)
+    this.executionRepository = new ExecutionLeaseRepository(database)
   }
 
   private async withScopeSnapshotLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -2427,8 +2497,12 @@ export class AgentGoRepository {
     decision: PolicyDecision
     approvedBy?: string
     validityMs?: number
+    authorizedWireRequestHmac?: WireRequestHmac
   }): Promise<StoredPolicyDecision> {
     const now = Date.now()
+    const authorizedWireRequestHmac = input.authorizedWireRequestHmac
+      ? WireRequestHmacSchema.parse(input.authorizedWireRequestHmac)
+      : null
     const row: typeof policyDecisions.$inferSelect = {
       id: randomUUID(),
       proposalId: input.proposalId,
@@ -2443,12 +2517,129 @@ export class AgentGoRepository {
       validUntil: input.decision.allowed
         ? now + (input.validityMs ?? 5 * 60 * 1_000)
         : null,
+      authorizedWireRequestHmac,
       createdAt: now
     }
     await this.database.orm.insert(policyDecisions).values(row)
     return mapPolicyDecision(row)
   }
 
+  getExecutionGrant(id: string): Promise<ExecutionGrant | undefined> {
+    return this.executionRepository.getExecutionGrant(id)
+  }
+
+  getExecutionLease(id: string): Promise<ExecutionLease | undefined> {
+    return this.executionRepository.getExecutionLease(id)
+  }
+
+  getExecutionCaptureDecisionSet(
+    grantId: string
+  ): Promise<ExecutionCaptureDecisionSet | undefined> {
+    return this.executionRepository.getExecutionCaptureDecisionSet(grantId)
+  }
+
+  getExecutionGrantForLease(
+    leaseId: string
+  ): Promise<ExecutionGrant | undefined> {
+    return this.executionRepository.getExecutionGrantForLease(leaseId)
+  }
+
+  issueExecutionGrant(
+    input: IssueExecutionGrantInput
+  ): Promise<{ grant: ExecutionGrant; lease: ExecutionLease }> {
+    return this.executionRepository.issueExecutionGrant(input)
+  }
+
+  claimExecutionLease(input: {
+    leaseId: string
+    runnerInstanceId: string
+    binding: ExecutionClaimBinding
+    integrityKey: ExecutionGrantIntegrityKey
+  }): Promise<ClaimedExecutionLease> {
+    return this.executionRepository.claimExecutionLease(input)
+  }
+
+  markExecutionLeaseDelivery(input: {
+    leaseId: string
+    claimToken: string
+    deliveryState: 'possibly-sent' | 'response-started'
+  }): Promise<ExecutionLease> {
+    return this.executionRepository.markExecutionLeaseDelivery(input)
+  }
+
+  finalizeExecutionLease(
+    input: FinalizeExecutionLeaseInput
+  ): Promise<ExecutionLease> {
+    return this.executionRepository.finalizeExecutionLease(input)
+  }
+
+  revokeExecutionLease(input: {
+    leaseId: string
+    reason: 'revoked' | 'guard-rejected' | 'unsupported-adapter'
+  }): Promise<ExecutionLease> {
+    return this.executionRepository.revokeExecutionLease(input)
+  }
+
+  expireIssuedExecutionLeases(): Promise<ExecutionLease[]> {
+    return this.executionRepository.expireIssuedExecutionLeases()
+  }
+
+  listClaimedExecutionLeasesForRecovery(): Promise<
+    InterruptedExecutionRecoveryContext[]
+  > {
+    return this.executionRepository.listClaimedExecutionLeasesForRecovery()
+  }
+
+  listInterruptedExecutionLeasesForScanRecovery(): Promise<
+    InterruptedExecutionScanRecoveryContext[]
+  > {
+    return this.executionRepository.listInterruptedExecutionLeasesForScanRecovery()
+  }
+
+  recoverInterruptedExecutionLeaseWithEvidence(
+    input: RecoverInterruptedExecutionLeaseWithEvidenceInput
+  ): Promise<ExecutionLease> {
+    return this.executionRepository.recoverInterruptedExecutionLeaseWithEvidence(
+      input
+    )
+  }
+
+  recoverInterruptedExecutionLeaseWithCleanup(
+    input: RecoverInterruptedExecutionLeaseWithCleanupInput
+  ): Promise<InterruptedExecutionRecoveryResult> {
+    return this.executionRepository.recoverInterruptedExecutionLeaseWithCleanup(
+      input
+    )
+  }
+
+  recoverInterruptedExecutionLease(
+    input: RecoverInterruptedExecutionLeaseInput
+  ): Promise<ExecutionLease> {
+    return this.executionRepository.recoverInterruptedExecutionLease(input)
+  }
+
+  issueReplacementExecutionLease(input: {
+    grantId: string
+    previousLeaseId: string
+    expiresAt: string
+    integrityKey: ExecutionGrantIntegrityKey
+  }): Promise<ExecutionLease> {
+    return this.executionRepository.issueReplacementExecutionLease(input)
+  }
+
+  recordExecutionInteractionAudit(
+    input: RecordExecutionInteractionAuditInput
+  ): Promise<string> {
+    return this.executionRepository.recordExecutionInteractionAudit(input)
+  }
+
+  listExecutionLeaseEvidence(
+    leaseId: string
+  ): Promise<ExecutionLeaseEvidenceLink[]> {
+    return this.executionRepository.listExecutionLeaseEvidence(leaseId)
+  }
+
+  /** @deprecated Day 4 read compatibility only; it never authorizes new execution. */
   async getExecutionDecision(
     policyDecisionId: string
   ): Promise<ExecutionDecisionContext | undefined> {
@@ -2496,6 +2687,7 @@ export class AgentGoRepository {
   async recordToolCall(input: {
     scanId: string
     policyDecisionId: string
+    executionLeaseId?: string
     toolName: string
     toolVersion: string
     argumentHash: string
@@ -2509,6 +2701,7 @@ export class AgentGoRepository {
       id,
       scanId: input.scanId,
       policyDecisionId: input.policyDecisionId,
+      executionLeaseId: input.executionLeaseId ?? null,
       toolName: input.toolName,
       toolVersion: input.toolVersion,
       argumentHash: input.argumentHash,
@@ -2545,6 +2738,7 @@ export class AgentGoRepository {
     endpointId?: string
     identityId?: string
     policyDecisionId?: string
+    executionLeaseId?: string
     requestRef: string
     responseRef: string
     requestSummary: Record<string, unknown>
@@ -2561,6 +2755,7 @@ export class AgentGoRepository {
       endpointId: input.endpointId ?? null,
       identityId: input.identityId ?? null,
       policyDecisionId: input.policyDecisionId ?? null,
+      executionLeaseId: input.executionLeaseId ?? null,
       requestRef: input.requestRef,
       responseRef: input.responseRef,
       requestSummaryJson: input.requestSummary,
@@ -3207,16 +3402,11 @@ export class AgentGoRepository {
    * non-HTTP, non-query, unsupported custom-header, and non-L1 variants never
    * enter the active path.
    */
-  async listLegacyV1ExecutionEndpoints(scanId: string): Promise<InventoryEndpoint[]> {
+  private async listLegacyV1ExecutionSelections(
+    scanId: string
+  ): Promise<LegacyV1ExecutionBinding[]> {
     const candidateVariants = await this.database.orm
-      .select({
-        id: requestVariants.id,
-        endpointId: requestVariants.endpointId,
-        contentType: requestVariants.contentType,
-        allowedHeaders: requestVariants.allowedHeaders,
-        redactedPreview: requestVariants.redactedPreview,
-        structureHash: requestVariants.structureHash
-      })
+      .select()
       .from(requestVariants)
       .where(
         and(
@@ -3247,7 +3437,12 @@ export class AgentGoRepository {
     const querySelectorsByVariant = new Map<
       string,
       Map<string, ReviewedQuerySelector>
-    >()
+    >(
+      candidateVariantIds.map((variantId) => [
+        variantId,
+        new Map<string, ReviewedQuerySelector>()
+      ])
+    )
     const ineligibleSelectorVariantIds = new Set<string>()
     for (const row of selectorRows) {
       const parsedSelector = SelectorRefSchema.safeParse(row.selectorJson)
@@ -3302,7 +3497,6 @@ export class AgentGoRepository {
     const implicitLegacyHeaderNames = new Set(['accept', 'user-agent'])
     for (const variant of candidateVariants) {
       if (ineligibleSelectorVariantIds.has(variant.id)) continue
-      if (!querySelectorsByVariant.has(variant.id)) continue
       if (
         variant.allowedHeaders.some(
           ({ name }) => !implicitLegacyHeaderNames.has(name)
@@ -3367,7 +3561,7 @@ export class AgentGoRepository {
           .from(parameters)
           .where(eq(parameters.endpointId, endpoint.id))
           .orderBy(asc(parameters.createdAt))
-        return {
+        const legacyEndpoint: InventoryEndpoint = {
           id: endpoint.id,
           method: endpoint.method,
           url: executableUrl,
@@ -3394,8 +3588,37 @@ export class AgentGoRepository {
             }
           })
         }
+        return {
+          endpoint: legacyEndpoint,
+          endpointRecord: mapInventoryEndpointRecord(endpoint),
+          requestVariant: mapRequestVariantRecord(
+            selectedVariant,
+            reviewedSelectors
+          )
+        }
       })
     )
+  }
+
+  async listLegacyV1ExecutionEndpoints(
+    scanId: string
+  ): Promise<InventoryEndpoint[]> {
+    const selections = await this.listLegacyV1ExecutionSelections(scanId)
+    return selections.map(({ endpoint }) => endpoint)
+  }
+
+  async getLegacyV1ExecutionBinding(
+    scanId: string,
+    endpointId: string
+  ): Promise<LegacyV1ExecutionBinding | undefined> {
+    const selections = await this.listLegacyV1ExecutionSelections(scanId)
+    const matches = selections.filter(
+      ({ endpointRecord }) => endpointRecord.id === endpointId
+    )
+    if (matches.length > 1) {
+      throw new Error('Legacy execution selection is not unique for endpoint.')
+    }
+    return matches[0]
   }
 
   async createSignal(input: {
@@ -3967,19 +4190,73 @@ export class AgentGoRepository {
     redacted: boolean
     contentRef: string
   }): Promise<StoredReportRecord> {
-    const row: typeof reports.$inferSelect = {
-      id: randomUUID(),
-      scanId: input.scanId,
-      title: input.title,
-      format: input.format,
-      filePath: null,
-      sha256: input.sha256,
-      redacted: input.redacted,
-      contentRef: input.contentRef,
-      createdAt: Date.now()
+    const expectedContentByFormat = {
+      markdown: {
+        type: 'report-markdown',
+        mimeType: 'text/markdown'
+      },
+      json: {
+        type: 'report-json',
+        mimeType: 'application/json'
+      },
+      html: {
+        type: 'report-html',
+        mimeType: 'text/html'
+      }
+    } as const
+    if (
+      input.redacted !== true ||
+      !['markdown', 'json', 'html'].includes(input.format) ||
+      !/^[0-9a-f]{64}$/u.test(input.sha256)
+    ) {
+      throw new Error('Report persistence requires a redacted valid artifact.')
     }
-    await this.database.orm.insert(reports).values(row)
-    return mapReport(row)
+    return this.database.orm.transaction(
+      async (transaction) => {
+        const [content] = await transaction
+          .select({
+            evidence: evidenceItems,
+            protectedEvidenceId: protectedEvidenceItems.evidenceId
+          })
+          .from(evidenceItems)
+          .leftJoin(
+            protectedEvidenceItems,
+            eq(protectedEvidenceItems.evidenceId, evidenceItems.id)
+          )
+          .where(eq(evidenceItems.id, input.contentRef))
+          .limit(1)
+        if (
+          !content ||
+          content.evidence.scanId !== input.scanId ||
+          content.protectedEvidenceId !== null ||
+          content.evidence.redactionState !== 'redacted' ||
+          content.evidence.integrityStatus !== 'verified' ||
+          content.evidence.type !==
+            expectedContentByFormat[input.format].type ||
+          content.evidence.mimeType !==
+            expectedContentByFormat[input.format].mimeType ||
+          content.evidence.sha256 !== input.sha256
+        ) {
+          throw new Error(
+            'Report content must be an exact redacted, unprotected scan artifact.'
+          )
+        }
+        const row: typeof reports.$inferSelect = {
+          id: randomUUID(),
+          scanId: input.scanId,
+          title: input.title,
+          format: input.format,
+          filePath: null,
+          sha256: input.sha256,
+          redacted: true,
+          contentRef: input.contentRef,
+          createdAt: Date.now()
+        }
+        await transaction.insert(reports).values(row)
+        return mapReport(row)
+      },
+      { behavior: 'immediate' }
+    )
   }
 
   async listReports(scanId: string): Promise<ReportRecord[]> {
@@ -4001,10 +4278,75 @@ export class AgentGoRepository {
   }
 
   async markReportExported(id: string, filePath: string): Promise<void> {
-    await this.database.orm
-      .update(reports)
-      .set({ filePath })
-      .where(eq(reports.id, id))
+    await this.database.orm.transaction(
+      async (transaction) => {
+        const [binding] = await transaction
+          .select({
+            report: reports,
+            evidence: evidenceItems,
+            protectedEvidenceId: protectedEvidenceItems.evidenceId
+          })
+          .from(reports)
+          .innerJoin(
+            evidenceItems,
+            eq(reports.contentRef, evidenceItems.id)
+          )
+          .leftJoin(
+            protectedEvidenceItems,
+            eq(protectedEvidenceItems.evidenceId, evidenceItems.id)
+          )
+          .where(eq(reports.id, id))
+          .limit(1)
+        const expectedContentByFormat = {
+          markdown: {
+            type: 'report-markdown',
+            mimeType: 'text/markdown'
+          },
+          json: {
+            type: 'report-json',
+            mimeType: 'application/json'
+          },
+          html: {
+            type: 'report-html',
+            mimeType: 'text/html'
+          }
+        } as const
+        if (
+          !binding ||
+          binding.report.redacted !== true ||
+          !['markdown', 'json', 'html'].includes(
+            binding.report.format
+          )
+        ) {
+          throw new Error('Only redacted valid reports can be exported.')
+        }
+        const format =
+          binding.report.format as keyof typeof expectedContentByFormat
+        const expected = expectedContentByFormat[format]
+        if (
+          binding.evidence.scanId !== binding.report.scanId ||
+          binding.protectedEvidenceId !== null ||
+          binding.evidence.redactionState !== 'redacted' ||
+          binding.evidence.integrityStatus !== 'verified' ||
+          binding.evidence.type !== expected.type ||
+          binding.evidence.mimeType !== expected.mimeType ||
+          binding.evidence.sha256 !== binding.report.sha256
+        ) {
+          throw new Error(
+            'Report export requires an exact redacted, unprotected scan artifact.'
+          )
+        }
+        const updated = await transaction
+          .update(reports)
+          .set({ filePath })
+          .where(eq(reports.id, id))
+          .returning({ id: reports.id })
+        if (updated.length !== 1) {
+          throw new Error('Report disappeared before export.')
+        }
+      },
+      { behavior: 'immediate' }
+    )
   }
 
   async addAuditLog(input: {

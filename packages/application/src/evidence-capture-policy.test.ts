@@ -6,6 +6,10 @@ import {
   EvidenceCaptureResultSchema,
   EvidenceSourceHashSchema,
   OOB_TOKEN_COMMITMENT_DOMAIN,
+  PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+  PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+  PROTECTED_EVIDENCE_PROTECTION_SCHEME,
+  PROTECTED_EVIDENCE_POLICY_VERSION,
   type EvidenceCaptureContext,
   type EvidenceCaptureDecision
 } from '@agentgo/contracts'
@@ -23,6 +27,16 @@ const IDS = Object.freeze({
 })
 const SENTINEL = 'DAY4-SENTINEL-SECRET-MUST-NOT-LEAK'
 const FIXTURE_OOB_KEY = Buffer.alloc(32, 0x42)
+const PROTECTED_PLAN = Object.freeze({
+  protectionScheme: PROTECTED_EVIDENCE_PROTECTION_SCHEME,
+  accessPolicyId: PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+  accessPolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+  derivativePolicyId: PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+  derivativePolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+  retentionSeconds: 3_600,
+  maxScanPlaintextBytes: 8_192,
+  maxWorkspacePlaintextBytes: 16_384
+})
 
 function byteContext(
   overrides: Partial<EvidenceCaptureContext> = {}
@@ -70,6 +84,9 @@ function decision(
     maxExcerptBytes: 128,
     jsonPointers: [],
     oobMetadataFields: [],
+    ...(action === 'protected-original'
+      ? { protectedOriginalPlan: PROTECTED_PLAN }
+      : {}),
     ...(context.source === 'oob-event' &&
     (action === 'persist-minimized' || action === 'hash-only')
       ? {
@@ -344,8 +361,28 @@ describe('EvidenceCapturePolicy', () => {
     ).toThrow('Evidence capture source input is invalid.')
   })
 
+  it('uses intrinsic byte length and rejects an oversized Uint8Array subclass', () => {
+    class UnderstatedBytes extends Uint8Array {
+      override get byteLength(): number {
+        return 1
+      }
+    }
+    const context = byteContext()
+    const content = new UnderstatedBytes(16_777_217)
+
+    expect(() =>
+      new EvidenceCapturePolicy().capture({
+        kind: 'bytes',
+        context,
+        decision: decision(context),
+        content,
+        completeness: 'complete'
+      })
+    ).toThrow('Evidence capture source input is invalid.')
+  })
+
   it.each(['http-response-body', 'dom-snapshot', 'browser-screenshot'] as const)(
-    'fails closed instead of pretending protected original support for %s',
+    'authorizes a metadata-only protected-original persistence plan for %s',
     (source) => {
       const context = byteContext({
         source,
@@ -363,22 +400,122 @@ describe('EvidenceCapturePolicy', () => {
                 contentEncoding: 'identity'
               }
       })
+      const content =
+        source === 'browser-screenshot'
+          ? Uint8Array.from([
+              0x89,
+              0x50,
+              0x4e,
+              0x47,
+              ...bytes(SENTINEL)
+            ])
+          : bytes(SENTINEL)
       const captured = new EvidenceCapturePolicy().capture({
         kind: 'bytes',
         context,
         decision: decision(context, { action: 'protected-original' }),
-        content: bytes(SENTINEL),
+        content,
         completeness: 'complete'
       })
 
       expect(captured).toMatchObject({
-        state: 'unsupported',
-        reason: 'protected-original-unsupported',
-        artifacts: []
+        state: 'captured',
+        reason: 'protected-original-authorized'
       })
+      const artifact = captured.artifacts[0]
+      expect(artifact).toMatchObject({
+        type: 'evidence-capture-protected-original',
+        source,
+        redactionState: 'original',
+        scanId: IDS.scan,
+        policyDecisionId: IDS.policy,
+        payload: {
+          kind: 'protected-original-persistence-plan',
+          plaintextSize: content.byteLength,
+          protectionPlan: PROTECTED_PLAN
+        }
+      })
+      expect(artifact?.sourceHash.digest).toBe(captured.sourceHash.digest)
       expect(JSON.stringify(captured)).not.toContain(SENTINEL)
+      expect(Buffer.from(content).includes(Buffer.from(SENTINEL))).toBe(true)
     }
   )
+
+  it.each([
+    {
+      completeness: 'prefix' as const,
+      content: bytes('partial'),
+      knownTotalBytes: 100,
+      overrides: {},
+      reason: 'partial-source'
+    },
+    {
+      completeness: 'complete' as const,
+      content: bytes('x'.repeat(65)),
+      overrides: {
+        maxSourceBytes: 64,
+        maxExcerptBytes: 32,
+        protectedOriginalPlan: {
+          ...PROTECTED_PLAN,
+          maxScanPlaintextBytes: 64,
+          maxWorkspacePlaintextBytes: 64
+        }
+      },
+      reason: 'oversize-source'
+    },
+    {
+      completeness: 'complete' as const,
+      content: new Uint8Array(),
+      overrides: {},
+      reason: 'empty-source'
+    }
+  ])(
+    'downgrades an incomplete or oversized protected original to $reason',
+    (fixture) => {
+      const context = byteContext()
+      const captured = new EvidenceCapturePolicy().capture({
+        kind: 'bytes',
+        context,
+        decision: decision(context, {
+          action: 'protected-original',
+          ...fixture.overrides
+        }),
+        content: fixture.content,
+        completeness: fixture.completeness,
+        ...(fixture.knownTotalBytes === undefined
+          ? {}
+          : { knownTotalBytes: fixture.knownTotalBytes })
+      })
+
+      expect(captured).toMatchObject({
+        state: 'hash-only',
+        reason: fixture.reason
+      })
+      expect(captured.artifacts[0]?.type).toBe(
+        'evidence-capture-hash-only'
+      )
+    }
+  )
+
+  it('rejects protected-original decisions for OOB tokens', () => {
+    const context: EvidenceCaptureContext = {
+      scanId: IDS.scan,
+      policyDecisionId: IDS.policy,
+      techniqueId: 'ssrf.oob',
+      techniqueVersion: '1.0.0',
+      stepId: 'callback',
+      executionState: 'succeeded',
+      source: 'oob-event',
+      role: 'oob-callback',
+      occurredAt: '2026-07-19T01:00:00.000Z'
+    }
+
+    expect(
+      EvidenceCaptureDecisionSchema.safeParse(
+        decision(context, { action: 'protected-original' })
+      ).success
+    ).toBe(false)
+  })
 
   it('keeps OOB tokens out of artifacts and computes a decision-bound HMAC itself', () => {
     const resolveKey = vi.fn(() => FIXTURE_OOB_KEY)
@@ -504,16 +641,7 @@ describe('EvidenceCapturePolicy', () => {
     expect(JSON.stringify(captured)).not.toContain(SENTINEL)
   })
 
-  it.each([
-    ['discard', 'discarded', 'decision-discard'],
-    [
-      'protected-original',
-      'unsupported',
-      'protected-original-unsupported'
-    ]
-  ] as const)(
-    'does not require or invoke an OOB commitment key for %s',
-    (action, state, reason) => {
+  it('does not require or invoke an OOB commitment key for discard', () => {
       const context: EvidenceCaptureContext = {
         scanId: IDS.scan,
         policyDecisionId: IDS.policy,
@@ -529,16 +657,19 @@ describe('EvidenceCapturePolicy', () => {
       const captured = new EvidenceCapturePolicy({ resolveKey }).capture({
         kind: 'oob',
         context,
-        decision: decision(context, { action }),
+        decision: decision(context, { action: 'discard' }),
         token: SENTINEL,
         metadata: { channel: 'http' }
       })
 
-      expect(captured).toMatchObject({ state, reason, artifacts: [] })
+      expect(captured).toMatchObject({
+        state: 'discarded',
+        reason: 'decision-discard',
+        artifacts: []
+      })
       expect(resolveKey).not.toHaveBeenCalled()
       expect(JSON.stringify(captured)).not.toContain(SENTINEL)
-    }
-  )
+    })
 
   it('rejects strict contract or binding errors without reflecting untrusted values', () => {
     const context = byteContext()
@@ -565,6 +696,93 @@ describe('EvidenceCapturePolicy', () => {
     expect(error).toBeInstanceOf(EvidenceCapturePolicyError)
     expect(String(error)).not.toContain(SENTINEL)
     expect(error).toMatchObject({ code: 'decision-context-mismatch' })
+  })
+
+  it('accepts schema-valid sealed definition IDs without treating them as secrets', () => {
+    const context: EvidenceCaptureContext = {
+      scanId: IDS.scan,
+      policyDecisionId: IDS.policy,
+      techniqueId: 'sqli.boolean-differential',
+      techniqueVersion: '1.0.0',
+      stepId: 'inventory.target-base.read',
+      executionState: 'succeeded',
+      source: 'http-request-summary',
+      role: 'request-summary',
+      occurredAt: '2026-07-19T01:00:00.000Z',
+      content: {
+        mediaType: 'application/json',
+        charset: 'utf-8',
+        contentEncoding: 'identity',
+        declaredSizeBytes: 2
+      }
+    }
+
+    const captured = new EvidenceCapturePolicy().capture({
+      kind: 'bytes',
+      context,
+      decision: decision(context, {
+        capturePolicyId: 'evidence-summary-v1',
+        action: 'hash-only'
+      }),
+      content: bytes('{}'),
+      completeness: 'complete',
+      knownTotalBytes: 2
+    })
+
+    expect(captured).toMatchObject({
+      state: 'hash-only',
+      reason: 'decision-hash-only',
+      source: 'http-request-summary',
+      role: 'request-summary'
+    })
+  })
+
+  it('rejects complete protected capture when declared source size exceeds supplied bytes', () => {
+    const content = bytes('truncated')
+    const context = byteContext({
+      response: {
+        mediaType: 'application/octet-stream',
+        charset: 'not-applicable',
+        contentEncoding: 'compressed',
+        declaredSizeBytes: content.byteLength + 10
+      }
+    })
+
+    expect(() =>
+      new EvidenceCapturePolicy().capture({
+        kind: 'bytes',
+        context,
+        decision: decision(context, {
+          action: 'protected-original',
+          maxSourceBytes: 32,
+          maxExcerptBytes: 32
+        }),
+        content,
+        completeness: 'complete'
+      })
+    ).toThrowError(
+      expect.objectContaining({ code: 'invalid-source-input' })
+    )
+  })
+
+  it('still rejects secret-bearing JSON pointer selections', () => {
+    const context = byteContext()
+    let error: unknown
+    try {
+      new EvidenceCapturePolicy().capture({
+        kind: 'bytes',
+        context,
+        decision: decision(context, {
+          jsonPointers: ['/token=abcdefghijklmnopqrstuvwx']
+        }),
+        content: bytes('{}'),
+        completeness: 'complete'
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toMatchObject({ code: 'invalid-decision' })
   })
 
   it('rejects unknown discriminants, extra fields, and accessors at the capture boundary', () => {

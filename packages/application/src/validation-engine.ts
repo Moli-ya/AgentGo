@@ -1,10 +1,11 @@
 import type {
-  BrowserExecutionResult
-} from '@agentgo/browser-runner'
-import type {
   LegacyV1VulnerabilityFamily,
   Verdict
 } from '@agentgo/contracts'
+import type {
+  BrowserExecutionResultView,
+  HttpExecutionResultView
+} from './execution-port'
 
 export interface HttpObservation {
   result: HttpExecutionResultLike
@@ -16,7 +17,7 @@ export interface HttpObservation {
 }
 
 export type HttpExecutionResultLike = Pick<
-  import('@agentgo/http-runner').HttpExecutionResult,
+  HttpExecutionResultView,
   | 'status'
   | 'statusCode'
   | 'responseBody'
@@ -29,11 +30,12 @@ export type HttpExecutionResultLike = Pick<
 >
 
 export interface BrowserObservation {
-  result: BrowserExecutionResult
+  result: BrowserExecutionResultView
   evidenceRefs: string[]
   toolCallId: string
   proposalId: string
   policyDecisionId: string
+  reviewableDomOrScreenshotEvidence?: boolean
 }
 
 export interface ValidationAssessment {
@@ -325,7 +327,8 @@ export function assessXss(input: {
   const httpSucceeded = succeeded(input.http)
   const browserSucceeded = input.browser?.result.status === 'succeeded'
   const markerExecuted = input.browser?.result.markerExecuted === true
-  const evidencePresent = (input.browser?.evidenceRefs.length ?? 0) >= 2
+  const evidencePresent =
+    input.browser?.reviewableDomOrScreenshotEvidence === true
   const checks = {
     'http-probe-succeeded': httpSucceeded,
     'marker-reflected': reflected,
@@ -339,11 +342,18 @@ export function assessXss(input: {
   const failedChecks = Object.entries(checks)
     .filter(([, passed]) => !passed)
     .map(([name]) => name)
-  const missingChecks = input.browser ? [] : ['isolated-browser-result']
+  const missingChecks = [
+    ...(!input.browser ? ['isolated-browser-result'] : []),
+    ...(input.browser && markerExecuted && !evidencePresent
+      ? ['reviewable-dom-or-screenshot-evidence']
+      : [])
+  ]
   const verdict: Verdict = !httpSucceeded || !input.browser || !browserSucceeded
     ? 'inconclusive'
-    : markerExecuted && evidencePresent
-      ? 'confirmed'
+    : markerExecuted
+      ? evidencePresent
+        ? 'confirmed'
+        : 'inconclusive'
       : 'not-confirmed'
   return assessment('xss', {
     verdict,
@@ -354,7 +364,9 @@ export function assessXss(input: {
       verdict === 'confirmed'
         ? '随机惰性标记在阻断网络的隔离浏览器中实际执行，并保存了 DOM/截图证据。'
         : verdict === 'inconclusive'
-          ? 'HTTP 或隔离浏览器验证未成功完成。'
+          ? markerExecuted && !evidencePresent
+            ? '标记已在隔离浏览器中执行，但缺少可审阅的 DOM/截图证据。'
+            : 'HTTP 或隔离浏览器验证未成功完成。'
           : reflected
             ? '输入仅被反射但未在隔离浏览器中执行，因此不能确认 XSS。'
             : '未观察到反射或执行证据。',

@@ -90,6 +90,13 @@ SecurityPolicy 对 L3 返回不可覆盖的 DENY。
 
 不能只在创建任务时检查一次。重定向、DNS rebinding、URL 编码和代理转发都不能成为越界通道。
 
+Day5 起，reviewed HTTP 与离线 Browser 的实际 I/O 只能经统一
+`ExecutionPort`。每个单步动作必须有不可变 Grant 和数据库原子 claim 的
+Lease；HTTP 在 claim 后解析 DNS、Guard 授权地址并持久化 dispatch 后才
+发送。Runner 不自动跟随 redirect，每一跳必须重新编译、重新经过 Policy、
+签发 child Grant/Lease 并重新做 DNS guard。跨 origin credential 降为
+`omit`，残留 Authorization/Cookie 等凭据头在发送前拒绝。
+
 ## 4. 数据库相关探测
 
 SQL 注入验证只允许使用非写入式、低影响差异策略：
@@ -119,6 +126,17 @@ SQL 注入验证只允许使用非写入式、低影响差异策略：
 ### XSS
 
 使用无外传能力的随机标记和隔离浏览器观察执行上下文。反射不等于执行。存储型场景只能使用专用测试账号和临时对象，并在任务结束后清理。
+
+Day4 已实现受保护原件的后端存储边界：完整 context/decision 封套、
+OS-wrapped AES-256-GCM、内容寻址 ciphertext、普通读取/Renderer/报告
+拒绝、metadata-only redacted derivative、配额、retention、crypto-erase
+和审计。该能力不等于在线执行已采集证据。
+
+Day5 实际在线路径仍固定保存 hash-only Browser 摘要，没有把真实 DOM 或
+screenshot 通过 Lease provenance 接入 protected-original。真实 DOM/截图
+采集、Lease 绑定和确认规则接线属于 Day18。即使 marker 在隔离浏览器中
+执行，只要缺少这条可复核证据链，就必须输出 `Inconclusive`，不能
+Confirmed。
 
 ### SSRF
 
@@ -154,9 +172,23 @@ SQL 注入验证只允许使用非写入式、低影响差异策略：
 - cleanupPlan；
 - scopeSnapshotId。
 
-V2 目标要求 Proposal 引用 TemplateIntentHash 和 ResolvedIntentHash；Runner 发送前使用单次 ExecutionLease 复核最终 WireRequestHash、identity/session generation、TestObject 和 stepId。仅有 `policyDecisionId` 或 `userApproved=true` 不能授权执行。当前 V1 尚未完整实现三阶段哈希、Lease、可信 ApprovalPort 和 TestObject 状态机，因此这些能力完成前，产品环境 L2 保持禁用，只能在明确标识的 loopback fixture 中测试协议。
+Day4/Day5 已要求 Proposal/编译结果绑定 TemplateIntentHash、
+ResolvedIntentHash 和 WireRequestHMAC；Runner 发送前使用单次
+ExecutionLease 复核最终 method、URL、header/body、identity/session
+generation、scope、capability、purpose、TestObject ref 和 stepId。
+仅有 `policyDecisionId` 或 `userApproved=true` 不能授权执行。可信
+ApprovalPort、SessionVault 和 TestObject/Cleanup 状态机仍未实现，因此
+产品环境 L2 继续禁用，只能在后续明确认证的 loopback fixture 中测试。
 
-SecurityPolicy 返回 allow、deny 或 approval_required，并生成 policyDecisionId。Runner 只接受带有效 decisionId 的动作。
+SecurityPolicy 返回 allow、deny 或 approval_required，并生成
+policyDecisionId；ExecutionAuthority 以该决定签发 Grant/Lease。Runner
+只消费 Guard 原子 claim 后的 opaque token，不接受调用方裸 decisionId。
+
+Day4 protected-original 后端只接受与已允许 PolicyDecision、完整
+EvidenceCaptureContext 和 protected-original CaptureDecision 一致的封套。
+原文只作为瞬时加密输入，磁盘保存 ciphertext；普通 Evidence `read`、
+Renderer、报告和导出均不得取得原文。该后端接口不能被 Agent、Runner 或
+模型直接调用来扩大 Day5 capture authority。
 
 ## 8. 停止条件
 
@@ -186,3 +218,10 @@ SecurityPolicy 返回 allow、deny 或 approval_required，并生成 policyDecis
 - Agent、Prompt、模型、工具和规则版本。
 
 没有这些证据时只能输出待验证假设，不能标记为 Confirmed。
+
+必要原件获准进入 protected-original 后端时，还必须记录 capture
+context/decision、source hash、保护计划、配额决定、retention、派生
+Evidence 引用和创建/拒绝访问/完整性/到期审计。到期先 crypto-erase
+wrapped key，再清理内容寻址 ciphertext；metadata-only derivative 可继续
+用于普通 UI 和脱敏报告。Day5 在线 hash-only Evidence 不得仅因后端存在该
+能力而改记为“已保存原件”。

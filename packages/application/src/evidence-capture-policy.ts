@@ -8,6 +8,7 @@ import {
   OOB_TOKEN_COMMITMENT_DOMAIN,
   OobCaptureMetadataSchema,
   OobTokenCommitmentSchema,
+  PROTECTED_EVIDENCE_ARTIFACT_SCHEMA_VERSION,
   type EvidenceArtifactDraft,
   type EvidenceCaptureContext,
   type EvidenceCaptureDecision,
@@ -26,6 +27,10 @@ import {
   redactInventoryText,
   sha256Text
 } from '@agentgo/domain'
+import {
+  snapshotSecureBytes,
+  zeroizeSecureBytes
+} from './secure-byte-snapshot'
 
 const SENSITIVE_JSON_FIELD_PATTERN =
   /(?:authorization|proxy-authorization|cookie|set-cookie|password|passwd|secret|token|api[-_.]?key|credential|csrf|xsrf|session)/iu
@@ -201,19 +206,9 @@ function assertSnapshotShape(
 
 function snapshotByteContent(value: unknown): Uint8Array {
   try {
-    if (!(value instanceof Uint8Array)) {
-      throw new EvidenceCapturePolicyError('invalid-source-input')
-    }
-    if (
-      typeof SharedArrayBuffer !== 'undefined' &&
-      value.buffer instanceof SharedArrayBuffer
-    ) {
-      throw new EvidenceCapturePolicyError('invalid-source-input')
-    }
-    if (value.byteLength > MAX_CAPTURE_SOURCE_BYTES) {
-      throw new EvidenceCapturePolicyError('invalid-source-input')
-    }
-    return new Uint8Array(value)
+    return snapshotSecureBytes(value, {
+      maximumBytes: MAX_CAPTURE_SOURCE_BYTES
+    })
   } catch (error) {
     if (error instanceof EvidenceCapturePolicyError) throw error
     throw new EvidenceCapturePolicyError('invalid-source-input')
@@ -380,10 +375,13 @@ function assertDecisionBinding(
     throw new EvidenceCapturePolicyError('decision-outside-window')
   }
 
+  // Technique and step IDs are constrained by strict stable-ID schemas and
+  // bound to the sealed execution definition. Applying the generic
+  // entropy-based preview redactor to them rejects legitimate IDs such as
+  // `sqli.boolean-differential`. Authority labels and unstructured JSON
+  // pointers retain the secret-fragment gate.
   for (const value of [
     decision.capturePolicyId,
-    context.techniqueId,
-    context.stepId,
     context.role,
     ...decision.jsonPointers
   ]) {
@@ -395,6 +393,20 @@ function assertDecisionBinding(
 
 function sha256Bytes(value: Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function byteContentDescriptor(
+  context: EvidenceCaptureContext
+): Readonly<{
+  mediaType: string
+  charset: 'utf-8' | 'non-utf-8' | 'unknown' | 'not-applicable'
+  contentEncoding: 'identity' | 'compressed' | 'unknown'
+  declaredSizeBytes?: number
+}> {
+  if (context.source === 'oob-event') {
+    throw new EvidenceCapturePolicyError('invalid-source-input')
+  }
+  return 'content' in context ? context.content : context.response
 }
 
 function byteSourceHash(
@@ -424,8 +436,19 @@ function byteSourceHash(
     throw new EvidenceCapturePolicyError('invalid-source-input')
   }
 
+  const descriptor = byteContentDescriptor(context)
+  if (
+    descriptor.declaredSizeBytes !== undefined &&
+    (descriptor.declaredSizeBytes < input.content.byteLength ||
+      (input.completeness === 'complete' &&
+        descriptor.declaredSizeBytes !== input.content.byteLength) ||
+      (input.knownTotalBytes !== undefined &&
+        descriptor.declaredSizeBytes !== input.knownTotalBytes))
+  ) {
+    throw new EvidenceCapturePolicyError('invalid-source-input')
+  }
   const declaredTotal =
-    input.knownTotalBytes ?? context.response.declaredSizeBytes
+    input.knownTotalBytes ?? descriptor.declaredSizeBytes
   const knownTotalBytes =
     input.completeness === 'complete'
       ? input.content.byteLength
@@ -548,7 +571,10 @@ function safeJsonSelectionValue(
 }
 
 function artifactDraft(input: Readonly<{
-  type: EvidenceArtifactDraft['type']
+  type: Exclude<
+    EvidenceArtifactDraft['type'],
+    'evidence-capture-protected-original'
+  >
   payload: unknown
   context: EvidenceCaptureContext
   decision: EvidenceCaptureDecision
@@ -565,6 +591,54 @@ function artifactDraft(input: Readonly<{
     capturePolicyVersion: input.decision.capturePolicyVersion,
     redactionState: 'redacted',
     sourceHash: input.sourceHash
+  })
+  if (!parsed.success) {
+    throw new EvidenceCapturePolicyError('invalid-source-input')
+  }
+  return deepFreeze(parsed.data)
+}
+
+function protectedOriginalArtifactDraft(input: Readonly<{
+  context: EvidenceCaptureContext
+  decision: EvidenceCaptureDecision
+  sourceHash: EvidenceSourceHash
+  originalMimeType: string
+  plaintextSize: number
+}>): EvidenceArtifactDraft {
+  const protectionPlan = input.decision.protectedOriginalPlan
+  if (protectionPlan === undefined) {
+    throw new EvidenceCapturePolicyError('invalid-decision')
+  }
+  const retentionUntil = new Date(
+    Date.parse(input.context.occurredAt) +
+      protectionPlan.retentionSeconds * 1_000
+  ).toISOString()
+  const parsed = EvidenceArtifactDraftSchema.safeParse({
+    type: 'evidence-capture-protected-original',
+    mimeType: 'application/vnd.agentgo.protected-evidence',
+    source: input.context.source,
+    role: input.context.role,
+    captureDecisionId: input.decision.id,
+    capturePolicyId: input.decision.capturePolicyId,
+    capturePolicyVersion: input.decision.capturePolicyVersion,
+    redactionState: 'original',
+    scanId: input.context.scanId,
+    policyDecisionId: input.context.policyDecisionId,
+    techniqueId: input.context.techniqueId,
+    techniqueVersion: input.context.techniqueVersion,
+    stepId: input.context.stepId,
+    sourceHash: input.sourceHash,
+    payload: {
+      schemaVersion: PROTECTED_EVIDENCE_ARTIFACT_SCHEMA_VERSION,
+      kind: 'protected-original-persistence-plan',
+      originalMimeType: input.originalMimeType,
+      plaintextSize: input.plaintextSize,
+      retentionUntil,
+      protectionPlan,
+      sourceHash: input.sourceHash,
+      captureContext: input.context,
+      captureDecision: input.decision
+    }
   })
   if (!parsed.success) {
     throw new EvidenceCapturePolicyError('invalid-source-input')
@@ -675,24 +749,16 @@ function commitOobToken(input: Readonly<{
     throw new EvidenceCapturePolicyError('invalid-oob-commitment')
   }
 
-  let keyBytes: Buffer | undefined
+  let keyBytes: Uint8Array<ArrayBuffer> | undefined
   let tokenBytes: Buffer | undefined
   try {
-    const resolved = input.keyProvider.resolveKey({ keyRef, keyVersion })
-    if (
-      !(resolved instanceof Uint8Array) ||
-      (typeof SharedArrayBuffer !== 'undefined' &&
-        resolved.buffer instanceof SharedArrayBuffer)
-    ) {
-      throw new EvidenceCapturePolicyError('invalid-oob-commitment')
-    }
-    keyBytes = Buffer.from(resolved)
-    if (
-      keyBytes.byteLength < MIN_OOB_HMAC_KEY_BYTES ||
-      keyBytes.byteLength > MAX_OOB_HMAC_KEY_BYTES
-    ) {
-      throw new EvidenceCapturePolicyError('invalid-oob-commitment')
-    }
+    keyBytes = snapshotSecureBytes(
+      input.keyProvider.resolveKey({ keyRef, keyVersion }),
+      {
+        minimumBytes: MIN_OOB_HMAC_KEY_BYTES,
+        maximumBytes: MAX_OOB_HMAC_KEY_BYTES
+      }
+    )
     tokenBytes = Buffer.from(input.token, 'utf8')
     const hmac = createHmac('sha256', keyBytes)
     updateLengthFramed(
@@ -752,7 +818,7 @@ function commitOobToken(input: Readonly<{
     if (error instanceof EvidenceCapturePolicyError) throw error
     throw new EvidenceCapturePolicyError('invalid-oob-commitment')
   } finally {
-    keyBytes?.fill(0)
+    if (keyBytes) zeroizeSecureBytes(keyBytes)
     tokenBytes?.fill(0)
   }
 }
@@ -801,23 +867,28 @@ export class EvidenceCapturePolicy {
         if (context.source === 'oob-event') {
           throw new EvidenceCapturePolicyError('invalid-source-input')
         }
-        return this.captureBytes(
-          {
-            kind: 'bytes',
+        const content = snapshotByteContent(initial.content)
+        try {
+          return this.captureBytes(
+            {
+              kind: 'bytes',
+              context,
+              decision,
+              content,
+              completeness: initial.completeness,
+              ...(Object.prototype.hasOwnProperty.call(
+                initial,
+                'knownTotalBytes'
+              )
+                ? { knownTotalBytes: initial.knownTotalBytes as number }
+                : {})
+            },
             context,
-            decision,
-            content: snapshotByteContent(initial.content),
-            completeness: initial.completeness,
-            ...(Object.prototype.hasOwnProperty.call(
-              initial,
-              'knownTotalBytes'
-            )
-              ? { knownTotalBytes: initial.knownTotalBytes as number }
-              : {})
-          },
-          context,
-          decision
-        )
+            decision
+          )
+        } finally {
+          zeroizeSecureBytes(content)
+        }
       }
       if (initial.kind === 'oob') {
         assertSnapshotShape(
@@ -857,15 +928,6 @@ export class EvidenceCapturePolicy {
   ): EvidenceCaptureResult {
     const sourceHash = byteSourceHash(input, context)
 
-    if (decision.action === 'protected-original') {
-      return result({
-        state: 'unsupported',
-        reason: 'protected-original-unsupported',
-        context,
-        decision,
-        sourceHash
-      })
-    }
     if (decision.action === 'discard') {
       return result({
         state: 'discarded',
@@ -899,10 +961,34 @@ export class EvidenceCapturePolicy {
         sourceHash
       })
     }
-    if (context.source === 'oob-event') {
-      throw new EvidenceCapturePolicyError('invalid-source-input')
+    if (input.content.byteLength === 0) {
+      return hashOnlyResult({
+        reason: 'empty-source',
+        context,
+        decision,
+        sourceHash
+      })
     }
-    if (context.response.contentEncoding !== 'identity') {
+    if (decision.action === 'protected-original') {
+      const descriptor = byteContentDescriptor(context)
+      const artifact = protectedOriginalArtifactDraft({
+        context,
+        decision,
+        sourceHash,
+        originalMimeType: descriptor.mediaType,
+        plaintextSize: input.content.byteLength
+      })
+      return result({
+        state: 'captured',
+        reason: 'protected-original-authorized',
+        context,
+        decision,
+        sourceHash,
+        artifact
+      })
+    }
+    const descriptor = byteContentDescriptor(context)
+    if (descriptor.contentEncoding !== 'identity') {
       return hashOnlyResult({
         reason: 'compressed-source',
         context,
@@ -918,7 +1004,7 @@ export class EvidenceCapturePolicy {
         sourceHash
       })
     }
-    if (isXmlMediaType(context.response.mediaType)) {
+    if (isXmlMediaType(descriptor.mediaType)) {
       return hashOnlyResult({
         reason: 'xml-source',
         context,
@@ -927,14 +1013,14 @@ export class EvidenceCapturePolicy {
       })
     }
     if (
-      context.response.charset !== 'utf-8' ||
-      (!context.response.mediaType.startsWith('text/') &&
-        !isJsonMediaType(context.response.mediaType))
+      descriptor.charset !== 'utf-8' ||
+      (!descriptor.mediaType.startsWith('text/') &&
+        !isJsonMediaType(descriptor.mediaType))
     ) {
       return hashOnlyResult({
         reason:
-          context.response.charset === 'non-utf-8' ||
-          context.response.charset === 'unknown'
+          descriptor.charset === 'non-utf-8' ||
+          descriptor.charset === 'unknown'
             ? 'non-utf8-source'
             : 'binary-source',
         context,
@@ -952,7 +1038,7 @@ export class EvidenceCapturePolicy {
         sourceHash
       })
     }
-    if (isJsonMediaType(context.response.mediaType)) {
+    if (isJsonMediaType(descriptor.mediaType)) {
       return this.captureJson(decoded, context, decision, sourceHash)
     }
     return hashOnlyResult({
@@ -1060,15 +1146,6 @@ export class EvidenceCapturePolicy {
     const metadata = selectedOobMetadata(input.metadata, decision)
     const sourceHash = oobMetadataHash(metadata)
 
-    if (decision.action === 'protected-original') {
-      return result({
-        state: 'unsupported',
-        reason: 'protected-original-unsupported',
-        context,
-        decision,
-        sourceHash
-      })
-    }
     if (decision.action === 'discard') {
       return result({
         state: 'discarded',

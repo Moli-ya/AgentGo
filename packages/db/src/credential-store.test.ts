@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -31,15 +31,63 @@ describe('FileCredentialStore', () => {
       secret: 'sk-super-secret'
     })
     expect(store.get(created.id)).toBe('sk-super-secret')
+    expect(created.generation).toBe(0)
     expect(readFileSync(filePath, 'utf8')).not.toContain('sk-super-secret')
 
-    store.save({
+    const rotated = store.save({
       id: created.id,
       kind: 'model-api-key',
       label: 'OpenAI-compatible',
       secret: 'sk-rotated'
     })
     expect(store.get(created.id)).toBe('sk-rotated')
+    expect(rotated.generation).toBe(1)
+    expect(store.list()[0]?.generation).toBe(1)
     expect(store.list()).toHaveLength(1)
+    expect(() =>
+      store.save({
+        id: 'missing-old-id',
+        kind: 'model-api-key',
+        label: 'must-not-recreate',
+        secret: 'secret'
+      })
+    ).toThrow(/missing credential/i)
+  })
+
+  it('reads version 1 stores as generation zero and writes version 2 on rotation', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-credentials-v1-'))
+    directories.push(directory)
+    const filePath = join(directory, 'credentials.json')
+    const timestamp = '2026-01-01T00:00:00.000Z'
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          'legacy-credential': {
+            id: 'legacy-credential',
+            kind: 'identity',
+            label: 'Legacy identity',
+            ciphertext: xorProtector.protect('legacy-secret').toString('base64'),
+            createdAt: timestamp,
+            updatedAt: timestamp
+          }
+        }
+      }),
+      'utf8'
+    )
+    const store = new FileCredentialStore(filePath, xorProtector)
+    expect(store.list()[0]?.generation).toBe(0)
+    const rotated = store.save({
+      id: 'legacy-credential',
+      kind: 'identity',
+      label: 'Legacy identity',
+      secret: 'rotated-secret'
+    })
+    expect(rotated.generation).toBe(1)
+    expect(
+      (JSON.parse(readFileSync(filePath, 'utf8')) as { version: number })
+        .version
+    ).toBe(2)
   })
 })

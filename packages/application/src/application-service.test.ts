@@ -1,4 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import {
+  existsSync,
+  mkdtempSync,
+  rmSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +20,7 @@ import { DefaultModelGateway, type ModelGateway } from '@agentgo/model-gateway'
 import {
   AgentGoApplicationService,
   AgentPromptCatalog,
+  EvidenceCapturePolicy,
   createDay2VulnerabilityPlatform
 } from './index'
 
@@ -37,6 +43,113 @@ function vulnerabilityDependencies() {
     vulnerabilityPlatform: createDay2VulnerabilityPlatform(),
     vulnerabilityExecutionEnvironment: 'authorized-test-environment' as const
   }
+}
+
+function interruptedRecoveryContext(scanId: string) {
+  const grantId = randomUUID()
+  const leaseId = randomUUID()
+  return {
+    lease: {
+      schemaVersion: 'execution-lease.v1',
+      id: leaseId,
+      grantId,
+      attempt: 1,
+      state: 'claimed',
+      issuedAt: '2026-07-28T00:00:00.000Z',
+      expiresAt: '2099-07-28T00:05:00.000Z',
+      claimedAt: '2026-07-28T00:00:01.000Z',
+      claimedBy: randomUUID(),
+      claimTokenHash: 'a'.repeat(64),
+      deliveryState: 'possibly-sent',
+      evidenceRefs: []
+    },
+    grant: {
+      id: grantId,
+      scanId,
+      policyDecisionId: randomUUID(),
+      techniqueId: 'sqli.error-differential',
+      techniqueVersion: '1.0.0',
+      stepId: 'sqli.baseline',
+      adapterKind: 'http',
+      purpose: 'read'
+    },
+    captureDecision: {
+      validFrom: '2020-01-01T00:00:00.000Z',
+      validUntil: '2099-01-01T00:00:00.000Z'
+    }
+  } as unknown as Awaited<
+    ReturnType<AgentGoRepository['listClaimedExecutionLeasesForRecovery']>
+  >[number]
+}
+
+function recoveredInterruptedLease(
+  context: ReturnType<typeof interruptedRecoveryContext>
+) {
+  return {
+    ...context.lease,
+    state: 'failed',
+    deliveryState: 'unknown',
+    terminalAt: '2026-07-28T00:05:01.000Z',
+    terminalReason: 'interrupted',
+    outcomeSummary: {
+      executionState: 'interrupted',
+      deliveryState: 'unknown',
+      verdictImpact: 'inconclusive',
+      errorCode: 'execution.interrupted'
+    }
+  } as const
+}
+
+async function createRunningRecoveryScan(repository: AgentGoRepository) {
+  const workspace = await repository.createWorkspace({
+    name: 'Day 5 recovery test',
+    description: ''
+  })
+  const target = await repository.createTarget({
+    workspaceId: workspace.id,
+    name: 'Authorized recovery fixture',
+    baseUrl: 'http://127.0.0.1:3000/',
+    description: '',
+    authorizationReference: 'automated-day5-recovery-test',
+    scope: {
+      allowedOrigins: ['http://127.0.0.1:3000'],
+      allowedPathPrefixes: ['/'],
+      deniedPathPrefixes: [],
+      allowedPorts: [3000],
+      allowedIdentityIds: [],
+      allowActiveProbing: true,
+      allowSensitiveProbing: false,
+      allowPrivateNetworkTargets: true,
+      allowLoopbackTargets: true,
+      maxRequestsPerMinute: 30,
+      maxConcurrency: 1,
+      authorizationReference: 'automated-day5-recovery-test'
+    }
+  })
+  const plan = createDefaultScanPlan(['sqli'])
+  const scan = await repository.createScan(
+    {
+      targetId: target.target.id,
+      name: 'Claimed execution recovery',
+      description: 'Day 5 claimed lease recovery fixture.',
+      families: ['sqli'],
+      identityIds: [],
+      budget: plan.budget
+    },
+    { ...plan },
+    { ...createRuntimeState() }
+  )
+  await repository.updateScan(scan.id, {
+    status: 'running',
+    phase: 'validation',
+    startedAt: Date.now(),
+    runtimeJson: {
+      ...createRuntimeState(),
+      phase: 'validation',
+      status: 'running'
+    }
+  })
+  return { workspace, target, scan }
 }
 
 describe('AgentGoApplicationService recovery', () => {
@@ -126,6 +239,530 @@ describe('AgentGoApplicationService recovery', () => {
         detail: { recoveredPhase: 'validation' }
       })
       expect(recoveryEvent?.message).toContain('已安全恢复为暂停状态')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('terminalizes a claimed lease without fabricating Evidence when EvidenceStore is absent', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-no-evidence-'))
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { scan } = await createRunningRecoveryScan(repository)
+      const context = interruptedRecoveryContext(scan.id)
+      vi.spyOn(
+        repository,
+        'listClaimedExecutionLeasesForRecovery'
+      ).mockResolvedValue([context])
+      const fallback = vi
+        .spyOn(repository, 'recoverInterruptedExecutionLeaseWithCleanup')
+        .mockResolvedValue({
+          lease: recoveredInterruptedLease(context),
+          discardedEvidence: []
+        })
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        )
+      })
+
+      await application.initialize()
+
+      expect(fallback).toHaveBeenCalledWith({
+        leaseId: context.lease.id,
+        discardUnboundStagedEvidence: false
+      })
+      expect(await repository.getScan(scan.id)).toMatchObject({
+        status: 'awaiting-user'
+      })
+      expect(await repository.getLatestCheckpoint(scan.id)).toMatchObject({
+        reason: 'execution-interrupted-unknown',
+        state: { status: 'awaiting-user' }
+      })
+      const event = (await repository.listScanEvents(scan.id)).at(-1)
+      expect(event?.detail).toMatchObject({
+        executionState: 'interrupted',
+        deliveryState: 'unknown',
+        verdictImpact: 'inconclusive',
+        evidenceState: 'partially-unavailable',
+        evidenceUnavailableLeaseIds: [context.lease.id]
+      })
+      await expect(application.controlScan(scan.id, 'resume')).rejects.toThrow(
+        '自动重放'
+      )
+    } finally {
+      database.close()
+    }
+  })
+
+  it('recovers the scan after a crash between lease terminalization and checkpointing', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-crash-window-'))
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { scan } = await createRunningRecoveryScan(repository)
+      const claimed = interruptedRecoveryContext(scan.id)
+      const recovered = recoveredInterruptedLease(claimed)
+      vi.spyOn(
+        repository,
+        'listClaimedExecutionLeasesForRecovery'
+      ).mockResolvedValue([])
+      vi.spyOn(
+        repository,
+        'listInterruptedExecutionLeasesForScanRecovery'
+      ).mockResolvedValue([
+        {
+          lease: recovered,
+          grant: claimed.grant
+        }
+      ])
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        )
+      })
+
+      await application.initialize()
+
+      expect(await repository.getScan(scan.id)).toMatchObject({
+        status: 'awaiting-user'
+      })
+      expect(await repository.getLatestCheckpoint(scan.id)).toMatchObject({
+        reason: 'execution-interrupted-unknown'
+      })
+      expect(
+        (await repository.listScanEvents(scan.id)).at(-1)?.detail
+      ).toMatchObject({
+        leaseIds: [recovered.id],
+        evidenceState: 'partially-unavailable'
+      })
+      await application.initialize()
+      expect((await repository.getScanRow(scan.id))?.checkpointCount).toBe(1)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('uses no-Evidence recovery when scan target lookup is unavailable', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-missing-target-'))
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { scan } = await createRunningRecoveryScan(repository)
+      const context = interruptedRecoveryContext(scan.id)
+      vi.spyOn(
+        repository,
+        'listClaimedExecutionLeasesForRecovery'
+      ).mockResolvedValue([context])
+      vi.spyOn(repository, 'getTarget').mockResolvedValueOnce(undefined)
+      const fallback = vi
+        .spyOn(repository, 'recoverInterruptedExecutionLeaseWithCleanup')
+        .mockResolvedValue({
+          lease: recoveredInterruptedLease(context),
+          discardedEvidence: []
+        })
+      const evidenceStore = new EvidenceStore(
+        database,
+        join(directory, 'artifacts')
+      )
+      const save = vi.spyOn(evidenceStore, 'save')
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        ),
+        evidenceStore
+      })
+
+      await application.initialize()
+
+      expect(save).not.toHaveBeenCalled()
+      expect(fallback).toHaveBeenCalledWith({
+        leaseId: context.lease.id,
+        discardUnboundStagedEvidence: true
+      })
+      expect(await repository.getScan(scan.id)).toMatchObject({
+        status: 'awaiting-user'
+      })
+    } finally {
+      database.close()
+    }
+  })
+
+  it('cleans recovered staging files without reopening a terminalized lease when file deletion fails', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'agentgo-day5-staging-file-cleanup-')
+    )
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { scan } = await createRunningRecoveryScan(repository)
+      const context = interruptedRecoveryContext(scan.id)
+      const stagedDigest = 'c'.repeat(64)
+      const stagedPath = [
+        'f'.repeat(20),
+        'evidence',
+        stagedDigest.slice(0, 2),
+        `${stagedDigest}.json`
+      ].join('/')
+      vi.spyOn(
+        repository,
+        'listClaimedExecutionLeasesForRecovery'
+      ).mockResolvedValue([context])
+      vi.spyOn(repository, 'getTarget').mockResolvedValueOnce(undefined)
+      vi.spyOn(
+        repository,
+        'recoverInterruptedExecutionLeaseWithCleanup'
+      ).mockResolvedValue({
+        lease: recoveredInterruptedLease(context),
+        discardedEvidence: [
+          {
+            id: randomUUID(),
+            filePath: stagedPath,
+            sha256: 'c'.repeat(64)
+          }
+        ]
+      })
+      const evidenceStore = new EvidenceStore(
+        database,
+        join(directory, 'artifacts')
+      )
+      const cleanup = vi
+        .spyOn(evidenceStore, 'deleteUnreferencedFiles')
+        .mockRejectedValue(new Error('synthetic file lock'))
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        ),
+        evidenceStore
+      })
+
+      await application.initialize()
+
+      expect(cleanup).toHaveBeenCalledWith([stagedPath])
+      expect(await repository.getScan(scan.id)).toMatchObject({
+        status: 'awaiting-user'
+      })
+      expect(await repository.getLatestCheckpoint(scan.id)).toMatchObject({
+        reason: 'execution-interrupted-unknown'
+      })
+    } finally {
+      database.close()
+    }
+  })
+
+  it('removes files whose crash-staged metadata was atomically discarded', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'agentgo-day5-staging-file-delete-')
+    )
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { workspace, scan } =
+        await createRunningRecoveryScan(repository)
+      const context = interruptedRecoveryContext(scan.id)
+      const artifactRoot = join(directory, 'artifacts')
+      const evidenceStore = new EvidenceStore(database, artifactRoot)
+      const staged = await evidenceStore.save({
+        workspaceId: workspace.id,
+        scanId: scan.id,
+        type: 'evidence-capture-hash-only',
+        mimeType: 'application/json',
+        content: '{"staged":true}',
+        source: 'execution-request-summary',
+        createdBy: 'execution-service',
+        captureTool: 'evidence-capture-policy',
+        captureToolVersion: '2.0.0',
+        redactionState: 'redacted'
+      })
+      const absolutePath = evidenceStore.resolveStoredPath(staged.filePath)
+      vi.spyOn(
+        repository,
+        'listClaimedExecutionLeasesForRecovery'
+      ).mockResolvedValue([context])
+      vi.spyOn(repository, 'getTarget').mockResolvedValueOnce(undefined)
+      vi.spyOn(
+        repository,
+        'recoverInterruptedExecutionLeaseWithCleanup'
+      ).mockImplementation(async () => {
+        database.native
+          .prepare('DELETE FROM evidence_items WHERE id = ?')
+          .run(staged.id)
+        return {
+          lease: recoveredInterruptedLease(context),
+          discardedEvidence: [staged]
+        }
+      })
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        ),
+        evidenceStore
+      })
+
+      await application.initialize()
+
+      expect(existsSync(absolutePath)).toBe(false)
+      expect(await repository.getScan(scan.id)).toMatchObject({
+        status: 'awaiting-user'
+      })
+    } finally {
+      database.close()
+    }
+  })
+
+  it('keeps the current recovery summary and removes one abandoned by a second crash', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'agentgo-day5-repeated-recovery-')
+    )
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { workspace, scan } = await createRunningRecoveryScan(repository)
+      const context = interruptedRecoveryContext(scan.id)
+      Reflect.set(context.grant, 'policyDecisionId', undefined)
+      const evidenceStore = new EvidenceStore(
+        database,
+        join(directory, 'artifacts')
+      )
+      const abandoned = await evidenceStore.save({
+        workspaceId: workspace.id,
+        scanId: scan.id,
+        type: 'evidence-capture-hash-only',
+        mimeType: 'application/json',
+        content: '{"attempt":"abandoned-before-recovery-transaction"}',
+        source: 'execution-interruption-summary',
+        createdBy: 'application-service',
+        captureTool: 'evidence-capture-policy',
+        captureToolVersion: '2.0.0',
+        redactionState: 'redacted'
+      })
+      const abandonedPath = evidenceStore.resolveStoredPath(
+        abandoned.filePath
+      )
+      vi.spyOn(
+        repository,
+        'listClaimedExecutionLeasesForRecovery'
+      ).mockResolvedValue([context])
+      const recover = vi
+        .spyOn(repository, 'recoverInterruptedExecutionLeaseWithCleanup')
+        .mockImplementation(async (input) => {
+          const currentEvidenceId = input.evidenceId
+          if (!currentEvidenceId) {
+            throw new Error('Current recovery Evidence was not supplied.')
+          }
+          expect(input.discardUnboundStagedEvidence).toBe(true)
+          expect(currentEvidenceId).not.toBe(abandoned.id)
+          database.native
+            .prepare('DELETE FROM evidence_items WHERE id = ?')
+            .run(abandoned.id)
+          return {
+            lease: {
+              ...recoveredInterruptedLease(context),
+              evidenceRefs: [currentEvidenceId]
+            },
+            discardedEvidence: [
+              {
+                id: abandoned.id,
+                filePath: abandoned.filePath,
+                sha256: abandoned.sha256
+              }
+            ]
+          }
+        })
+      const evidenceCapturePolicy = new EvidenceCapturePolicy()
+      vi.spyOn(evidenceCapturePolicy, 'capture').mockReturnValue({
+        state: 'hash-only',
+        reason: 'policy-hash-only',
+        sourceHash: {
+          domain: 'agentgo.evidence-source.v1',
+          algorithm: 'sha256',
+          digest: 'e'.repeat(64),
+          basis: 'source-bytes',
+          coverage: 'complete',
+          hashedBytes: 1
+        },
+        artifacts: [
+          {
+            type: 'evidence-capture-hash-only',
+            mimeType: 'application/json',
+            source: 'execution-interruption-summary',
+            attempt: 'current-recovery'
+          }
+        ]
+      } as never)
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        ),
+        evidenceStore,
+        evidenceCapturePolicy
+      })
+
+      await application.initialize()
+
+      expect(recover).toHaveBeenCalledOnce()
+      expect(await evidenceStore.getMetadata(abandoned.id)).toBeUndefined()
+      expect(existsSync(abandonedPath)).toBe(false)
+      const currentId = recover.mock.calls[0]?.[0].evidenceId
+      if (!currentId) {
+        throw new Error('Current recovery Evidence ID was not observed.')
+      }
+      const current = await evidenceStore.getMetadata(currentId)
+      expect(current).toBeDefined()
+      expect(
+        current && existsSync(evidenceStore.resolveStoredPath(current.filePath))
+      ).toBe(true)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('sweeps a content file left after metadata commit but before file GC', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'agentgo-day5-persistent-file-gc-')
+    )
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { workspace, scan } = await createRunningRecoveryScan(repository)
+      const evidenceStore = new EvidenceStore(
+        database,
+        join(directory, 'artifacts')
+      )
+      const orphaned = await evidenceStore.save({
+        workspaceId: workspace.id,
+        scanId: scan.id,
+        type: 'evidence-capture-hash-only',
+        mimeType: 'application/json',
+        content: '{"metadata":"removed-before-file-gc"}',
+        source: 'execution-interruption-summary',
+        createdBy: 'application-service',
+        captureTool: 'evidence-capture-policy',
+        captureToolVersion: '2.0.0',
+        redactionState: 'redacted'
+      })
+      const orphanedPath = evidenceStore.resolveStoredPath(orphaned.filePath)
+      database.native
+        .prepare('DELETE FROM evidence_items WHERE id = ?')
+        .run(orphaned.id)
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        ),
+        evidenceStore
+      })
+
+      await application.initialize()
+
+      expect(existsSync(orphanedPath)).toBe(false)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('falls back to no-Evidence terminalization when recovery Evidence cannot be saved', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-save-failure-'))
+    temporaryDirectories.push(directory)
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+
+    try {
+      const { scan } = await createRunningRecoveryScan(repository)
+      const context = interruptedRecoveryContext(scan.id)
+      vi.spyOn(
+        repository,
+        'listClaimedExecutionLeasesForRecovery'
+      ).mockResolvedValue([context])
+      const fallback = vi
+        .spyOn(repository, 'recoverInterruptedExecutionLeaseWithCleanup')
+        .mockResolvedValue({
+          lease: recoveredInterruptedLease(context),
+          discardedEvidence: []
+        })
+      const evidenceStore = new EvidenceStore(
+        database,
+        join(directory, 'artifacts')
+      )
+      const save = vi
+        .spyOn(evidenceStore, 'save')
+        .mockRejectedValue(new Error('synthetic Evidence save failure'))
+      const evidenceCapturePolicy = new EvidenceCapturePolicy()
+      vi.spyOn(evidenceCapturePolicy, 'capture').mockReturnValue({
+        state: 'hash-only',
+        reason: 'policy-hash-only',
+        sourceHash: {
+          domain: 'agentgo.evidence-source.v1',
+          algorithm: 'sha256',
+          digest: 'b'.repeat(64),
+          basis: 'source-bytes',
+          coverage: 'complete',
+          hashedBytes: 1
+        },
+        artifacts: [
+          {
+            type: 'evidence-capture-hash-only',
+            mimeType: 'application/json',
+            source: 'execution-interruption-summary'
+          }
+        ]
+      } as never)
+      const application = new AgentGoApplicationService({
+        ...vulnerabilityDependencies(),
+        repository,
+        credentialStore: new FileCredentialStore(
+          join(directory, 'credentials.json'),
+          protector
+        ),
+        evidenceStore,
+        evidenceCapturePolicy
+      })
+
+      await application.initialize()
+
+      expect(save).toHaveBeenCalledOnce()
+      expect(fallback).toHaveBeenCalledWith({
+        leaseId: context.lease.id,
+        discardUnboundStagedEvidence: true
+      })
+      expect(await repository.getScan(scan.id)).toMatchObject({
+        status: 'awaiting-user'
+      })
     } finally {
       database.close()
     }
@@ -512,7 +1149,8 @@ describe('AgentGoApplicationService recovery', () => {
         source: 'automated-test',
         createdBy: 'test',
         captureTool: 'test',
-        captureToolVersion: '1.0.0'
+        captureToolVersion: '1.0.0',
+        redactionState: 'redacted'
       })
       const evidencePath = evidenceStore.resolveStoredPath(evidence.filePath)
       expect(existsSync(evidencePath)).toBe(true)
@@ -587,7 +1225,8 @@ describe('AgentGoApplicationService recovery', () => {
         source: 'automated-test',
         createdBy: 'test',
         captureTool: 'test',
-        captureToolVersion: '1.0.0'
+        captureToolVersion: '1.0.0',
+        redactionState: 'redacted'
       })
       const workspaceEvidencePath = evidenceStore.resolveStoredPath(
         workspaceEvidence.filePath

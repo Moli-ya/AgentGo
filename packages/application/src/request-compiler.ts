@@ -1,7 +1,10 @@
-import { createHmac } from 'node:crypto'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import {
   CapabilityIdSchema,
   DefinitionIdSchema,
+  ExecutionCredentialRefSchema,
+  ExecutionAdapterKindSchema,
+  ExecutionPurposeSchema,
   FormValueSourceSchema,
   IdentityRefSchema,
   InventoryEndpointRecordSchema,
@@ -11,13 +14,19 @@ import {
   RequestMutationTargetSchema,
   RequestVariantRecordSchema,
   RESOLVED_INTENT_HASH_DOMAIN,
+  ResolvedIntentHashSchema,
   SessionGenerationRefSchema,
   SystemIssuedOpaqueIdSchema,
   TEMPLATE_INTENT_HASH_DOMAIN,
+  TemplateIntentHashSchema,
   TestObjectRefSchema,
   WIRE_REQUEST_HMAC_DOMAIN,
+  WireRequestHmacSchema,
   type CapabilityId,
+  type ExecutionAdapterKind,
+  type ExecutionPurpose,
   type FormValueSource,
+  type ExecutionCredentialRef,
   type IdentityRef,
   type InventoryEndpointRecord,
   type InventoryValueType,
@@ -45,6 +54,10 @@ import {
   sha256Text,
   stableInventoryHash
 } from '@agentgo/domain'
+import {
+  snapshotSecureBytes,
+  zeroizeSecureBytes
+} from './secure-byte-snapshot'
 
 const HTTP_FIELD_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9a-z-]{1,128}$/u
 const CANONICAL_MEDIA_TYPE_PATTERN =
@@ -85,6 +98,15 @@ const RESERVED_TRANSPORT_HEADERS = new Set([
   'transfer-encoding',
   'upgrade'
 ])
+const SENSITIVE_CREDENTIAL_HEADER_NAMES = new Set([
+  'authorization',
+  'cookie',
+  'proxy-authorization',
+  'x-api-key',
+  'x-auth-token'
+])
+const SENSITIVE_CREDENTIAL_HEADER_NAME_PATTERN =
+  /(?:password|passwd|secret|token|api[-_.]?key|credential|csrf|xsrf|session)/u
 const READ_ONLY_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const TEST_OBJECT_WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH'])
 
@@ -193,15 +215,31 @@ export interface ProbeRequestCompilerInput {
   readonly endpoint: InventoryEndpointRecord
   readonly requestVariant: RequestVariantRecord
   readonly requestTemplate: ProbeRequestTemplate
-  readonly mutationTarget: RequestMutationTarget
-  readonly mutationGenerator: MutationGeneratorRef
+  /**
+   * Baseline compilation omits both mutation fields. A mutation compilation
+   * must provide both; half-specified mutation intent is rejected.
+   */
+  readonly mutationTarget?: RequestMutationTarget
+  readonly mutationGenerator?: MutationGeneratorRef
+  /**
+   * Authentication material is independent from reviewed business headers.
+   * Values are restricted to secret-ref sources and require an active
+   * IdentityRef bound to the same owner and scope snapshot.
+   */
+  readonly authorizedIdentityHeaders?: readonly NamedRequestValueTemplate[]
   readonly enabledCapabilityIds: readonly CapabilityId[]
   readonly hashKey: RequestHashKeyRef
   readonly ownerRef?: SystemIssuedOpaqueId
   readonly scopeSnapshotId?: SystemIssuedOpaqueId
   readonly identityRef?: IdentityRef
+  readonly credentialRef?: ExecutionCredentialRef
   readonly sessionRef?: SessionGenerationRef
   readonly testObjectRef?: TestObjectRef
+  /**
+   * Day 4 compilation may remain execution-agnostic. Day 5 issuance must
+   * supply this immutable binding and independently reconstruct it.
+   */
+  readonly executionBinding?: WireRequestExecutionBinding
 }
 
 export type ProbeRequestCompileErrorCode =
@@ -258,6 +296,48 @@ export interface MaterializedWireRequest {
   readonly url: string
   readonly headers: readonly Readonly<{ name: string; value: string }>[]
   readonly bodyBytes?: readonly number[]
+}
+
+export interface WireRequestExecutionBinding {
+  readonly stepId: string
+  readonly purpose: ExecutionPurpose
+  readonly adapterKind: ExecutionAdapterKind
+}
+
+export interface WireRequestAuthorizationContextInput {
+  readonly templateIntentHash: TemplateIntentHash
+  readonly enabledCapabilityIds: readonly CapabilityId[]
+  readonly credentialRef?: ExecutionCredentialRef
+  readonly ownerRef?: SystemIssuedOpaqueId
+  readonly scopeSnapshotId?: SystemIssuedOpaqueId
+  readonly identityRef?: IdentityRef
+  readonly sessionRef?: SessionGenerationRef
+  readonly testObjectRef?: TestObjectRef
+  readonly executionBinding?: WireRequestExecutionBinding
+}
+
+/**
+ * Every field is present in the authenticated representation. Optional
+ * compiler inputs become explicit nulls so omission and value substitution
+ * cannot share an HMAC preimage.
+ */
+export interface WireRequestAuthorizationContext {
+  readonly templateIntentHash: TemplateIntentHash
+  readonly enabledCapabilityIds: readonly CapabilityId[]
+  readonly credentialRef: ExecutionCredentialRef | null
+  readonly ownerRef: SystemIssuedOpaqueId | null
+  readonly scopeSnapshotId: SystemIssuedOpaqueId | null
+  readonly identityRef: IdentityRef | null
+  readonly sessionRef: SessionGenerationRef | null
+  readonly testObjectRef: TestObjectRef | null
+  readonly executionBinding: WireRequestExecutionBinding | null
+}
+
+export interface WireRequestHmacInput {
+  readonly hashKey: RequestHashKeyRef
+  readonly resolvedIntentHash: ResolvedIntentHash
+  readonly authorizationContext: WireRequestAuthorizationContext
+  readonly request: MaterializedWireRequest
 }
 
 /**
@@ -318,7 +398,9 @@ export interface CompiledProbeRequest {
   readonly request: CompiledWireRequest
   readonly templateIntentHash: TemplateIntentHash
   readonly resolvedIntentHash: ResolvedIntentHash
+  readonly authorizationContext: WireRequestAuthorizationContext
   readonly wireRequestHmac: WireRequestHmac
+  readonly enabledCapabilityIds: readonly CapabilityId[]
 }
 
 interface ResolvedNamedValue {
@@ -464,7 +546,10 @@ function jsonTemplateDescriptor(value: JsonValueTemplate): unknown {
   return valueSourceDescriptor(value)
 }
 
-function requestTemplateDescriptor(template: ProbeRequestTemplate): unknown {
+function requestTemplateDescriptor(
+  template: ProbeRequestTemplate,
+  authorizedIdentityHeaders: readonly NamedRequestValueTemplate[]
+): unknown {
   return {
     url: {
       origin: valueSourceDescriptor(template.url.origin),
@@ -478,6 +563,12 @@ function requestTemplateDescriptor(template: ProbeRequestTemplate): unknown {
       value: valueSourceDescriptor(entry.value)
     })),
     headers: [...template.headers]
+      .map((entry) => ({
+        name: entry.name,
+        value: valueSourceDescriptor(entry.value)
+      }))
+      .sort((left, right) => compareText(left.name, right.name)),
+    authorizedIdentityHeaders: [...authorizedIdentityHeaders]
       .map((entry) => ({
         name: entry.name,
         value: valueSourceDescriptor(entry.value)
@@ -678,6 +769,13 @@ function assertHeaderName(value: string): void {
   if (!HTTP_FIELD_NAME_PATTERN.test(value)) fail('invalid-canonical-input')
 }
 
+function isSensitiveCredentialHeaderName(value: string): boolean {
+  return (
+    SENSITIVE_CREDENTIAL_HEADER_NAMES.has(value) ||
+    SENSITIVE_CREDENTIAL_HEADER_NAME_PATTERN.test(value)
+  )
+}
+
 function assertHeaderValue(value: string): void {
   assertValidUnicode(value)
   if (value !== value.trim() || /[^\x20-\x7e]/u.test(value)) {
@@ -825,6 +923,490 @@ function capturePlainInput(
     return output
   } finally {
     state.ancestors.delete(value)
+  }
+}
+
+function parseCapturedExecutionBinding(
+  value: unknown
+): WireRequestExecutionBinding {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    canonicalJson(Object.keys(value).sort(compareText)) !==
+      canonicalJson(['adapterKind', 'purpose', 'stepId'])
+  ) {
+    fail('invalid-input')
+  }
+  const record = value as Record<string, unknown>
+  const stepId = DefinitionIdSchema.safeParse(record.stepId)
+  const purpose = ExecutionPurposeSchema.safeParse(record.purpose)
+  const adapterKind = ExecutionAdapterKindSchema.safeParse(
+    record.adapterKind
+  )
+  if (!stepId.success || !purpose.success || !adapterKind.success) {
+    fail('invalid-input')
+  }
+  return Object.freeze({
+    stepId: stepId.data,
+    purpose: purpose.data,
+    adapterKind: adapterKind.data
+  })
+}
+
+function parseCanonicalCapabilityIds(
+  value: unknown
+): readonly CapabilityId[] {
+  if (!Array.isArray(value) || value.length > 128) {
+    fail('invalid-input')
+  }
+  const output: CapabilityId[] = []
+  for (const [index, item] of value.entries()) {
+    const parsed = CapabilityIdSchema.safeParse(item)
+    if (
+      !parsed.success ||
+      (index > 0 && output[index - 1]! >= parsed.data)
+    ) {
+      fail('invalid-input')
+    }
+    output.push(parsed.data)
+  }
+  return Object.freeze(output)
+}
+
+function parseCapturedAuthorizationContext(
+  value: unknown
+): WireRequestAuthorizationContext {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    canonicalJson(Object.keys(value).sort(compareText)) !==
+      canonicalJson([
+        'credentialRef',
+        'enabledCapabilityIds',
+        'executionBinding',
+        'identityRef',
+        'ownerRef',
+        'scopeSnapshotId',
+        'sessionRef',
+        'templateIntentHash',
+        'testObjectRef'
+      ])
+  ) {
+    fail('invalid-input')
+  }
+  const record = value as Record<string, unknown>
+  const templateIntentHash = TemplateIntentHashSchema.safeParse(
+    record.templateIntentHash
+  )
+  const credentialRef =
+    record.credentialRef === null
+      ? null
+      : ExecutionCredentialRefSchema.safeParse(record.credentialRef)
+  const ownerRef =
+    record.ownerRef === null
+      ? null
+      : SystemIssuedOpaqueIdSchema.safeParse(record.ownerRef)
+  const scopeSnapshotId =
+    record.scopeSnapshotId === null
+      ? null
+      : SystemIssuedOpaqueIdSchema.safeParse(record.scopeSnapshotId)
+  const identityRef =
+    record.identityRef === null
+      ? null
+      : IdentityRefSchema.safeParse(record.identityRef)
+  const sessionRef =
+    record.sessionRef === null
+      ? null
+      : SessionGenerationRefSchema.safeParse(record.sessionRef)
+  const testObjectRef =
+    record.testObjectRef === null
+      ? null
+      : TestObjectRefSchema.safeParse(record.testObjectRef)
+  if (
+    !templateIntentHash.success ||
+    (credentialRef !== null && !credentialRef.success) ||
+    (ownerRef !== null && !ownerRef.success) ||
+    (scopeSnapshotId !== null && !scopeSnapshotId.success) ||
+    (identityRef !== null && !identityRef.success) ||
+    (sessionRef !== null && !sessionRef.success) ||
+    (testObjectRef !== null && !testObjectRef.success)
+  ) {
+    fail('invalid-input')
+  }
+  const parsedOwnerRef = ownerRef === null ? null : ownerRef.data
+  const parsedCredentialRef =
+    credentialRef === null ? null : credentialRef.data
+  const parsedScopeSnapshotId =
+    scopeSnapshotId === null ? null : scopeSnapshotId.data
+  const parsedIdentityRef = identityRef === null ? null : identityRef.data
+  const parsedSessionRef = sessionRef === null ? null : sessionRef.data
+  const parsedTestObjectRef =
+    testObjectRef === null ? null : testObjectRef.data
+  const refs = [
+    parsedIdentityRef,
+    parsedSessionRef,
+    parsedTestObjectRef
+  ].filter(
+    (
+      ref
+    ): ref is IdentityRef | SessionGenerationRef | TestObjectRef =>
+      ref !== null
+  )
+  if (parsedCredentialRef !== null && parsedIdentityRef === null) {
+    fail('invalid-input')
+  }
+
+  if (
+    refs.length > 0 &&
+    (parsedOwnerRef === null ||
+      parsedScopeSnapshotId === null ||
+      refs.some(
+        (ref) =>
+          ref.ownerRef !== parsedOwnerRef ||
+          ref.scopeSnapshotId !== parsedScopeSnapshotId
+      ))
+  ) {
+    fail('invalid-input')
+  }
+  return deepFreeze({
+    templateIntentHash: templateIntentHash.data,
+    enabledCapabilityIds: parseCanonicalCapabilityIds(
+      record.enabledCapabilityIds
+    ),
+    credentialRef: parsedCredentialRef,
+    ownerRef: parsedOwnerRef,
+    scopeSnapshotId: parsedScopeSnapshotId,
+    identityRef: parsedIdentityRef,
+    sessionRef: parsedSessionRef,
+    testObjectRef: parsedTestObjectRef,
+    executionBinding:
+      record.executionBinding === null
+        ? null
+        : parseCapturedExecutionBinding(record.executionBinding)
+  }) as WireRequestAuthorizationContext
+}
+
+export function parseWireRequestAuthorizationContext(
+  input: unknown
+): WireRequestAuthorizationContext {
+  let captured: unknown
+  try {
+    captured = capturePlainInput(input)
+  } catch (error) {
+    if (error instanceof ProbeRequestCompileError) throw error
+    fail('invalid-input')
+  }
+  return parseCapturedAuthorizationContext(captured)
+}
+
+export function createWireRequestAuthorizationContext(
+  input: WireRequestAuthorizationContextInput
+): WireRequestAuthorizationContext {
+  let captured: unknown
+  try {
+    captured = capturePlainInput(input)
+  } catch (error) {
+    if (error instanceof ProbeRequestCompileError) throw error
+    fail('invalid-input')
+  }
+  if (!captured || typeof captured !== 'object' || Array.isArray(captured)) {
+    fail('invalid-input')
+  }
+  const record = captured as Record<string, unknown>
+  const allowedKeys = new Set([
+    'credentialRef',
+    'enabledCapabilityIds',
+    'executionBinding',
+    'identityRef',
+    'ownerRef',
+    'scopeSnapshotId',
+    'sessionRef',
+    'templateIntentHash',
+    'testObjectRef'
+  ])
+  if (
+    !Object.prototype.hasOwnProperty.call(record, 'templateIntentHash') ||
+    !Object.prototype.hasOwnProperty.call(record, 'enabledCapabilityIds') ||
+    Object.keys(record).some((key) => !allowedKeys.has(key)) ||
+    !Array.isArray(record.enabledCapabilityIds)
+  ) {
+    fail('invalid-input')
+  }
+  const capabilityIds = record.enabledCapabilityIds.map((value) => {
+    const parsed = CapabilityIdSchema.safeParse(value)
+    if (!parsed.success) fail('invalid-input')
+    return parsed.data
+  })
+  if (new Set(capabilityIds).size !== capabilityIds.length) {
+    fail('invalid-input')
+  }
+  capabilityIds.sort(compareText)
+  return parseCapturedAuthorizationContext({
+    templateIntentHash: record.templateIntentHash,
+    credentialRef: record.credentialRef ?? null,
+    enabledCapabilityIds: capabilityIds,
+    ownerRef: record.ownerRef ?? null,
+    scopeSnapshotId: record.scopeSnapshotId ?? null,
+    identityRef: record.identityRef ?? null,
+    sessionRef: record.sessionRef ?? null,
+    testObjectRef: record.testObjectRef ?? null,
+    executionBinding: record.executionBinding ?? null
+  })
+}
+
+function snapshotWireRequestHmacInput(
+  input: WireRequestHmacInput
+): WireRequestHmacInput {
+  let captured: unknown
+  try {
+    captured = capturePlainInput(input)
+  } catch (error) {
+    if (error instanceof ProbeRequestCompileError) throw error
+    fail('invalid-input')
+  }
+  if (
+    !captured ||
+    typeof captured !== 'object' ||
+    Array.isArray(captured)
+  ) {
+    fail('invalid-input')
+  }
+  const root = captured as Record<string, unknown>
+  if (
+    canonicalJson(Object.keys(root).sort(compareText)) !==
+    canonicalJson(['authorizationContext', 'hashKey', 'request', 'resolvedIntentHash'])
+  ) {
+    fail('invalid-input')
+  }
+
+  const hashKeyValue = root.hashKey
+  if (
+    !hashKeyValue ||
+    typeof hashKeyValue !== 'object' ||
+    Array.isArray(hashKeyValue) ||
+    canonicalJson(Object.keys(hashKeyValue).sort(compareText)) !==
+      canonicalJson(['keyRef', 'keyVersion'])
+  ) {
+    fail('hash-key-rejected')
+  }
+  const hashKeyRecord = hashKeyValue as Record<string, unknown>
+  if (
+    !SystemIssuedOpaqueIdSchema.safeParse(hashKeyRecord.keyRef).success ||
+    !Number.isInteger(hashKeyRecord.keyVersion) ||
+    (hashKeyRecord.keyVersion as number) < 0
+  ) {
+    fail('hash-key-rejected')
+  }
+  const hashKey: RequestHashKeyRef = Object.freeze({
+    keyRef: hashKeyRecord.keyRef as SystemIssuedOpaqueId,
+    keyVersion: hashKeyRecord.keyVersion as number
+  })
+
+  const parsedResolved = ResolvedIntentHashSchema.safeParse(root.resolvedIntentHash)
+  if (!parsedResolved.success) fail('invalid-input')
+  if (
+    parsedResolved.data.commitmentKeyRef !== hashKey.keyRef ||
+    parsedResolved.data.commitmentKeyVersion !== hashKey.keyVersion
+  ) {
+    fail('hash-key-rejected')
+  }
+
+  const requestValue = root.request
+  if (
+    !requestValue ||
+    typeof requestValue !== 'object' ||
+    Array.isArray(requestValue)
+  ) {
+    fail('invalid-input')
+  }
+  const requestRecord = requestValue as Record<string, unknown>
+  const bodyPresent = Object.prototype.hasOwnProperty.call(
+    requestRecord,
+    'bodyBytes'
+  )
+  const expectedRequestKeys = bodyPresent
+    ? ['bodyBytes', 'headers', 'method', 'url']
+    : ['headers', 'method', 'url']
+  if (
+    canonicalJson(Object.keys(requestRecord).sort(compareText)) !==
+    canonicalJson(expectedRequestKeys)
+  ) {
+    fail('invalid-input')
+  }
+  if (
+    typeof requestRecord.method !== 'string' ||
+    typeof requestRecord.url !== 'string' ||
+    !Array.isArray(requestRecord.headers)
+  ) {
+    fail('invalid-input')
+  }
+  assertValidUnicode(requestRecord.method)
+  assertValidUnicode(requestRecord.url)
+  if (requestRecord.headers.length > MAX_TEMPLATE_ENTRIES) {
+    fail('request-budget-rejected')
+  }
+  let headerBytes = 0
+  const headers = requestRecord.headers.map((headerValue) => {
+    if (
+      !headerValue ||
+      typeof headerValue !== 'object' ||
+      Array.isArray(headerValue) ||
+      canonicalJson(Object.keys(headerValue).sort(compareText)) !==
+        canonicalJson(['name', 'value'])
+    ) {
+      fail('invalid-input')
+    }
+    const header = headerValue as Record<string, unknown>
+    if (typeof header.name !== 'string' || typeof header.value !== 'string') {
+      fail('invalid-input')
+    }
+    assertHeaderName(header.name)
+    assertHeaderValue(header.value)
+    headerBytes +=
+      Buffer.byteLength(header.name, 'ascii') +
+      Buffer.byteLength(header.value, 'ascii') +
+      4
+    if (headerBytes > MAX_HEADER_BLOCK_BYTES) {
+      fail('request-budget-rejected')
+    }
+    return Object.freeze({ name: header.name, value: header.value })
+  })
+
+  let bodyBytes: readonly number[] | undefined
+  if (bodyPresent) {
+    if (
+      !Array.isArray(requestRecord.bodyBytes) ||
+      requestRecord.bodyBytes.length > MAX_BODY_BYTES ||
+      requestRecord.bodyBytes.some(
+        (value) => !Number.isInteger(value) || value < 0 || value > 255
+      )
+    ) {
+      fail('invalid-input')
+    }
+    bodyBytes = Object.freeze([...(requestRecord.bodyBytes as number[])])
+  }
+  const wireBytes =
+    Buffer.byteLength(requestRecord.method, 'utf8') +
+    Buffer.byteLength(requestRecord.url, 'utf8') +
+    headerBytes +
+    (bodyBytes?.length ?? 0)
+  if (wireBytes > MAX_WIRE_BYTES) fail('request-budget-rejected')
+
+  return deepFreeze({
+    hashKey,
+    resolvedIntentHash: parsedResolved.data,
+    authorizationContext: parseCapturedAuthorizationContext(
+      root.authorizationContext
+    ),
+    request: {
+      method: requestRecord.method,
+      url: requestRecord.url,
+      headers,
+      ...(bodyPresent ? { bodyBytes } : {})
+    }
+  }) as WireRequestHmacInput
+}
+
+function resolveRequestHashKey(
+  hashKey: RequestHashKeyRef,
+  provider: RequestHashKeyProvider
+): Uint8Array {
+  let key: Uint8Array
+  try {
+    key = snapshotSecureBytes(provider.resolveKey(hashKey), {
+      minimumBytes: MIN_HMAC_KEY_BYTES,
+      maximumBytes: MAX_HMAC_KEY_BYTES
+    })
+  } catch (error) {
+    if (error instanceof ProbeRequestCompileError) throw error
+    fail('hash-key-rejected')
+  }
+  return key
+}
+
+function computeWireRequestHmacDigest(
+  input: WireRequestHmacInput,
+  key: Uint8Array
+): string {
+  const hmac = createHmac('sha256', key)
+  updateFrame(hmac, 'domain', utf8(WIRE_REQUEST_HMAC_DOMAIN))
+  updateFrame(
+    hmac,
+    'authorization-context',
+    utf8(canonicalJson(input.authorizationContext))
+  )
+  updateFrame(
+    hmac,
+    'resolved-intent',
+    utf8(input.resolvedIntentHash.digest)
+  )
+  updateFrame(hmac, 'method', utf8(input.request.method))
+  updateFrame(hmac, 'url', utf8(input.request.url))
+  for (const header of input.request.headers) {
+    updateFrame(hmac, 'header-name', utf8(header.name))
+    updateFrame(hmac, 'header-value', utf8(header.value))
+  }
+  const bodyPresent = Object.prototype.hasOwnProperty.call(
+    input.request,
+    'bodyBytes'
+  )
+  updateFrame(hmac, 'body-present', utf8(bodyPresent ? '1' : '0'))
+  updateFrame(
+    hmac,
+    'body',
+    bodyPresent
+      ? Uint8Array.from(input.request.bodyBytes ?? [])
+      : new Uint8Array()
+  )
+  return hmac.digest('hex')
+}
+
+export function computeWireRequestHmac(
+  input: WireRequestHmacInput,
+  hashKeyProvider: RequestHashKeyProvider
+): WireRequestHmac {
+  const snapshot = snapshotWireRequestHmacInput(input)
+  const key = resolveRequestHashKey(snapshot.hashKey, hashKeyProvider)
+  try {
+    return WireRequestHmacSchema.parse({
+      domain: WIRE_REQUEST_HMAC_DOMAIN,
+      algorithm: 'hmac-sha256',
+      keyRef: snapshot.hashKey.keyRef,
+      keyVersion: snapshot.hashKey.keyVersion,
+      digest: computeWireRequestHmacDigest(snapshot, key)
+    })
+  } finally {
+    zeroizeSecureBytes(key)
+  }
+}
+
+export function verifyWireRequestHmac(
+  input: WireRequestHmacInput,
+  expected: WireRequestHmac,
+  hashKeyProvider: RequestHashKeyProvider
+): boolean {
+  try {
+    const snapshot = snapshotWireRequestHmacInput(input)
+    const capturedExpected = capturePlainInput(expected)
+    const parsedExpected = WireRequestHmacSchema.safeParse(capturedExpected)
+    if (
+      !parsedExpected.success ||
+      parsedExpected.data.keyRef !== snapshot.hashKey.keyRef ||
+      parsedExpected.data.keyVersion !== snapshot.hashKey.keyVersion
+    ) {
+      return false
+    }
+    const actual = computeWireRequestHmac(snapshot, hashKeyProvider)
+    const actualDigest = Buffer.from(actual.digest, 'hex')
+    const expectedDigest = Buffer.from(parsedExpected.data.digest, 'hex')
+    return (
+      actualDigest.byteLength === expectedDigest.byteLength &&
+      timingSafeEqual(actualDigest, expectedDigest)
+    )
+  } catch {
+    return false
   }
 }
 
@@ -1393,33 +1975,36 @@ export class ProbeRequestCompiler {
       fail('hash-key-rejected')
     }
     const generator = this.#requireGenerator(snapshot)
-    this.#validateCapabilities(snapshot, generator.metadata)
+    this.#validateCapabilities(snapshot, generator?.metadata)
 
     let key: Uint8Array
     try {
-      const provided = this.#resolveHashKey(snapshot.hashKey)
-      if (!(provided instanceof Uint8Array)) fail('hash-key-rejected')
-      key = Uint8Array.from(provided)
+      key = snapshotSecureBytes(
+        this.#resolveHashKey(snapshot.hashKey),
+        {
+          minimumBytes: MIN_HMAC_KEY_BYTES,
+          maximumBytes: MAX_HMAC_KEY_BYTES
+        }
+      )
     } catch (error) {
       if (error instanceof ProbeRequestCompileError) throw error
-      fail('hash-key-rejected')
-    }
-    if (key.byteLength < MIN_HMAC_KEY_BYTES || key.byteLength > MAX_HMAC_KEY_BYTES) {
-      key.fill(0)
       fail('hash-key-rejected')
     }
 
     try {
       return this.#compileWithKey(snapshot, generator, key)
     } finally {
-      key.fill(0)
+      zeroizeSecureBytes(key)
     }
   }
 
   #snapshotInput(input: ProbeRequestCompilerInput): ProbeRequestCompilerInput {
     const allowedInputKeys = new Set([
+      'authorizedIdentityHeaders',
+      'credentialRef',
       'enabledCapabilityIds',
       'endpoint',
+      'executionBinding',
       'hashKey',
       'identityRef',
       'mutationGenerator',
@@ -1435,13 +2020,22 @@ export class ProbeRequestCompiler {
     if (Object.keys(input).some((key) => !allowedInputKeys.has(key))) {
       fail('invalid-input')
     }
+    const hasMutationTarget = input.mutationTarget !== undefined
+    const hasMutationGenerator = input.mutationGenerator !== undefined
+    if (hasMutationTarget !== hasMutationGenerator) fail('invalid-input')
     if (
-      !input.mutationGenerator ||
-      canonicalJson(Object.keys(input.mutationGenerator).sort(compareText)) !==
-        canonicalJson(['generatorId', 'version']) ||
+      (input.mutationGenerator !== undefined &&
+        canonicalJson(Object.keys(input.mutationGenerator).sort(compareText)) !==
+          canonicalJson(['generatorId', 'version'])) ||
       !input.hashKey ||
       canonicalJson(Object.keys(input.hashKey).sort(compareText)) !==
         canonicalJson(['keyRef', 'keyVersion'])
+    ) {
+      fail('invalid-input')
+    }
+    if (
+      input.authorizedIdentityHeaders !== undefined &&
+      !Array.isArray(input.authorizedIdentityHeaders)
     ) {
       fail('invalid-input')
     }
@@ -1491,16 +2085,40 @@ export class ProbeRequestCompiler {
       ),
       body: RequestBodyTemplateSchema.parse(input.requestTemplate.body)
     }
+    const authorizedIdentityHeaders = Object.freeze(
+      (input.authorizedIdentityHeaders ?? [])
+        .map((entry) =>
+          Object.freeze({
+            ...entry,
+            name:
+              typeof entry.name === 'string'
+                ? entry.name.toLowerCase()
+                : entry.name,
+            value: FormValueSourceSchema.parse(entry.value)
+          })
+        )
+        .sort((left, right) => compareText(left.name, right.name))
+    )
     return deepFreeze({
       scanId: input.scanId,
       endpoint: InventoryEndpointRecordSchema.parse(input.endpoint),
       requestVariant: RequestVariantRecordSchema.parse(input.requestVariant),
+      ...(input.credentialRef !== undefined
+        ? { credentialRef: ExecutionCredentialRefSchema.parse(input.credentialRef) }
+        : {}),
       requestTemplate,
-      mutationTarget: RequestMutationTargetSchema.parse(input.mutationTarget),
-      mutationGenerator: {
-        generatorId: input.mutationGenerator.generatorId,
-        version: input.mutationGenerator.version
-      },
+      ...(input.mutationTarget !== undefined
+        ? { mutationTarget: RequestMutationTargetSchema.parse(input.mutationTarget) }
+        : {}),
+      ...(input.mutationGenerator !== undefined
+        ? {
+            mutationGenerator: {
+              generatorId: input.mutationGenerator.generatorId,
+              version: input.mutationGenerator.version
+            }
+          }
+        : {}),
+      authorizedIdentityHeaders,
       enabledCapabilityIds: [...input.enabledCapabilityIds],
       hashKey: { ...input.hashKey },
       ...(input.ownerRef !== undefined ? { ownerRef: input.ownerRef } : {}),
@@ -1515,6 +2133,13 @@ export class ProbeRequestCompiler {
         : {}),
       ...(input.testObjectRef !== undefined
         ? { testObjectRef: TestObjectRefSchema.parse(input.testObjectRef) }
+        : {}),
+      ...(input.executionBinding !== undefined
+        ? {
+            executionBinding: parseCapturedExecutionBinding(
+              input.executionBinding
+            )
+          }
         : {})
     }) as ProbeRequestCompilerInput
   }
@@ -1532,7 +2157,8 @@ export class ProbeRequestCompiler {
     if (
       !InventoryEndpointRecordSchema.safeParse(input.endpoint).success ||
       !RequestVariantRecordSchema.safeParse(input.requestVariant).success ||
-      !RequestMutationTargetSchema.safeParse(input.mutationTarget).success
+      (input.mutationTarget !== undefined &&
+        !RequestMutationTargetSchema.safeParse(input.mutationTarget).success)
     ) {
       fail('invalid-input')
     }
@@ -1566,7 +2192,8 @@ export class ProbeRequestCompiler {
     if (variant.codec !== 'none' && variant.codec !== 'form' && variant.codec !== 'json') {
       fail('unsupported-codec')
     }
-    if (!selectorMatches(input.mutationTarget, variant)) {
+    const mutationTarget = input.mutationTarget
+    if (mutationTarget !== undefined && !selectorMatches(mutationTarget, variant)) {
       const supported = new Set([
         'query',
         'path',
@@ -1576,14 +2203,15 @@ export class ProbeRequestCompiler {
         'json-pointer'
       ])
       fail(
-        supported.has(input.mutationTarget.kind)
+        supported.has(mutationTarget.kind)
           ? 'template-mismatch'
           : 'unsupported-selector'
       )
     }
     if (
-      input.mutationTarget.kind === 'form' && variant.codec !== 'form' ||
-      input.mutationTarget.kind === 'json-pointer' && variant.codec !== 'json'
+      mutationTarget !== undefined &&
+      (mutationTarget.kind === 'form' && variant.codec !== 'form' ||
+        mutationTarget.kind === 'json-pointer' && variant.codec !== 'json')
     ) {
       fail('template-mismatch')
     }
@@ -1605,6 +2233,8 @@ export class ProbeRequestCompiler {
 
   #validateOpaqueRefs(input: ProbeRequestCompilerInput): void {
     if (
+      (input.credentialRef &&
+        !ExecutionCredentialRefSchema.safeParse(input.credentialRef).success) ||
       (input.ownerRef !== undefined &&
         !SystemIssuedOpaqueIdSchema.safeParse(input.ownerRef).success) ||
       (input.scopeSnapshotId !== undefined &&
@@ -1636,6 +2266,33 @@ export class ProbeRequestCompiler {
     ) {
       fail('opaque-ref-rejected')
     }
+    if (
+      input.requestVariant.executionClass === 'active-l2' &&
+      !input.testObjectRef
+    ) {
+      fail('opaque-ref-rejected')
+    }
+    const authorizedIdentityHeaders = input.authorizedIdentityHeaders ?? []
+    if (
+      (authorizedIdentityHeaders.length > 0) !==
+        (input.credentialRef !== undefined) ||
+      (input.credentialRef !== undefined &&
+        (!input.identityRef ||
+          authorizedIdentityHeaders.some(
+            (entry) =>
+              entry.value.kind !== 'secret-ref' ||
+              entry.value.secretRef !== input.credentialRef!.id ||
+              entry.value.generation !== input.credentialRef!.generation
+          )))
+    ) {
+      fail('opaque-ref-rejected')
+    }
+    if (
+      (input.authorizedIdentityHeaders?.length ?? 0) > 0 &&
+      !input.identityRef
+    ) {
+      fail('opaque-ref-rejected')
+    }
     const refs = [input.identityRef, input.sessionRef, input.testObjectRef].filter(
       (value): value is IdentityRef | SessionGenerationRef | TestObjectRef =>
         value !== undefined
@@ -1653,7 +2310,16 @@ export class ProbeRequestCompiler {
     }
   }
 
-  #requireGenerator(input: ProbeRequestCompilerInput): MutationGenerator {
+  #requireGenerator(
+    input: ProbeRequestCompilerInput
+  ): MutationGenerator | undefined {
+    if (
+      input.mutationTarget === undefined &&
+      input.mutationGenerator === undefined
+    ) {
+      return undefined
+    }
+    if (!input.mutationTarget || !input.mutationGenerator) fail('invalid-input')
     const generator = this.#generators.get(
       registryKey(
         input.mutationGenerator.generatorId,
@@ -1667,9 +2333,16 @@ export class ProbeRequestCompiler {
     ) {
       fail('generator-rejected')
     }
+    const controlledOobAuthorized =
+      generator.metadata.safety.networkTarget === 'controlled-oob' &&
+      generator.metadata.requiredCapabilityIds.includes(
+        'oob.controlled-observe'
+      ) &&
+      input.enabledCapabilityIds.includes('oob.controlled-observe')
     if (
       generator.metadata.safety.mayExecuteInTargetContext ||
-      generator.metadata.safety.networkTarget === 'controlled-oob' ||
+      (generator.metadata.safety.networkTarget === 'controlled-oob' &&
+        !controlledOobAuthorized) ||
       (generator.metadata.safety.sideEffect === 'reversible' &&
         input.requestVariant.executionClass !== 'active-l2') ||
       (generator.metadata.safety.dataAccess === 'authorized-target-data' &&
@@ -1685,7 +2358,8 @@ export class ProbeRequestCompiler {
         (generator.metadata.safety.dataAccess !== 'none' &&
           generator.metadata.safety.dataAccess !== 'input-only') ||
         (generator.metadata.safety.networkTarget !== 'none' &&
-          generator.metadata.safety.networkTarget !== 'request-target'))
+          generator.metadata.safety.networkTarget !== 'request-target' &&
+          !controlledOobAuthorized))
     ) {
       fail('generator-rejected')
     }
@@ -1704,7 +2378,7 @@ export class ProbeRequestCompiler {
 
   #validateCapabilities(
     input: ProbeRequestCompilerInput,
-    metadata: MutationGeneratorMetadata
+    metadata?: MutationGeneratorMetadata
   ): void {
     const enabled = new Set<string>()
     for (const capabilityId of input.enabledCapabilityIds) {
@@ -1717,18 +2391,20 @@ export class ProbeRequestCompiler {
       if (enabled.has(capabilityId)) fail('capability-rejected')
       enabled.add(capabilityId)
     }
+    const generatorRequired = metadata?.requiredCapabilityIds ?? []
+    const generatorForbidden = metadata?.forbiddenCapabilityIds ?? []
     const referenced = [
       ...input.requestVariant.requiredCapabilityIds,
-      ...metadata.requiredCapabilityIds,
-      ...metadata.forbiddenCapabilityIds
+      ...generatorRequired,
+      ...generatorForbidden
     ]
     if (referenced.some((id) => !this.#knownCapabilities.has(id))) {
       fail('unknown-capability')
     }
     if (
-      [...input.requestVariant.requiredCapabilityIds, ...metadata.requiredCapabilityIds]
+      [...input.requestVariant.requiredCapabilityIds, ...generatorRequired]
         .some((id) => !enabled.has(id)) ||
-      metadata.forbiddenCapabilityIds.some((id) => enabled.has(id))
+      generatorForbidden.some((id) => enabled.has(id))
     ) {
       fail('capability-rejected')
     }
@@ -1737,6 +2413,7 @@ export class ProbeRequestCompiler {
   #validateTemplate(input: ProbeRequestCompilerInput): void {
     const template = input.requestTemplate
     if (!template || typeof template !== 'object') fail('invalid-input')
+    assertTemplateBudget(input.authorizedIdentityHeaders ?? [])
     assertTemplateBudget(template)
     const templateKeys = Object.keys(template).sort(compareText)
     if (
@@ -1794,7 +2471,7 @@ export class ProbeRequestCompiler {
     ) {
       fail('template-mismatch')
     }
-    if (input.mutationTarget.kind === 'path') {
+    if (input.mutationTarget?.kind === 'path') {
       const segment = template.url.pathSegments[input.mutationTarget.segmentIndex]
       if (!segment || segment.selectorName !== input.mutationTarget.selectorName) {
         fail('template-mismatch')
@@ -1806,7 +2483,12 @@ export class ProbeRequestCompiler {
     if (template.body.encoding !== input.requestVariant.codec) {
       fail('template-mismatch')
     }
-    for (const entries of [template.query, template.headers, template.cookies]) {
+    for (const entries of [
+      template.query,
+      template.headers,
+      template.cookies,
+      input.authorizedIdentityHeaders ?? []
+    ]) {
       if (!Array.isArray(entries) || entries.length > MAX_TEMPLATE_ENTRIES) {
         fail('invalid-input')
       }
@@ -1821,15 +2503,24 @@ export class ProbeRequestCompiler {
       }
     }
     for (const entry of template.query) assertSlotName(entry.name)
-    for (const entry of template.cookies) assertCookieName(entry.name)
+    for (const entry of template.cookies) {
+      assertCookieName(entry.name)
+      if (entry.value.kind === 'literal') fail('template-mismatch')
+    }
     const headerNames = new Set<string>()
     for (const entry of template.headers) {
       assertHeaderName(entry.name)
-      if (headerNames.has(entry.name) || RESERVED_TRANSPORT_HEADERS.has(entry.name) ||
-          entry.name === 'cookie') {
+      const normalizedName = entry.name.toLowerCase()
+      if (
+        headerNames.has(normalizedName) ||
+        RESERVED_TRANSPORT_HEADERS.has(normalizedName) ||
+        normalizedName === 'cookie' ||
+        (isSensitiveCredentialHeaderName(normalizedName) &&
+          entry.value.kind === 'literal')
+      ) {
         fail('template-mismatch')
       }
-      headerNames.add(entry.name)
+      headerNames.add(normalizedName)
     }
 
     const querySelectors = new Set(
@@ -1871,11 +2562,30 @@ export class ProbeRequestCompiler {
     }
 
     const allowedHeaders = new Map(
-      input.requestVariant.allowedHeaders.map((header) => [header.name, header])
+      input.requestVariant.allowedHeaders.map((header) => [
+        header.name.toLowerCase(),
+        header
+      ])
     )
+    const identityHeaderNames = new Set<string>()
+    for (const entry of input.authorizedIdentityHeaders ?? []) {
+      assertHeaderName(entry.name)
+      const normalizedName = entry.name.toLowerCase()
+      if (
+        entry.value.kind !== 'secret-ref' ||
+        identityHeaderNames.has(normalizedName) ||
+        RESERVED_TRANSPORT_HEADERS.has(normalizedName) ||
+        allowedHeaders.has(normalizedName) ||
+        headerNames.has(normalizedName) ||
+        (normalizedName === 'cookie' && template.cookies.length > 0)
+      ) {
+        fail('template-mismatch')
+      }
+      identityHeaderNames.add(normalizedName)
+    }
     for (const selector of input.requestVariant.selectors) {
       if (selector.kind !== 'header') continue
-      const allowed = allowedHeaders.get(selector.name)
+      const allowed = allowedHeaders.get(selector.name.toLowerCase())
       if (
         !allowed ||
         allowed.valueType !== selector.valueType ||
@@ -1885,7 +2595,9 @@ export class ProbeRequestCompiler {
         fail('template-mismatch')
       }
     }
-    if (template.headers.some((entry) => !allowedHeaders.has(entry.name))) {
+    if (
+      template.headers.some((entry) => !allowedHeaders.has(entry.name.toLowerCase()))
+    ) {
       fail('template-mismatch')
     }
     for (const header of input.requestVariant.allowedHeaders) {
@@ -1939,7 +2651,7 @@ export class ProbeRequestCompiler {
 
   #compileWithKey(
     input: ProbeRequestCompilerInput,
-    generator: MutationGenerator,
+    generator: MutationGenerator | undefined,
     key: Uint8Array
   ): CompiledProbeRequest {
     const resolvedEntries: Array<Readonly<Record<string, unknown>>> = []
@@ -1958,6 +2670,11 @@ export class ProbeRequestCompiler {
       'header',
       context
     )
+    const identityHeaders = this.#resolveNamedValues(
+      input.authorizedIdentityHeaders ?? [],
+      'identity-header',
+      context
+    )
     const cookies = this.#resolveNamedValues(input.requestTemplate.cookies, 'cookie', context)
     const body = this.#resolveBody(input.requestTemplate.body, context)
     const unmutatedUrl = buildExactUrl(
@@ -1974,46 +2691,49 @@ export class ProbeRequestCompiler {
       fail('inventory-binding-rejected')
     }
 
-    const originalValue = this.#selectedOriginalValue(
-      input.mutationTarget,
-      resolvedUrl.pathSegments,
-      query,
-      headers,
-      cookies,
-      body
-    )
-    let generated: unknown
-    try {
-      generated = generator.generate(
-        deepFreeze({
-          target: input.mutationTarget,
-          bodyEncoding: input.requestVariant.codec,
-          originalValue
+    let generatedValue: ResolvedJsonValue = null
+    if (generator && input.mutationTarget) {
+      const originalValue = this.#selectedOriginalValue(
+        input.mutationTarget,
+        resolvedUrl.pathSegments,
+        query,
+        headers,
+        cookies,
+        body
+      )
+      let generated: unknown
+      try {
+        generated = generator.generate(
+          deepFreeze({
+            target: input.mutationTarget,
+            bodyEncoding: input.requestVariant.codec,
+            originalValue
+          })
+        )
+      } catch {
+        fail('generator-rejected')
+      }
+      generatedValue = sanitizeJsonValue(
+        generated,
+        { nodes: 0, bytes: 0, ancestors: new Set() },
+        'generator'
+      )
+      if (canonicalValueBytes(generatedValue).byteLength > generator.metadata.maxOutputBytes) {
+        fail('generator-rejected')
+      }
+      resolvedEntries.push(
+        Object.freeze({
+          path: 'mutation-output',
+          descriptor: { kind: 'generator-output' },
+          commitment: budgetedCommitment(
+            context,
+            'mutation-output',
+            generatedValue,
+            'generator-rejected'
+          )
         })
       )
-    } catch {
-      fail('generator-rejected')
     }
-    const generatedValue = sanitizeJsonValue(
-      generated,
-      { nodes: 0, bytes: 0, ancestors: new Set() },
-      'generator'
-    )
-    if (canonicalValueBytes(generatedValue).byteLength > generator.metadata.maxOutputBytes) {
-      fail('generator-rejected')
-    }
-    resolvedEntries.push(
-      Object.freeze({
-        path: 'mutation-output',
-        descriptor: { kind: 'generator-output' },
-        commitment: budgetedCommitment(
-          context,
-          'mutation-output',
-          generatedValue,
-          'generator-rejected'
-        )
-      })
-    )
 
     let finalQuery: readonly Readonly<{ name: string; value: string }>[] = query
     let finalHeaders: readonly Readonly<{ name: string; value: string }>[] = headers
@@ -2025,13 +2745,13 @@ export class ProbeRequestCompiler {
           entries: readonly Readonly<{ name: string; value: string }>[]
         }>
       | Readonly<{ encoding: 'json'; value: ResolvedJsonValue }> = body
-    if (input.mutationTarget.kind === 'query') {
+    if (input.mutationTarget?.kind === 'query') {
       finalQuery = mutateRepeated(
         query,
         input.mutationTarget,
         safeStringValue(generatedValue, 'generator')
       )
-    } else if (input.mutationTarget.kind === 'header') {
+    } else if (input.mutationTarget?.kind === 'header') {
       const targetName = input.mutationTarget.name
       const replacement = safeStringValue(generatedValue, 'generator')
       try {
@@ -2049,11 +2769,11 @@ export class ProbeRequestCompiler {
       if (!finalHeaders.some((entry) => entry.name === targetName)) {
         fail('template-mismatch')
       }
-    } else if (input.mutationTarget.kind === 'cookie') {
+    } else if (input.mutationTarget?.kind === 'cookie') {
       const replacement = safeStringValue(generatedValue, 'generator')
       if (!COOKIE_VALUE_PATTERN.test(replacement)) fail('generator-rejected')
       finalCookies = mutateRepeated(cookies, input.mutationTarget, replacement)
-    } else if (input.mutationTarget.kind === 'form') {
+    } else if (input.mutationTarget?.kind === 'form') {
       if (!body || body.encoding !== 'form') fail('template-mismatch')
       finalBody = {
         encoding: 'form',
@@ -2063,7 +2783,7 @@ export class ProbeRequestCompiler {
           safeStringValue(generatedValue, 'generator')
         )
       }
-    } else if (input.mutationTarget.kind === 'json-pointer') {
+    } else if (input.mutationTarget?.kind === 'json-pointer') {
       if (!body || body.encoding !== 'json') fail('template-mismatch')
       finalBody = {
         encoding: 'json',
@@ -2079,17 +2799,19 @@ export class ProbeRequestCompiler {
     }
 
     const url = this.#buildUrl(
-      compilePath(
-        resolvedUrl.origin,
-        resolvedUrl.pathSegments,
-        input.mutationTarget,
-        generatedValue
-      ),
+      input.mutationTarget === undefined
+        ? unmutatedUrl
+        : compilePath(
+            resolvedUrl.origin,
+            resolvedUrl.pathSegments,
+            input.mutationTarget,
+            generatedValue
+          ),
       finalQuery
     )
     const bodyBytes = this.#encodeBody(finalBody)
     const wireHeaders = this.#buildHeaders(
-      finalHeaders,
+      [...finalHeaders, ...identityHeaders],
       finalCookies,
       finalBody,
       bodyBytes,
@@ -2128,9 +2850,12 @@ export class ProbeRequestCompiler {
             retiredAt: input.requestVariant.retiredAt ?? null
           },
           enabledCapabilityIds: [...input.enabledCapabilityIds].sort(compareText),
-          mutationTarget: input.mutationTarget,
-          mutationGenerator: generator.metadata,
-          requestTemplate: requestTemplateDescriptor(input.requestTemplate)
+          mutationTarget: input.mutationTarget ?? null,
+          mutationGenerator: generator?.metadata ?? null,
+          requestTemplate: requestTemplateDescriptor(
+            input.requestTemplate,
+            input.authorizedIdentityHeaders ?? []
+          )
         })
       )
     })
@@ -2147,6 +2872,7 @@ export class ProbeRequestCompiler {
           commitmentKeyVersion: input.hashKey.keyVersion,
           ownerRef: input.ownerRef ?? null,
           scopeSnapshotId: input.scopeSnapshotId ?? null,
+          credentialRef: input.credentialRef ?? null,
           identityRef: input.identityRef ?? null,
           sessionRef: input.sessionRef ?? null,
           testObjectRef: input.testObjectRef ?? null,
@@ -2154,32 +2880,58 @@ export class ProbeRequestCompiler {
         })
       )
     })
-    const wireRequestHmac = this.#wireHmac(
-      input,
-      key,
-      resolvedIntentHash,
-      input.endpoint.method,
-      url,
-      wireHeaders,
-      bodyBytes
-    )
     const request = new CompiledWireRequest({
       method: input.endpoint.method,
       url,
       headers: wireHeaders,
-      ...(bodyBytes ? { bodyBytes: Object.freeze([...bodyBytes]) } : {})
+      ...(bodyBytes !== undefined
+        ? { bodyBytes: Object.freeze([...bodyBytes]) }
+        : {})
     })
+    const enabledCapabilityIds = Object.freeze(
+      [...input.enabledCapabilityIds].sort(compareText)
+    )
+    const authorizationContext = createWireRequestAuthorizationContext({
+      templateIntentHash,
+      enabledCapabilityIds,
+      ...(input.ownerRef ? { ownerRef: input.ownerRef } : {}),
+      ...(input.scopeSnapshotId
+        ? { scopeSnapshotId: input.scopeSnapshotId }
+        : {}),
+      ...(input.credentialRef
+        ? { credentialRef: input.credentialRef }
+        : {}),
+      ...(input.identityRef ? { identityRef: input.identityRef } : {}),
+      ...(input.sessionRef ? { sessionRef: input.sessionRef } : {}),
+      ...(input.testObjectRef
+        ? { testObjectRef: input.testObjectRef }
+        : {}),
+      ...(input.executionBinding
+        ? { executionBinding: input.executionBinding }
+        : {})
+    })
+    const wireRequestHmac = computeWireRequestHmac(
+      {
+        hashKey: input.hashKey,
+        resolvedIntentHash,
+        authorizationContext,
+        request: request.materialize()
+      },
+      { resolveKey: () => key }
+    )
     return Object.freeze({
       request,
       templateIntentHash,
       resolvedIntentHash,
-      wireRequestHmac
+      authorizationContext,
+      wireRequestHmac,
+      enabledCapabilityIds
     })
   }
 
   #resolveNamedValues(
     entries: readonly NamedRequestValueTemplate[],
-    location: 'query' | 'header' | 'cookie',
+    location: 'query' | 'header' | 'identity-header' | 'cookie',
     context: ResolutionContext
   ): readonly ResolvedNamedValue[] {
     return Object.freeze(
@@ -2189,7 +2941,9 @@ export class ProbeRequestCompiler {
           this.#resolveValueSource(entry.value, path, context),
           'resolver'
         )
-        if (location === 'header') assertHeaderValue(value)
+        if (location === 'header' || location === 'identity-header') {
+          assertHeaderValue(value)
+        }
         if (location === 'cookie') assertCookieValue(value)
         const descriptor = valueSourceDescriptor(entry.value)
         const commitment = budgetedCommitment(
@@ -2554,32 +3308,4 @@ export class ProbeRequestCompiler {
     if (totalBytes > MAX_WIRE_BYTES) fail('request-budget-rejected')
   }
 
-  #wireHmac(
-    input: ProbeRequestCompilerInput,
-    key: Uint8Array,
-    resolved: ResolvedIntentHash,
-    method: string,
-    url: string,
-    headers: readonly Readonly<{ name: string; value: string }>[],
-    bodyBytes: Uint8Array | undefined
-  ): WireRequestHmac {
-    const hmac = createHmac('sha256', key)
-    updateFrame(hmac, 'domain', utf8(WIRE_REQUEST_HMAC_DOMAIN))
-    updateFrame(hmac, 'resolved-intent', utf8(resolved.digest))
-    updateFrame(hmac, 'method', utf8(method))
-    updateFrame(hmac, 'url', utf8(url))
-    for (const header of headers) {
-      updateFrame(hmac, `header-name`, utf8(header.name))
-      updateFrame(hmac, `header-value`, utf8(header.value))
-    }
-    updateFrame(hmac, 'body-present', utf8(bodyBytes ? '1' : '0'))
-    updateFrame(hmac, 'body', bodyBytes ?? new Uint8Array())
-    return Object.freeze({
-      domain: WIRE_REQUEST_HMAC_DOMAIN,
-      algorithm: 'hmac-sha256',
-      keyRef: input.hashKey.keyRef,
-      keyVersion: input.hashKey.keyVersion,
-      digest: hmac.digest('hex')
-    })
-  }
 }

@@ -51,13 +51,23 @@
 
 ## 6. 执行器风险
 
-- 每次跳转和 DNS 解析后重新检查 scope；
+- Coordinator、模块和 Renderer 只依赖统一 `ExecutionPort`，不能直接导入
+  Runner；
+- 每个实际 I/O 使用绑定 exact wire、scope、capability、purpose、opaque
+  refs 和单步预算的不可变 Grant，以及数据库原子 claim 的单次 Lease；
+- HTTP Runner 不自动跟随；每次跳转回到 Application，重新 Policy、
+  child Grant/Lease 和 DNS guard；
+- 跨 origin 自动移除凭据；`omit` wire 中残留 Authorization/Cookie 等
+  凭据头必须在 transport send 前拒绝；
 - 对 SSRF、代理、重定向和 URL 编码进行统一规范化；
 - BrowserRunner 使用独立临时 Browser Context 并阻断页面网络；HttpRunner 不提供 shell 或文件能力；
 - 禁止执行模型生成的任意 shell 字符串；
 - 外部工具使用参数数组和显式允许的 capability；
 - 超时、并发、输出大小和磁盘空间均设上限；
 - 进程终止后清理临时文件和会话引用。
+- claimed-but-unknown 不自动重放；恢复为 `interrupted / unknown`，将
+  Scan 置为 `awaiting-user` 并记录审计事实。没有 claimed lease 的普通
+  queued/running 中断任务才恢复为 `paused`。
 
 ## 7. Electron 风险
 
@@ -86,6 +96,16 @@
 
 - EvidenceItem 保存 SHA-256 和来源；
 - 脱敏生成派生版本，不覆盖原件；
+- Day4 protected-original 后端要求完整 capture context/decision 封套，
+  原文使用随机数据密钥执行 AES-256-GCM，数据密钥由操作系统安全存储封装，
+  文件系统只保存内容寻址 ciphertext；
+- 普通 `read`、Renderer、报告和导出拒绝 protected original，只消费
+  metadata-only redacted derivative；scan/workspace 配额、retention、
+  crypto-erase 以及创建、拒绝访问、完整性和到期审计由 migration `0010`
+  与 EvidenceStore 共同执行；
+- Day5 在线执行仍只保存 capture-decision-bound hash-only 摘要。真实
+  DOM/截图与 Lease provenance 接线属于 Day18；缺少该在线证据链时 XSS
+  必须 Inconclusive；
 - 报告模板转义 HTML/Markdown 注入；
 - V1 只导出明确标注的脱敏报告；未来开放原始导出前必须展示敏感字段清单；
 - 报告不包含可直接滥用的真实凭据；
@@ -102,4 +122,6 @@
 - IPC 非法 payload；
 - 报告 HTML 注入；
 - 密钥和 Token 日志泄露；
+- protected-original context/decision 篡改、普通读取绕过、配额竞争、
+  ciphertext 篡改、到期 crypto-erase 和派生内容泄漏；
 - 并发、超时和大型响应限制。

@@ -60,7 +60,7 @@ export const TEMPLATE_INTENT_HASH_DOMAIN =
   'agentgo.template-intent.v1' as const
 export const RESOLVED_INTENT_HASH_DOMAIN =
   'agentgo.resolved-intent.v1' as const
-export const WIRE_REQUEST_HMAC_DOMAIN = 'agentgo.wire-request.v1' as const
+export const WIRE_REQUEST_HMAC_DOMAIN = 'agentgo.wire-request.v2' as const
 
 /**
  * Template and resolved digests are deliberately domain tagged. A digest from

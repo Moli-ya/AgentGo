@@ -1,60 +1,76 @@
+import { Buffer } from 'node:buffer'
 import { existsSync } from 'node:fs'
 import { platform } from 'node:os'
 import { join } from 'node:path'
 import { chromium, type Browser, type BrowserContext } from 'playwright-core'
 
-export interface BrowserExecutionGuard {
-  authorize(input: { policyDecisionId: string; baseUrl: string }): Promise<void>
-}
+export { buildInertXssMarkerPayload } from '@agentgo/domain'
 
 export interface BrowserFormField {
-  name: string
-  type: string
-  required: boolean
+  readonly name: string
+  readonly type: string
+  readonly required: boolean
 }
 
 export interface BrowserFormSummary {
-  action: string
-  method: string
-  fields: BrowserFormField[]
+  readonly action: string
+  readonly method: string
+  readonly fields: readonly BrowserFormField[]
 }
 
 export interface BrowserExecutionRequest {
-  requestId: string
-  policyDecisionId: string
-  baseUrl: string
-  html: string
-  action: 'inspect-dom' | 'verify-xss' | 'capture-evidence'
-  marker?: string
-  contentSecurityPolicy?: string
-  timeoutMs: number
-  maxDomBytes?: number
+  readonly requestId: string
+  readonly baseUrl: string
+  readonly html: string
+  readonly action: 'inspect-dom' | 'verify-xss' | 'capture-evidence'
+  readonly marker?: string
+  readonly contentSecurityPolicy?: string
+  readonly timeoutMs: number
+  readonly maxDomBytes?: number
+  readonly signal?: AbortSignal
 }
 
 export interface BrowserExecutionResult {
-  requestId: string
-  status: 'succeeded' | 'failed' | 'cancelled'
-  finalUrl: string
-  pageTitle?: string
-  links: string[]
-  forms: BrowserFormSummary[]
-  domSnapshot?: string
-  markerExecuted?: boolean
-  screenshot?: Uint8Array
-  networkRequestsBlocked: number
-  durationMs: number
-  errorCode?:
-    | 'authorization-denied'
+  readonly requestId: string
+  readonly status: 'succeeded' | 'failed' | 'cancelled'
+  readonly finalUrl: string
+  readonly pageTitle?: string
+  readonly links: readonly string[]
+  readonly forms: readonly BrowserFormSummary[]
+  readonly domSnapshot?: string
+  readonly markerExecuted?: boolean
+  readonly screenshot?: Uint8Array
+  readonly networkRequestsBlocked: number
+  readonly resultBytes: number
+  readonly durationMs: number
+  readonly errorCode?:
     | 'browser-unavailable'
     | 'timeout'
     | 'render-error'
+    | 'result-too-large'
     | 'cancelled'
-  errorMessage?: string
+    | 'dispatch-mark-failed'
+    | 'response-start-mark-failed'
+    | 'runner-output-invalid'
+  readonly errorMessage?: string
 }
 
 export interface BrowserRunnerOptions {
   executablePath?: string
   headless?: boolean
+}
+
+type BrowserExecutionErrorCode = NonNullable<BrowserExecutionResult['errorCode']>
+
+const safeBrowserErrorMessages: Record<BrowserExecutionErrorCode, string> = {
+  'browser-unavailable': 'No supported offline browser executable is available.',
+  timeout: 'The offline browser execution timed out.',
+  'render-error': 'The offline browser could not render the supplied document.',
+  'result-too-large': 'The offline browser result exceeded its byte budget.',
+  cancelled: 'The offline browser execution was cancelled.',
+  'dispatch-mark-failed': 'The offline browser dispatch could not be persisted.',
+  'response-start-mark-failed': 'The offline browser response could not be persisted.',
+  'runner-output-invalid': 'The offline browser runner returned an invalid result.'
 }
 
 type BrowserExecutionAbortCode = 'cancelled' | 'timeout'
@@ -116,13 +132,6 @@ function withDocumentPolicies(
   return `<!doctype html><html><head>${policies}</head><body>${html}</body></html>`
 }
 
-export function buildInertXssMarkerPayload(marker: string): string {
-  if (!/^agx_[a-f0-9]{16,64}$/.test(marker)) {
-    throw new Error('XSS marker must be an AgentGo random hexadecimal marker.')
-  }
-  return `"><svg data-agentgo-marker="${marker}" onload="document.documentElement.setAttribute('data-agentgo-xss','${marker}')"></svg>`
-}
-
 function getAbortCode(error: unknown): BrowserExecutionAbortCode | undefined {
   return error instanceof BrowserExecutionAbortError ? error.code : undefined
 }
@@ -165,13 +174,19 @@ async function closeBrowserWithinGrace(browser: Browser): Promise<void> {
 export class PlaywrightBrowserRunner {
   private readonly active = new Map<string, ActiveBrowserExecution>()
 
-  constructor(
-    private readonly guard: BrowserExecutionGuard,
-    private readonly options: BrowserRunnerOptions = {}
-  ) {}
+  constructor(private readonly options: BrowserRunnerOptions = {}) {}
 
   async execute(input: BrowserExecutionRequest): Promise<BrowserExecutionResult> {
     const startedAt = Date.now()
+    const maxResultBytes = input.maxDomBytes ?? 1024 * 1024
+    if (!Number.isSafeInteger(maxResultBytes) || maxResultBytes <= 0) {
+      return this.failure(
+        input,
+        startedAt,
+        'render-error',
+        new Error('Browser result byte budget must be a positive safe integer.')
+      )
+    }
     if (this.active.has(input.requestId)) {
       throw new Error(`Browser request ${input.requestId} is already running.`)
     }
@@ -181,6 +196,12 @@ export class PlaywrightBrowserRunner {
       controller: new AbortController()
     }
     this.active.set(input.requestId, execution)
+    const onExternalAbort = (): void => {
+      execution.controller.abort(new BrowserExecutionAbortError('cancelled'))
+      void this.closeExecution(execution)
+    }
+    input.signal?.addEventListener('abort', onExternalAbort, { once: true })
+    if (input.signal?.aborted) onExternalAbort()
     const timeout = setTimeout(() => {
       execution.controller.abort(new BrowserExecutionAbortError('timeout'))
       void this.closeExecution(execution)
@@ -194,32 +215,13 @@ export class PlaywrightBrowserRunner {
       return remaining
     }
 
-    try {
-      await raceWithAbort(
-        this.guard.authorize({
-          policyDecisionId: input.policyDecisionId,
-          baseUrl: input.baseUrl
-        }),
-        execution.controller.signal
-      )
-    } catch (error) {
-      const abortCode = getAbortCode(error)
-      clearTimeout(timeout)
-      if (this.active.get(input.requestId) === execution) {
-        this.active.delete(input.requestId)
-      }
-      return this.failure(
-        input,
-        startedAt,
-        abortCode ?? 'authorization-denied',
-        error
-      )
-    }
-
     let browser: Browser | undefined
     let context: BrowserContext | undefined
     let blockedRequests = 0
     try {
+      if (execution.controller.signal.aborted) {
+        throw execution.controller.signal.reason
+      }
       const executablePath = this.options.executablePath ?? findSystemBrowserExecutable()
       if (!executablePath) {
         return this.failure(
@@ -253,16 +255,59 @@ export class PlaywrightBrowserRunner {
       }
       execution.browser = browser
       context = await raceWithAbort(browser.newContext({
+        offline: true,
         acceptDownloads: false,
         bypassCSP: false,
         ignoreHTTPSErrors: false,
         javaScriptEnabled: true,
-        serviceWorkers: 'block'
+        serviceWorkers: 'block',
+        viewport: { width: 1280, height: 720 }
       }), execution.controller.signal)
       await raceWithAbort(
         context.route('**/*', async (route) => {
           blockedRequests += 1
           await route.abort('blockedbyclient')
+        }),
+        execution.controller.signal
+      )
+      await raceWithAbort(
+        context.routeWebSocket('**/*', async (webSocket) => {
+          blockedRequests += 1
+          await webSocket.close({
+            code: 1008,
+            reason: 'AgentGo offline browser execution'
+          })
+        }),
+        execution.controller.signal
+      )
+      await raceWithAbort(
+        context.addInitScript(() => {
+          const replace = (
+            target: object,
+            property: string,
+            value: unknown
+          ): void => {
+            try {
+              Object.defineProperty(target, property, {
+                configurable: false,
+                enumerable: false,
+                writable: false,
+                value
+              })
+            } catch {
+              // The browser's offline mode and routing remain the primary controls.
+            }
+          }
+          for (const constructorName of [
+            'WebSocket',
+            'EventSource',
+            'WebTransport',
+            'RTCPeerConnection',
+            'webkitRTCPeerConnection'
+          ]) {
+            replace(globalThis, constructorName, undefined)
+          }
+          replace(Navigator.prototype, 'sendBeacon', () => false)
         }),
         execution.controller.signal
       )
@@ -284,15 +329,16 @@ export class PlaywrightBrowserRunner {
       await raceWithAbort(page.waitForTimeout(50), execution.controller.signal)
 
       const summary = await raceWithAbort(
-        page.evaluate(({ marker, maxDomBytes }) => {
+        page.evaluate(({ marker, maxResultBytes }) => {
           const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href]')]
-            .map((anchor) => anchor.href)
+            .map((anchor) => anchor.href.slice(0, 2_048))
             .filter((value, index, values) => values.indexOf(value) === index)
-            .slice(0, 500)
-          const forms = [...document.forms].slice(0, 100).map((form) => ({
-            action: form.action || document.baseURI,
-            method: (form.method || 'GET').toUpperCase(),
+            .slice(0, 100)
+          const forms = [...document.forms].slice(0, 50).map((form) => ({
+            action: (form.action || document.baseURI).slice(0, 2_048),
+            method: (form.method || 'GET').toUpperCase().slice(0, 32),
             fields: [...form.elements]
+              .slice(0, 50)
               .filter(
                 (element): element is HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement =>
                   element instanceof HTMLInputElement ||
@@ -300,41 +346,94 @@ export class PlaywrightBrowserRunner {
                   element instanceof HTMLTextAreaElement
               )
               .map((element) => ({
-                name: element.name,
-                type: element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase(),
+                name: element.name.slice(0, 256),
+                type: (
+                  element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase()
+                ).slice(0, 64),
                 required: element.required
               }))
               .filter((field) => Boolean(field.name))
           }))
           const dom = document.documentElement.outerHTML
+          const encodedDom = new TextEncoder().encode(
+            dom.slice(0, maxResultBytes)
+          )
+          let domEnd = Math.min(encodedDom.byteLength, maxResultBytes)
+          const decoder = new TextDecoder('utf-8', { fatal: true })
+          let domSnapshot = ''
+          while (domEnd > 0) {
+            try {
+              domSnapshot = decoder.decode(encodedDom.subarray(0, domEnd))
+              break
+            } catch {
+              domEnd -= 1
+            }
+          }
           return {
-            title: document.title,
+            title: document.title.slice(0, 1_024),
             links,
             forms,
-            domSnapshot: dom.slice(0, maxDomBytes),
+            domSnapshot,
             markerExecuted: marker
               ? document.documentElement.getAttribute('data-agentgo-xss') === marker
               : undefined
           }
         }, {
           marker: input.marker,
-          maxDomBytes: input.maxDomBytes ?? 1024 * 1024
+          maxResultBytes
         }),
         execution.controller.signal
       )
 
-      const screenshot =
+      const metadataBytes = Buffer.byteLength(
+        JSON.stringify({
+          title: summary.title,
+          links: summary.links,
+          forms: summary.forms,
+          markerExecuted: summary.markerExecuted
+        }),
+        'utf8'
+      )
+      const domSnapshotBytes = Buffer.byteLength(summary.domSnapshot, 'utf8')
+      const resultBytesWithoutScreenshot = metadataBytes + domSnapshotBytes
+      if (resultBytesWithoutScreenshot > maxResultBytes) {
+        return this.failure(
+          input,
+          startedAt,
+          'result-too-large',
+          undefined,
+          blockedRequests,
+          resultBytesWithoutScreenshot
+        )
+      }
+
+      const screenshotBuffer =
         input.action === 'capture-evidence' || input.action === 'verify-xss'
           ? await raceWithAbort(
               page.screenshot({
                 type: 'png',
-                fullPage: true,
+                fullPage: false,
                 animations: 'disabled',
                 timeout: remainingMs()
               }),
               execution.controller.signal
             )
           : undefined
+      const screenshot =
+        screenshotBuffer === undefined
+          ? undefined
+          : Uint8Array.from(screenshotBuffer)
+
+      if (resultBytesWithoutScreenshot + (screenshot?.byteLength ?? 0) > maxResultBytes) {
+        return this.failure(
+          input,
+          startedAt,
+          'result-too-large',
+          undefined,
+          blockedRequests,
+          resultBytesWithoutScreenshot + (screenshot?.byteLength ?? 0)
+        )
+      }
 
       return {
         requestId: input.requestId,
@@ -349,6 +448,7 @@ export class PlaywrightBrowserRunner {
           : {}),
         ...(screenshot ? { screenshot } : {}),
         networkRequestsBlocked: blockedRequests,
+        resultBytes: resultBytesWithoutScreenshot + (screenshot?.byteLength ?? 0),
         durationMs: Date.now() - startedAt
       }
     } catch (error) {
@@ -364,6 +464,7 @@ export class PlaywrightBrowserRunner {
         blockedRequests
       )
     } finally {
+      input.signal?.removeEventListener('abort', onExternalAbort)
       clearTimeout(timeout)
       if (this.active.get(input.requestId) === execution) {
         this.active.delete(input.requestId)
@@ -389,8 +490,9 @@ export class PlaywrightBrowserRunner {
     input: BrowserExecutionRequest,
     startedAt: number,
     errorCode: NonNullable<BrowserExecutionResult['errorCode']>,
-    error: unknown,
-    blockedRequests = 0
+    _error: unknown,
+    blockedRequests = 0,
+    resultBytes = 0
   ): BrowserExecutionResult {
     return {
       requestId: input.requestId,
@@ -399,9 +501,10 @@ export class PlaywrightBrowserRunner {
       links: [],
       forms: [],
       networkRequestsBlocked: blockedRequests,
+      resultBytes,
       durationMs: Date.now() - startedAt,
       errorCode,
-      errorMessage: error instanceof Error ? error.message : 'Browser execution failed.'
+      errorMessage: safeBrowserErrorMessages[errorCode]
     }
   }
 }

@@ -11,6 +11,23 @@ import type {
   AgentRole,
   AllowedHeaderDescriptor,
   BodyEncoding,
+  EvidenceCaptureAction,
+  EvidenceCaptureDecision,
+  EvidenceCaptureExecutionState,
+  EvidenceCaptureSource,
+  EvidenceSourceHash,
+  ExecutionAdapterKind,
+  ExecutionCredentialRef,
+  ExecutionCaptureDecisionSetHash,
+  ExecutionGrantBudget,
+  ExecutionGrantIntegrityHmac,
+  ExecutionLeaseDeliveryState,
+  ExecutionLeaseOutcomeSummary,
+  ExecutionLeaseState,
+  ExecutionLeaseTerminalReason,
+  ExecutionPurpose,
+  ExecutionRetryClass,
+  IdentityRef,
   InventoryBodyShape,
   InventoryExecutionClass,
   InventoryLifecycleStatus,
@@ -28,14 +45,19 @@ import type {
   McpToolSummary,
   McpTransport,
   RedactedInventoryPreview,
+  ResolvedIntentHash,
   ScanBudget,
   ScanModuleAuthorization,
   ScanSnapshotEnvironment,
   ScanSnapshotCapabilityDescriptor,
   SelectorRef,
+  SessionGenerationRef,
+  TemplateIntentHash,
+  TestObjectRef,
   TransportKind,
   VersionedDefinitionRef,
-  VulnerabilityFamily
+  VulnerabilityFamily,
+  WireRequestHmac
 } from '@agentgo/contracts'
 
 export const workspaces = sqliteTable('workspaces', {
@@ -472,6 +494,7 @@ export const interactions = sqliteTable(
     endpointId: text('endpoint_id'),
     identityId: text('identity_id'),
     policyDecisionId: text('policy_decision_id'),
+    executionLeaseId: text('execution_lease_id'),
     requestRef: text('request_ref').notNull(),
     responseRef: text('response_ref').notNull(),
     requestSummaryJson: text('request_summary_json', { mode: 'json' })
@@ -486,7 +509,10 @@ export const interactions = sqliteTable(
     stateAfterHash: text('state_after_hash'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('interactions_scan_idx').on(table.scanId, table.createdAt)]
+  (table) => [
+    index('interactions_scan_idx').on(table.scanId, table.createdAt),
+    uniqueIndex('interactions_execution_lease_uq').on(table.executionLeaseId)
+  ]
 )
 
 export const agentRuns = sqliteTable(
@@ -584,11 +610,160 @@ export const policyDecisions = sqliteTable(
     approvedBy: text('approved_by'),
     approvedAt: integer('approved_at'),
     validUntil: integer('valid_until'),
+    authorizedWireRequestHmac: text('authorized_wire_request_hmac_json', {
+      mode: 'json'
+    }).$type<WireRequestHmac>(),
     createdAt: integer('created_at').notNull()
   },
   (table) => [
     index('policy_decisions_proposal_idx').on(table.proposalId),
     index('policy_decisions_scope_idx').on(table.scopeSnapshotId)
+  ]
+)
+
+export const executionGrants = sqliteTable(
+  'execution_grants',
+  {
+    schemaVersion: text('schema_version').$type<'execution-grant.v1'>().notNull(),
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    scopeSnapshotHash: text('scope_snapshot_hash').notNull(),
+    moduleSnapshotId: text('module_snapshot_id').notNull(),
+    moduleSnapshotHash: text('module_snapshot_hash').notNull(),
+    moduleId: text('module_id').notNull(),
+    moduleVersion: text('module_version').notNull(),
+    techniqueId: text('technique_id').notNull(),
+    techniqueVersion: text('technique_version').notNull(),
+    planId: text('plan_id').notNull(),
+    planVersion: text('plan_version').notNull(),
+    planHash: text('plan_hash').notNull(),
+    stepId: text('step_id').notNull(),
+    templateIntentHash: text('template_intent_hash_json', { mode: 'json' })
+      .$type<TemplateIntentHash>()
+      .notNull(),
+    resolvedIntentHash: text('resolved_intent_hash_json', { mode: 'json' })
+      .$type<ResolvedIntentHash>()
+      .notNull(),
+    wireRequestHmac: text('wire_request_hmac_json', { mode: 'json' })
+      .$type<WireRequestHmac>()
+      .notNull(),
+    captureDecisionSetHash: text('capture_decision_set_hash_json', {
+      mode: 'json'
+    })
+      .$type<ExecutionCaptureDecisionSetHash>()
+      .notNull(),
+    integrityHmac: text('integrity_hmac_json', { mode: 'json' })
+      .$type<ExecutionGrantIntegrityHmac>()
+      .notNull(),
+    capabilityIds: text('capability_ids_json', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    ownerRef: text('owner_ref'),
+    identityRef: text('identity_ref_json', { mode: 'json' }).$type<IdentityRef>(),
+    credentialRef: text('credential_ref_json', { mode: 'json' }).$type<
+      ExecutionCredentialRef
+    >(),
+    sessionRef: text('session_ref_json', { mode: 'json' })
+      .$type<SessionGenerationRef>(),
+    testObjectRef: text('test_object_ref_json', { mode: 'json' })
+      .$type<TestObjectRef>(),
+    budget: text('budget_json', { mode: 'json' })
+      .$type<ExecutionGrantBudget>()
+      .notNull(),
+    purpose: text('purpose').$type<ExecutionPurpose>().notNull(),
+    adapterKind: text('adapter_kind').$type<ExecutionAdapterKind>().notNull(),
+    retryClass: text('retry_class').$type<ExecutionRetryClass>().notNull(),
+    policyDecisionId: text('policy_decision_id').notNull(),
+    approvalBundleRef: text('approval_bundle_ref'),
+    parentGrantId: text('parent_grant_id'),
+    redirectHop: integer('redirect_hop').notNull(),
+    validFrom: integer('valid_from').notNull(),
+    validUntil: integer('valid_until').notNull(),
+    issuedAt: integer('issued_at').notNull()
+  },
+  (table) => [
+    index('execution_grants_scan_idx').on(table.scanId, table.issuedAt),
+    index('execution_grants_module_idx').on(table.moduleSnapshotId),
+    index('execution_grants_parent_idx').on(table.parentGrantId),
+    uniqueIndex('execution_grants_policy_decision_uq').on(table.policyDecisionId)
+  ]
+)
+
+export const executionCaptureDecisions = sqliteTable(
+  'execution_capture_decisions',
+  {
+    id: text('id').primaryKey(),
+    grantId: text('grant_id').notNull(),
+    scanId: text('scan_id').notNull(),
+    policyDecisionId: text('policy_decision_id').notNull(),
+    capturePolicyId: text('capture_policy_id').notNull(),
+    capturePolicyVersion: text('capture_policy_version').notNull(),
+    techniqueId: text('technique_id').notNull(),
+    techniqueVersion: text('technique_version').notNull(),
+    stepId: text('step_id').notNull(),
+    executionState: text('execution_state')
+      .$type<EvidenceCaptureExecutionState>()
+      .notNull(),
+    source: text('source').$type<EvidenceCaptureSource>().notNull(),
+    role: text('role').notNull(),
+    action: text('action').$type<EvidenceCaptureAction>().notNull(),
+    validFrom: integer('valid_from').notNull(),
+    validUntil: integer('valid_until').notNull(),
+    maxSourceBytes: integer('max_source_bytes').notNull(),
+    maxExcerptBytes: integer('max_excerpt_bytes').notNull(),
+    jsonPointers: text('json_pointers_json', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    oobMetadataFields: text('oob_metadata_fields_json', { mode: 'json' })
+      .$type<string[]>()
+      .notNull(),
+    oobCommitmentKeyRef: text('oob_commitment_key_ref'),
+    oobCommitmentKeyVersion: integer('oob_commitment_key_version'),
+    decision: text('decision_json', { mode: 'json' })
+      .$type<EvidenceCaptureDecision>()
+      .notNull()
+  },
+  (table) => [
+    index('execution_capture_decisions_grant_idx').on(table.grantId),
+    uniqueIndex('execution_capture_decisions_grant_source_state_uq').on(
+      table.grantId,
+      table.source,
+      table.executionState
+    )
+  ]
+)
+
+export const executionLeases = sqliteTable(
+  'execution_leases',
+  {
+    schemaVersion: text('schema_version').$type<'execution-lease.v1'>().notNull(),
+    id: text('id').primaryKey(),
+    grantId: text('grant_id').notNull(),
+    parentLeaseId: text('parent_lease_id'),
+    attempt: integer('attempt').notNull(),
+    state: text('state').$type<ExecutionLeaseState>().notNull(),
+    issuedAt: integer('issued_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    claimedAt: integer('claimed_at'),
+    claimedBy: text('claimed_by'),
+    claimTokenHash: text('claim_token_hash'),
+    deliveryState: text('delivery_state')
+      .$type<ExecutionLeaseDeliveryState>()
+      .notNull(),
+    terminalAt: integer('terminal_at'),
+    terminalReason: text('terminal_reason').$type<ExecutionLeaseTerminalReason>(),
+    outcomeSummary: text('outcome_summary_json', { mode: 'json' })
+      .$type<ExecutionLeaseOutcomeSummary>(),
+    evidenceRefs: text('evidence_refs_json', { mode: 'json' })
+      .$type<string[]>()
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex('execution_leases_grant_attempt_uq').on(table.grantId, table.attempt),
+    index('execution_leases_grant_idx').on(table.grantId),
+    index('execution_leases_state_expiry_idx').on(table.state, table.expiresAt),
+    index('execution_leases_parent_idx').on(table.parentLeaseId)
   ]
 )
 
@@ -598,6 +773,7 @@ export const toolCalls = sqliteTable(
     id: text('id').primaryKey(),
     scanId: text('scan_id').notNull(),
     policyDecisionId: text('policy_decision_id').notNull(),
+    executionLeaseId: text('execution_lease_id'),
     toolName: text('tool_name').notNull(),
     toolVersion: text('tool_version').notNull(),
     argumentHash: text('argument_hash').notNull(),
@@ -607,7 +783,10 @@ export const toolCalls = sqliteTable(
     error: text('error'),
     createdAt: integer('created_at').notNull()
   },
-  (table) => [index('tool_calls_scan_idx').on(table.scanId, table.createdAt)]
+  (table) => [
+    index('tool_calls_scan_idx').on(table.scanId, table.createdAt),
+    uniqueIndex('tool_calls_execution_lease_uq').on(table.executionLeaseId)
+  ]
 )
 
 export const signals = sqliteTable(
@@ -692,7 +871,84 @@ export const evidenceItems = sqliteTable(
   },
   (table) => [
     index('evidence_items_scan_idx').on(table.scanId, table.createdAt),
-    uniqueIndex('evidence_items_scan_hash_uq').on(table.scanId, table.sha256, table.type)
+    index('evidence_items_scan_type_hash_idx').on(
+      table.scanId,
+      table.type,
+      table.sha256
+    )
+  ]
+)
+
+export const protectedEvidenceItems = sqliteTable(
+  'protected_evidence_items',
+  {
+    evidenceId: text('evidence_id').primaryKey(),
+    schemaVersion: text('schema_version')
+      .$type<'protected-evidence-storage.v1'>()
+      .notNull(),
+    captureDecisionId: text('capture_decision_id').notNull(),
+    evidenceRole: text('evidence_role').notNull(),
+    derivativeEvidenceId: text('derivative_evidence_id').notNull(),
+    derivativeSha256: text('derivative_sha256').notNull(),
+    captureArtifact: text('capture_artifact_json', { mode: 'json' })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    sourceHash: text('source_hash_json', { mode: 'json' })
+      .$type<EvidenceSourceHash>()
+      .notNull(),
+    protectionPlan: text('protection_plan_json', { mode: 'json' })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    originalMimeType: text('original_mime_type').notNull(),
+    plaintextSha256: text('plaintext_sha256').notNull(),
+    plaintextSize: integer('plaintext_size').notNull(),
+    storageSha256: text('storage_sha256').notNull(),
+    storageSize: integer('storage_size').notNull(),
+    encryptionAlgorithm: text('encryption_algorithm')
+      .$type<'aes-256-gcm+os-key-wrap'>()
+      .notNull(),
+    wrappedDataKey: text('wrapped_data_key'),
+    nonce: text('nonce'),
+    authTag: text('auth_tag'),
+    availabilityState: text('availability_state')
+      .$type<'available' | 'expired'>()
+      .notNull(),
+    retentionUntil: integer('retention_until').notNull(),
+    expiredAt: integer('expired_at'),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    index('protected_evidence_retention_idx').on(
+      table.availabilityState,
+      table.retentionUntil
+    ),
+    uniqueIndex('protected_evidence_capture_decision_uq').on(
+      table.captureDecisionId
+    ),
+    uniqueIndex('protected_evidence_derivative_uq').on(
+      table.derivativeEvidenceId
+    )
+  ]
+)
+
+export const executionLeaseEvidence = sqliteTable(
+  'execution_lease_evidence',
+  {
+    leaseId: text('lease_id').notNull(),
+    evidenceId: text('evidence_id').notNull(),
+    captureDecisionId: text('capture_decision_id').notNull(),
+    role: text('role').notNull(),
+    ordinal: integer('ordinal').notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.leaseId, table.captureDecisionId] }),
+    uniqueIndex('execution_lease_evidence_evidence_uq').on(table.evidenceId),
+    uniqueIndex('execution_lease_evidence_ordinal_uq').on(
+      table.leaseId,
+      table.role,
+      table.ordinal
+    ),
+    index('execution_lease_evidence_evidence_idx').on(table.evidenceId)
   ]
 )
 

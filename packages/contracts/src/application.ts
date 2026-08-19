@@ -377,8 +377,24 @@ export const EVIDENCE_SOURCE_HASH_DOMAIN =
   'agentgo.evidence-source.v1' as const
 export const OOB_TOKEN_COMMITMENT_DOMAIN =
   'agentgo.oob-token-commitment.v1' as const
+export const PROTECTED_EVIDENCE_ARTIFACT_SCHEMA_VERSION =
+  'protected-evidence-artifact.v1' as const
+export const PROTECTED_EVIDENCE_PROTECTION_SCHEME =
+  'os-wrapped-aes-256-gcm.v1' as const
+export const PROTECTED_EVIDENCE_ACCESS_POLICY_ID =
+  'backend-only-protected-evidence' as const
+export const PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID =
+  'metadata-only-redacted-derivative' as const
+export const PROTECTED_EVIDENCE_POLICY_VERSION = '1.0.0' as const
+export const MAX_PROTECTED_EVIDENCE_RETENTION_SECONDS =
+  30 * 24 * 60 * 60
 
 export const EvidenceCaptureSourceSchema = z.enum([
+  'http-request-summary',
+  'http-response-summary',
+  'browser-request-summary',
+  'browser-result-summary',
+  'execution-interruption-summary',
   'http-response-body',
   'dom-snapshot',
   'browser-screenshot',
@@ -393,7 +409,8 @@ export const EvidenceCaptureExecutionStateSchema = z.enum([
   'succeeded',
   'failed',
   'cancelled',
-  'timed-out'
+  'timed-out',
+  'interrupted'
 ])
 
 export type EvidenceCaptureExecutionState = z.infer<
@@ -430,12 +447,14 @@ export const EvidenceCaptureReasonSchema = z.enum([
   'unstructured-text-source',
   'partial-source',
   'oversize-source',
+  'empty-source',
   'compressed-source',
   'non-utf8-source',
   'xml-source',
   'binary-source',
   'json-parse-failed',
   'json-selection-failed',
+  'protected-original-authorized',
   'protected-original-unsupported',
   'oob-commitment-unavailable'
 ])
@@ -589,6 +608,45 @@ export type EvidenceResponseDescriptor = z.infer<
   typeof EvidenceResponseDescriptorSchema
 >
 
+export const ProtectedEvidencePlanSchema = z
+  .strictObject({
+    protectionScheme: z.literal(PROTECTED_EVIDENCE_PROTECTION_SCHEME),
+    accessPolicyId: z.literal(PROTECTED_EVIDENCE_ACCESS_POLICY_ID),
+    accessPolicyVersion: z.literal(PROTECTED_EVIDENCE_POLICY_VERSION),
+    derivativePolicyId: z.literal(PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID),
+    derivativePolicyVersion: z.literal(PROTECTED_EVIDENCE_POLICY_VERSION),
+    retentionSeconds: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_PROTECTED_EVIDENCE_RETENTION_SECONDS),
+    maxScanPlaintextBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(1_073_741_824),
+    maxWorkspacePlaintextBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(1_073_741_824)
+  })
+  .superRefine((plan, context) => {
+    if (plan.maxScanPlaintextBytes > plan.maxWorkspacePlaintextBytes) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected Evidence scan quota must not exceed its workspace quota.',
+        path: ['maxScanPlaintextBytes']
+      })
+    }
+  })
+  .readonly()
+
+export type ProtectedEvidencePlan = z.infer<
+  typeof ProtectedEvidencePlanSchema
+>
+
 const EvidenceCaptureContextFields = {
   scanId: SystemIssuedOpaqueIdSchema,
   policyDecisionId: SystemIssuedOpaqueIdSchema,
@@ -601,6 +659,41 @@ const EvidenceCaptureContextFields = {
 } as const
 
 export const EvidenceCaptureContextSchema = z.discriminatedUnion('source', [
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('http-request-summary'),
+      content: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('http-response-summary'),
+      content: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('browser-request-summary'),
+      content: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('execution-interruption-summary'),
+      content: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceCaptureContextFields,
+      source: z.literal('browser-result-summary'),
+      content: EvidenceResponseDescriptorSchema
+    })
+    .readonly(),
   z
     .strictObject({
       ...EvidenceCaptureContextFields,
@@ -686,7 +779,8 @@ export const EvidenceCaptureDecisionSchema = z
       .max(6)
       .readonly(),
     oobCommitmentKeyRef: SystemIssuedOpaqueIdSchema.optional(),
-    oobCommitmentKeyVersion: z.number().int().nonnegative().optional()
+    oobCommitmentKeyVersion: z.number().int().nonnegative().optional(),
+    protectedOriginalPlan: ProtectedEvidencePlanSchema.optional()
   })
   .superRefine((decision, context) => {
     if (Date.parse(decision.validFrom) > Date.parse(decision.validUntil)) {
@@ -763,6 +857,56 @@ export const EvidenceCaptureDecisionSchema = z
         path: ['oobCommitmentKeyRef']
       })
     }
+    const protectsOriginal = decision.action === 'protected-original'
+    if (protectsOriginal !== (decision.protectedOriginalPlan !== undefined)) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original decisions must bind exactly one protected Evidence plan.',
+        path: ['protectedOriginalPlan']
+      })
+    }
+    if (
+      protectsOriginal &&
+      ![
+        'http-response-body',
+        'dom-snapshot',
+        'browser-screenshot'
+      ].includes(decision.source)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original capture is limited to response body, DOM, or screenshot bytes.',
+        path: ['source']
+      })
+    }
+    if (
+      protectsOriginal &&
+      (decision.jsonPointers.length > 0 ||
+        decision.oobMetadataFields.length > 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original capture cannot also select minimized JSON or OOB fields.',
+        path: ['action']
+      })
+    }
+    if (
+      decision.protectedOriginalPlan !== undefined &&
+      (decision.maxSourceBytes >
+        decision.protectedOriginalPlan.maxScanPlaintextBytes ||
+        decision.maxSourceBytes >
+          decision.protectedOriginalPlan.maxWorkspacePlaintextBytes)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original source limit must fit within scan and workspace quotas.',
+        path: ['maxSourceBytes']
+      })
+    }
   })
   .readonly()
 
@@ -770,11 +914,40 @@ export type EvidenceCaptureDecision = z.infer<
   typeof EvidenceCaptureDecisionSchema
 >
 
+export type ProtectedOriginalEvidenceCaptureDecision = Omit<
+  EvidenceCaptureDecision,
+  | 'action'
+  | 'oobCommitmentKeyRef'
+  | 'oobCommitmentKeyVersion'
+  | 'protectedOriginalPlan'
+  | 'source'
+> & {
+  readonly action: 'protected-original'
+  readonly source:
+    | 'http-response-body'
+    | 'dom-snapshot'
+    | 'browser-screenshot'
+  readonly protectedOriginalPlan: ProtectedEvidencePlan
+  readonly oobCommitmentKeyRef?: never
+  readonly oobCommitmentKeyVersion?: never
+}
+
+export type ProtectedOriginalEvidenceCaptureContext = Extract<
+  EvidenceCaptureContext,
+  {
+    source:
+      | 'http-response-body'
+      | 'dom-snapshot'
+      | 'browser-screenshot'
+  }
+>
+
 export const EvidenceHashOnlyReasonSchema = z.enum([
   'decision-hash-only',
   'unstructured-text-source',
   'partial-source',
   'oversize-source',
+  'empty-source',
   'compressed-source',
   'non-utf8-source',
   'xml-source',
@@ -913,39 +1086,190 @@ export type EvidenceHashOnlyPayload = z.infer<
   typeof EvidenceHashOnlyPayloadSchema
 >
 
-const EvidenceArtifactDraftFields = {
-  mimeType: z.literal('application/json'),
+export const EvidenceProtectedOriginalPayloadSchema = z
+  .strictObject({
+    schemaVersion: z.literal(PROTECTED_EVIDENCE_ARTIFACT_SCHEMA_VERSION),
+    kind: z.literal('protected-original-persistence-plan'),
+    originalMimeType: z
+      .string()
+      .regex(/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u),
+    plaintextSize: z.number().int().positive().max(16_777_216),
+    retentionUntil: IsoDateSchema,
+    protectionPlan: ProtectedEvidencePlanSchema,
+    sourceHash: EvidenceSourceHashSchema,
+    captureContext: EvidenceCaptureContextSchema,
+    captureDecision: EvidenceCaptureDecisionSchema
+  })
+  .superRefine((payload, context) => {
+    if (
+      payload.sourceHash.basis !== 'source-bytes' ||
+      payload.sourceHash.coverage !== 'complete' ||
+      payload.sourceHash.knownTotalBytes !== payload.plaintextSize ||
+      payload.sourceHash.hashedBytes !== payload.plaintextSize
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original persistence requires a complete plaintext source hash.',
+        path: ['sourceHash']
+      })
+    }
+    const captureContext = payload.captureContext
+    const captureDecision = payload.captureDecision
+    if (
+      captureDecision.action !== 'protected-original' ||
+      captureDecision.protectedOriginalPlan === undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original persistence must carry an authorized protected capture decision.',
+        path: ['captureDecision', 'action']
+      })
+      return
+    }
+    if (
+      captureContext.source !== 'http-response-body' &&
+      captureContext.source !== 'dom-snapshot' &&
+      captureContext.source !== 'browser-screenshot'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original persistence requires a byte-backed response, DOM, or screenshot context.',
+        path: ['captureContext', 'source']
+      })
+      return
+    }
+    if (
+      captureContext.scanId !== captureDecision.scanId ||
+      captureContext.policyDecisionId !==
+        captureDecision.policyDecisionId ||
+      captureContext.techniqueId !== captureDecision.techniqueId ||
+      captureContext.techniqueVersion !==
+        captureDecision.techniqueVersion ||
+      captureContext.stepId !== captureDecision.stepId ||
+      captureContext.executionState !==
+        captureDecision.executionState ||
+      captureContext.source !== captureDecision.source ||
+      captureContext.role !== captureDecision.role ||
+      Date.parse(captureContext.occurredAt) <
+        Date.parse(captureDecision.validFrom) ||
+      Date.parse(captureContext.occurredAt) >
+        Date.parse(captureDecision.validUntil)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original capture context must exactly match its authorized decision and validity window.',
+        path: ['captureDecision']
+      })
+    }
+    if (
+      !protectedEvidencePlansEqual(
+        payload.protectionPlan,
+        captureDecision.protectedOriginalPlan
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original persistence plan must exactly match its capture decision.',
+        path: ['protectionPlan']
+      })
+    }
+    const responseDescriptor = captureContext.response
+    if (payload.originalMimeType !== responseDescriptor.mediaType) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original MIME type must match the authorized source descriptor.',
+        path: ['originalMimeType']
+      })
+    }
+    if (payload.plaintextSize > captureDecision.maxSourceBytes) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original plaintext size exceeds its authorized source limit.',
+        path: ['plaintextSize']
+      })
+    }
+    const expectedRetentionUntil = new Date(
+      Date.parse(captureContext.occurredAt) +
+        payload.protectionPlan.retentionSeconds * 1_000
+    ).toISOString()
+    if (payload.retentionUntil !== expectedRetentionUntil) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original retention must be derived from the capture occurrence and authorized duration.',
+        path: ['retentionUntil']
+      })
+    }
+  })
+  .readonly()
+
+export type EvidenceProtectedOriginalPayload = z.infer<
+  typeof EvidenceProtectedOriginalPayloadSchema
+>
+
+const EvidenceArtifactBindingFields = {
   role: EvidenceRoleSchema,
   captureDecisionId: SystemIssuedOpaqueIdSchema,
   capturePolicyId: DefinitionIdSchema,
   capturePolicyVersion: ModuleVersionSchema,
-  redactionState: z.literal('redacted'),
   sourceHash: EvidenceSourceHashSchema
 } as const
 
 export const EvidenceArtifactDraftSchema = z.discriminatedUnion('type', [
   z
     .strictObject({
-      ...EvidenceArtifactDraftFields,
+      ...EvidenceArtifactBindingFields,
       type: z.literal('evidence-capture-json-selection'),
+      mimeType: z.literal('application/json'),
       source: z.literal('http-response-body'),
+      redactionState: z.literal('redacted'),
       payload: EvidenceJsonSelectionPayloadSchema
     })
     .readonly(),
   z
     .strictObject({
-      ...EvidenceArtifactDraftFields,
+      ...EvidenceArtifactBindingFields,
       type: z.literal('evidence-capture-oob-metadata'),
+      mimeType: z.literal('application/json'),
       source: z.literal('oob-event'),
+      redactionState: z.literal('redacted'),
       payload: EvidenceOobMetadataPayloadSchema
     })
     .readonly(),
   z
     .strictObject({
-      ...EvidenceArtifactDraftFields,
+      ...EvidenceArtifactBindingFields,
       type: z.literal('evidence-capture-hash-only'),
+      mimeType: z.literal('application/json'),
       source: EvidenceCaptureSourceSchema,
+      redactionState: z.literal('redacted'),
       payload: EvidenceHashOnlyPayloadSchema
+    })
+    .readonly(),
+  z
+    .strictObject({
+      ...EvidenceArtifactBindingFields,
+      type: z.literal('evidence-capture-protected-original'),
+      mimeType: z.literal('application/vnd.agentgo.protected-evidence'),
+      source: z.enum([
+        'http-response-body',
+        'dom-snapshot',
+        'browser-screenshot'
+      ]),
+      redactionState: z.literal('original'),
+      scanId: SystemIssuedOpaqueIdSchema,
+      policyDecisionId: SystemIssuedOpaqueIdSchema,
+      techniqueId: VulnerabilityTechniqueIdSchema,
+      techniqueVersion: ModuleVersionSchema,
+      stepId: DefinitionIdSchema,
+      payload: EvidenceProtectedOriginalPayloadSchema
     })
     .readonly()
 ]).superRefine((artifact, context) => {
@@ -993,6 +1317,30 @@ export const EvidenceArtifactDraftSchema = z.discriminatedUnion('type', [
       path: ['payload', 'tokenCommitment']
     })
   }
+  if (artifact.type === 'evidence-capture-protected-original') {
+    const captureContext = artifact.payload.captureContext
+    const captureDecision = artifact.payload.captureDecision
+    if (
+      artifact.scanId !== captureContext.scanId ||
+      artifact.policyDecisionId !== captureContext.policyDecisionId ||
+      artifact.techniqueId !== captureContext.techniqueId ||
+      artifact.techniqueVersion !== captureContext.techniqueVersion ||
+      artifact.stepId !== captureContext.stepId ||
+      artifact.source !== captureContext.source ||
+      artifact.role !== captureContext.role ||
+      artifact.captureDecisionId !== captureDecision.id ||
+      artifact.capturePolicyId !== captureDecision.capturePolicyId ||
+      artifact.capturePolicyVersion !==
+        captureDecision.capturePolicyVersion
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Protected-original artifact must exactly bind its capture context and decision.',
+        path: ['payload']
+      })
+    }
+  }
 })
 
 export type EvidenceArtifactDraft = z.infer<
@@ -1011,6 +1359,22 @@ function evidenceSourceHashesEqual(
     left.coverage === right.coverage &&
     left.hashedBytes === right.hashedBytes &&
     left.knownTotalBytes === right.knownTotalBytes
+  )
+}
+
+function protectedEvidencePlansEqual(
+  left: ProtectedEvidencePlan,
+  right: ProtectedEvidencePlan
+): boolean {
+  return (
+    left.protectionScheme === right.protectionScheme &&
+    left.accessPolicyId === right.accessPolicyId &&
+    left.accessPolicyVersion === right.accessPolicyVersion &&
+    left.derivativePolicyId === right.derivativePolicyId &&
+    left.derivativePolicyVersion === right.derivativePolicyVersion &&
+    left.retentionSeconds === right.retentionSeconds &&
+    left.maxScanPlaintextBytes === right.maxScanPlaintextBytes &&
+    left.maxWorkspacePlaintextBytes === right.maxWorkspacePlaintextBytes
   )
 }
 
@@ -1068,7 +1432,8 @@ export const EvidenceCaptureResultSchema = z
     const reasonMatchesState =
       (result.state === 'captured' &&
         (result.reason === 'allowlisted-json-selection' ||
-          result.reason === 'allowlisted-oob-metadata')) ||
+          result.reason === 'allowlisted-oob-metadata' ||
+          result.reason === 'protected-original-authorized')) ||
       (result.state === 'hash-only' &&
         EvidenceHashOnlyReasonSchema.safeParse(result.reason).success) ||
       (result.state === 'discarded' &&
@@ -1211,7 +1576,10 @@ export const EvidenceCaptureResultSchema = z
           artifact.type === 'evidence-capture-json-selection') ||
         (result.state === 'captured' &&
           result.reason === 'allowlisted-oob-metadata' &&
-          artifact.type === 'evidence-capture-oob-metadata')
+          artifact.type === 'evidence-capture-oob-metadata') ||
+        (result.state === 'captured' &&
+          result.reason === 'protected-original-authorized' &&
+          artifact.type === 'evidence-capture-protected-original')
       if (!artifactTypeMatches) {
         context.addIssue({
           code: 'custom',
@@ -1255,6 +1623,19 @@ export const EvidenceCaptureResultSchema = z
           path: ['artifacts', 0, 'payload', 'tokenCommitment']
         })
       }
+      if (
+        artifact.type === 'evidence-capture-protected-original' &&
+        (artifact.scanId === undefined ||
+          artifact.policyDecisionId === undefined ||
+          artifact.sourceHash.coverage !== 'complete')
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message:
+            'Protected-original Evidence must preserve its complete execution binding.',
+          path: ['artifacts', 0]
+        })
+      }
     }
   })
   .readonly()
@@ -1263,17 +1644,36 @@ export type EvidenceCaptureResult = z.infer<
   typeof EvidenceCaptureResultSchema
 >
 
-export const EvidenceSummarySchema = z.object({
+const EvidenceSummaryFields = {
   id: IdSchema,
   scanId: IdSchema,
   type: z.string(),
   mimeType: z.string(),
   sha256: z.string(),
   size: z.number().int().nonnegative(),
-  redactionState: z.string(),
   integrityStatus: z.string(),
   createdAt: IsoDateSchema
-})
+} as const
+
+export const EvidenceSummarySchema = z.discriminatedUnion(
+  'protectionState',
+  [
+    z.strictObject({
+      ...EvidenceSummaryFields,
+      redactionState: z.literal('redacted'),
+      protectionState: z.literal('unprotected'),
+      derivedFrom: IdSchema.optional(),
+      retentionUntil: IsoDateSchema.optional()
+    }),
+    z.strictObject({
+      ...EvidenceSummaryFields,
+      redactionState: z.literal('original'),
+      protectionState: z.literal('protected-original'),
+      availabilityState: z.enum(['available', 'expired']),
+      retentionUntil: IsoDateSchema
+    })
+  ]
+)
 
 export type EvidenceSummary = z.infer<typeof EvidenceSummarySchema>
 
@@ -1714,7 +2114,7 @@ export type ReportRecord = z.infer<typeof ReportSchema>
 export const GenerateReportInputSchema = z.object({
   scanId: IdSchema,
   format: z.enum(['markdown', 'json', 'html']).default('markdown'),
-  redacted: z.boolean().default(true)
+  redacted: z.literal(true).default(true)
 })
 
 export type GenerateReportInput = z.infer<typeof GenerateReportInputSchema>

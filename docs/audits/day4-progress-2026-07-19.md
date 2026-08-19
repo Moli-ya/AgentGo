@@ -1,5 +1,12 @@
 # Day 4 首个实现切片（2026-07-19）
 
+> 2026-07-28 后续复核见
+> [Day4 完成度复核与收口档案](day4-completion-2026-07-28.md)。统一
+> Compiler/adapter/hash-only capture 已接入，但 `protected-original` 仍
+> unsupported，因此在该历史时点 Day4 总状态继续为
+> `partial / in_progress`。2026-07-30 的当前完成结论见
+> [Day4 最终复核](day4-final-review-2026-07-30.md)；本档不回写旧事实。
+
 ## 状态与范围
 
 - 状态：`partial / in_progress`，不构成 Day4 完成声明。

@@ -1,8 +1,31 @@
 # AgentGo 项目设计入口
 
 > 文档状态：当前有效
-> 基线日期：2026-07-13
+> 基线日期：2026-07-30
 > 项目周期：2026-06 至 2027-06
+
+## 0. Codex 开发八荣八耻（MUST）
+
+以下规则是本仓库最高优先级的开发行为准则，对人类开发者和 AI 编程代理同样适用：
+
+- 以暗猜接口为耻，以认真查阅为荣。
+- 以模糊执行为耻，以寻求确认为荣。
+- 以盲想业务为耻，以人类确认为荣。
+- 以创造接口为耻，以复用现有为荣。
+- 以跳过验证为耻，以主动测试为荣。
+- 以破坏架构为耻，以遵循规范为荣。
+- 以假装理解为耻，以诚实无知为荣。
+- 以盲目修改为耻，以谨慎重构为荣。
+
+执行要求：
+
+- 写代码前先使用 `rg`、类型定义、现有测试和权威文档确认真实接口。
+- 需求或副作用存在关键歧义时，先向人类确认，不用猜测填补业务规则。
+- 新建 API、类型、模块或依赖前，先证明现有能力不能复用。
+- 每次修改都必须运行与风险相匹配的主动验证，不能用“应该能工作”代替证据。
+- 偏离 `AGENT.md`、`AGENTS.md`、`docs/architecture`、`docs/security` 或 ADR 时，先提出变更并获得确认。
+- 对未知内容明确标记未知、待验证或 `Inconclusive`，不伪造结论。
+- 重构保持小步、可回滚，并保护用户已有改动。
 
 ## 1. 项目定位
 
@@ -54,7 +77,7 @@ V1 是已经存在的历史基线，必须准确保留，不能因为 V2 计划�
 
 因此，V1 已证明的是“固定本地靶场上的四类漏洞闭环”，不是对复杂 SPA、登录流程、业务工作流或任意 API 形态的完整覆盖。盲 SSRF、存储型/复杂 DOM XSS、路径/Body 型 IDOR 和复杂业务逻辑仍应保持 `Inconclusive`，直到相应的证据采集与确认规则实现并通过评测。
 
-### V2 后端目标（Day2 扩展底座已实现，其余仍在规划）
+### V2 后端目标与 Day1～Day5 当前事实
 
 V2 的长期目标是覆盖已知 Web 漏洞分类并可持续接入新类别，而不是把几十个名字继续追加到四值枚举。工程实现必须遵守：
 
@@ -66,7 +89,17 @@ V2 的长期目标是覆盖已知 Web 漏洞分类并可持续接入新类别，
 - 无法在真实业务中安全确认的 RCE、反序列化、协议差异、DoS 或业务逻辑场景必须保持 Signal、Fixture 或 Inconclusive，不能为追求“覆盖率”执行破坏性证明；
 - “覆盖完整分类”表示每类都有可审计状态和交付路径，不表示保证发现所有未知漏洞或所有目标特有业务缺陷。
 
-V2 的详细架构、逐类状态和实施顺序见 `docs/planning/Day0.md`、`docs/planning/backend-v2-architecture.md`、`docs/planning/web-vulnerability-coverage-matrix.md`、`docs/planning/complex-web-interface-capability-matrix.md` 与 Day1～Day20。Day1 已于 2026-07-13 按 `docs/planning/day1-baseline.md` 完成；Day2 于 2026-07-15 交付开放 ID、Capability Catalog、原子 DefinitionRegistry、registered-only Activation 视图、四类 legacy adapter 和执行门禁，证据见 `docs/audits/day2-completion-2026-07-15.md`。这不代表 Day7 qualification、Day14 通用运行时或新增漏洞检测已完成；计划文档或目录名称本身不能作为已实现、已激活或已资格化的证据。
+V2 的详细架构、逐类状态和实施顺序见 `docs/planning/Day0.md`、`docs/planning/backend-v2-architecture.md`、`docs/planning/web-vulnerability-coverage-matrix.md`、`docs/planning/complex-web-interface-capability-matrix.md` 与 Day1～Day20。当前事实以独立完成档案和可复核代码为准：
+
+| 工作包 | 当前状态 | 已证明的边界 |
+|---|---|---|
+| Day1 | `completed / committed` | 单调 Scope revision、显式 current pointer、旧库回填和并发回归已完成；commit `e82caf49e1985670022479b347abcc39329d5295`。 |
+| Day2 | `completed / committed` | 开放 ID、Capability Catalog、原子 DefinitionRegistry、registered-only Activation、固定四类 `legacy-v1` 兼容门禁已完成；兼容例外不构成 qualified/supported。 |
+| Day3 | `completed / committed` | 统一 Inventory、结构化 RequestVariant、opaque refs、不可变 Scan module snapshot、迁移和数据最小化已完成；补充安全复核修复已落库。 |
+| Day4 | `completed / uncommitted` | 纯 Compiler、三阶段 proof、legacy adapter、默认 hash-only CapturePolicy，以及受固定计划约束的 protected-original 加密、后端访问、配额、保留期、脱敏派生和 crypto-erase 已完成，并于 2026-07-30 通过最终门禁。实际 DOM/截图采集与审阅仍属 Day18。 |
+| Day5 | `completed / uncommitted` | ExecutionGrant、单次 Lease、exact-wire Guard、统一 ExecutionPort、逐跳 fresh redirect authority、claimed-but-unknown 无重放恢复和持久化 Evidence GC 已完成；2026-07-30 又在 Day4 最终代码上通过全量 post-Day4 回归和全新 40 Case。 |
+
+Day6～Day20 仍为 `pending`。Day5 的单步预算不能冒充 Day6 全局原子预算；Day7 qualification、Day9 SessionVault、Day10 可信批准、Day14 通用运行时和新增漏洞检测均未完成。计划文件、目录名、注册状态或本摘要本身都不能作为激活、资格化或真实目标准确率的证据。
 
 ### 当前前端边界
 
@@ -92,12 +125,16 @@ V1 的模型型 Agent：
 - ProbeCapabilityCatalog：冻结的能力语义目录及 SecurityPolicy `riskFloor`，不授予执行资格。
 - DefinitionRegistry：原子注册完整 Bundle、校验引用/模式/能力风险下界/证据角色并输出 canonical hash；第一版 Module Conformance testkit 已提供。
 - RegisteredOnlyActivationCatalog / VulnerabilityExecutionGate：分离定义与激活，并在 create/start/resume/candidate 四处失败关闭；临时 legacy 例外固定到 canonical tuple、definition hash 与 `active-l1`。
+- InventoryService / ScanModuleSnapshot：统一 RequestVariant、来源、审查和执行分类真源，并冻结每个 Scan 的 module/technique/rule/evidence/capability 语义。
+- ProbeRequestCompiler / EvidenceCapturePolicy / ProtectedEvidenceCaptureService：确定性生成 Template/Resolved/Wire proof；当前在线 Day5 执行固定使用 hash-only capture，获准的必要原件可在可信后端通过完整 context/decision 封套进入 OS-wrapped AES-256-GCM、配额、保留期、脱敏派生和 crypto-erase 链。Renderer、普通读取、报告和导出不能读取原件。
+- ExecutionAuthority / ExecutionPort / Runner Guard：实际 HTTP 与离线 Browser I/O 只消费不可篡改 Grant 派生的单次 Lease，发送前复核 exact wire，并为 redirect 每跳签发 fresh authority；claimed-but-unknown 不自动重放。
 
 V2 计划新增或重构、当前不能按已存在使用的确定性服务：
 
+- Day6 AtomicBudget / 更完整网络资源门禁：提供 scan 级 request、RPM、concurrency 和 bytes 的原子 reserve/settle；Day5 只完成单步限制。
 - QualificationService / 资格记录驱动的生产 ActivationCatalog / CandidateCompiler：验证测试证明、冻结版本、Subject 和正式执行资格；
 - ValidationPlanExecutor / 通用 ConfirmationEngine：解释受限步骤、组织角色化 Observation，并用版本化纯规则给出三态结论；
-- ExecutionGrant / Lease、原子预算、SessionVault、TestObject/L2 状态机、可信 ApprovalPort，以及受策略代理的 BrowserNetworkBroker。
+- SessionVault、TestObject/L2 状态机、可信 ApprovalPort，以及受策略代理的 BrowserNetworkBroker。
 
 模型可以提出动作，但不能自行扩大授权范围，也不能覆盖 SecurityPolicy 的拒绝结果。
 
@@ -125,7 +162,14 @@ V2 计划新增或重构、当前不能按已存在使用的确定性服务：
 - docs/workflows/src-hunting.md：授权 SRC 漏洞挖掘阶段门禁
 - docs/knowledge/knowledge-agent.md：知识库、检索、KnowledgePack 和质量评估
 - docs/evaluation/benchmark-plan.md：基准、对照实验和指标
-- docs/audits/v1-current-capability-audit.md：当前实现与计划书的可验证满足度及缺口
+- docs/audits/v1-current-capability-audit.md：2026-07-13 V1 历史能力快照
+- docs/audits/day1-final-review-2026-07-15.md：Day1 最终提交前复核
+- docs/audits/day2-completion-2026-07-15.md：Day2 完成审计与固定兼容边界
+- docs/audits/day3-completion-2026-07-18.md：Day3 完成事实；后续修正见同目录补充复核
+- docs/audits/day4-completion-2026-07-28.md：Day4 protected-original 收口前的历史完成度与缺口
+- docs/audits/day4-final-review-2026-07-30.md：Day4 protected-original 最终收口、验证与能力边界
+- docs/audits/day5-completion-2026-07-28.md：Day5 实现及 Day4 最终变更前的历史验证事实
+- docs/audits/day5-post-day4-review-2026-07-30.md：Day5 在 Day4 最终代码上的全量复验与正式闭环
 - docs/planning/README.md：后端优先 20 个顺序工作包索引
 - docs/planning/Day0.md：本轮现状复核、Day1/Day2 撤销与计划重排记录
 - docs/planning/backend-v2-architecture.md：可扩展漏洞模块、ValidationPlan 和证据架构
@@ -135,8 +179,7 @@ V2 计划新增或重构、当前不能按已存在使用的确定性服务：
 - docs/roadmap.md：与大创计划对应的阶段安排
 - docs/research/related-work.md：开源同类项目研究记录
 
-根目录 AGENTS.md 是人类开发者和 AI 编程代理都必须遵守的精简工程规则。
-其中“Codex 开发八荣八耻”属于 MUST 级行为准则，所有实现、调试、重构和验证任务均不得绕过。
+根目录 `AGENTS.md` 是精简协作规则，本文件是自包含的项目设计入口；两者的“Codex 开发八荣八耻”均属于 MUST 级行为准则，所有实现、调试、重构和验证任务不得绕过。
 
 ## 7. 决策管理
 

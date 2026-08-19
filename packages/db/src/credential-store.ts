@@ -12,6 +12,7 @@ export interface CredentialMetadata {
   id: string
   kind: 'identity' | 'model-api-key' | 'mcp-server-secret'
   label: string
+  generation: number
   createdAt: string
   updatedAt: string
 }
@@ -21,13 +22,19 @@ interface StoredCredential extends CredentialMetadata {
 }
 
 interface CredentialFile {
-  version: 1
+  version: 2
   entries: Record<string, StoredCredential>
 }
 
 function emptyCredentialFile(): CredentialFile {
-  return { version: 1, entries: {} }
+  return { version: 2, entries: {} }
 }
+
+const credentialKinds = new Set<CredentialMetadata['kind']>([
+  'identity',
+  'model-api-key',
+  'mcp-server-secret'
+])
 
 export class FileCredentialStore {
   constructor(
@@ -56,12 +63,22 @@ export class FileCredentialStore {
     const id = input.id ?? randomUUID()
     const now = new Date().toISOString()
     const existing = store.entries[id]
+    if (input.id !== undefined && !existing) {
+      throw new Error('A missing credential cannot be recreated with an old identifier.')
+    }
+    if (existing && existing.kind !== input.kind) {
+      throw new Error('A credential kind cannot change during rotation.')
+    }
+    if (existing?.generation === Number.MAX_SAFE_INTEGER) {
+      throw new Error('The credential generation is exhausted.')
+    }
     const entry: StoredCredential = {
       id,
       kind: input.kind,
       label: input.label,
       ciphertext: this.protector.protect(input.secret).toString('base64'),
       createdAt: existing?.createdAt ?? now,
+      generation: existing ? existing.generation + 1 : 0,
       updatedAt: now
     }
     store.entries[id] = entry
@@ -97,6 +114,7 @@ export class FileCredentialStore {
       id: entry.id,
       kind: entry.kind,
       label: entry.label,
+      generation: entry.generation,
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt
     }
@@ -104,11 +122,87 @@ export class FileCredentialStore {
 
   private readStore(): CredentialFile {
     if (!existsSync(this.filePath)) return emptyCredentialFile()
-    const parsed = JSON.parse(readFileSync(this.filePath, 'utf8')) as Partial<CredentialFile>
-    if (parsed.version !== 1 || !parsed.entries || typeof parsed.entries !== 'object') {
+    const parsed: unknown = JSON.parse(readFileSync(this.filePath, 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error('凭据存储文件格式无效。')
     }
-    return parsed as CredentialFile
+    const root = parsed as Record<string, unknown>
+    if (
+      JSON.stringify(Object.keys(root).sort()) !==
+        JSON.stringify(['entries', 'version']) ||
+      (root.version !== 1 && root.version !== 2) ||
+      !root.entries ||
+      typeof root.entries !== 'object' ||
+      Array.isArray(root.entries)
+    ) {
+      throw new Error('凭据存储文件格式无效。')
+    }
+    const entries: Record<string, StoredCredential> = {}
+    for (const [id, rawEntry] of Object.entries(
+      root.entries as Record<string, unknown>
+    )) {
+      entries[id] = this.parseStoredCredential(id, rawEntry, root.version)
+    }
+    return { version: 2, entries }
+  }
+
+  private parseStoredCredential(
+    id: string,
+    rawEntry: unknown,
+    version: 1 | 2
+  ): StoredCredential {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+      throw new Error('凭据存储文件格式无效。')
+    }
+    const entry = rawEntry as Record<string, unknown>
+    const expectedKeys = version === 1
+      ? ['ciphertext', 'createdAt', 'id', 'kind', 'label', 'updatedAt']
+      : [
+          'ciphertext',
+          'createdAt',
+          'generation',
+          'id',
+          'kind',
+          'label',
+          'updatedAt'
+        ]
+    const kind = entry.kind
+    const generation = version === 1 ? 0 : entry.generation
+    if (
+      JSON.stringify(Object.keys(entry).sort()) !==
+        JSON.stringify(expectedKeys) ||
+      entry.id !== id ||
+      id.length === 0 ||
+      typeof kind !== 'string' ||
+      !credentialKinds.has(kind as CredentialMetadata['kind']) ||
+      typeof entry.label !== 'string' ||
+      typeof entry.ciphertext !== 'string' ||
+      typeof entry.createdAt !== 'string' ||
+      typeof entry.updatedAt !== 'string' ||
+      !Number.isSafeInteger(generation) ||
+      (generation as number) < 0 ||
+      !this.isCanonicalIsoDate(entry.createdAt) ||
+      !this.isCanonicalIsoDate(entry.updatedAt)
+    ) {
+      throw new Error('凭据存储文件格式无效。')
+    }
+    return {
+      id,
+      kind: kind as CredentialMetadata['kind'],
+      label: entry.label,
+      ciphertext: entry.ciphertext,
+      generation: generation as number,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }
+  }
+
+  private isCanonicalIsoDate(value: string): boolean {
+    const timestamp = Date.parse(value)
+    return (
+      Number.isFinite(timestamp) &&
+      new Date(timestamp).toISOString() === value
+    )
   }
 
   private writeStore(store: CredentialFile): void {
