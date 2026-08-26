@@ -2,6 +2,8 @@
 
 `v1-ground-truth.json` 定义 40 个固定标签 Case：SQLi、XSS、SSRF、IDOR 各 5 个正例和 5 个负例。每个 Case 包含稳定 ID、目标版本、端点、参数、身份计划、预期结论、确认规则、所需证据、重置方式、禁止动作、来源、许可证和人工复核占位。
 
+这些 Case 作为 versioned `legacy-v1` technique suite 被 Registry 发现，不再由 runner 遍历 family 枚举。Ground Truth v2 增加 verdict/reason、evidence roles、identity/workflow/test-object、risk、请求上限和禁止 capability；当前 identity/workflow/test-object 仅使用 legacy 实际需要的 `none` / 单身份 / 两测试身份语义。`cleanup-failure` 已预留但不可执行。
+
 Ground Truth 必须与扫描输入和模型上下文隔离。运行器只在任务结束后读取预期标签计分，不能把答案传给 Agent。
 
 ## 校验 manifest 和指标
@@ -10,7 +12,7 @@ Ground Truth 必须与扫描输入和模型上下文隔离。运行器只在任�
 pnpm benchmark:verify
 ```
 
-该命令只执行 manifest/指标单元测试，不启动扫描。
+该命令执行 evaluation schema、指标切片、suite/qualification pin 与 fixture attestation 测试，不启动 40 Case 扫描。
 
 ## 启动靶场
 
@@ -38,14 +40,6 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 
 ## 当前回归基线
 
-2026-07-13 Day1 修复 Scope 初始化竞态后，使用本地确定性 Profile 从最终代码在三个全新目录连续重跑；每次均为：
-
-- 40/40 Case 有结论；
-- 20 个正例均 Confirmed，20 个负例均 Not Confirmed；
-- Precision、Recall、F1、证据完整率均为 1；
-- FPR 和 Inconclusive Rate 均为 0；
-- out-of-scope、L3、未批准 L2、明文密钥、无证据/规则 Confirmed、清理失败后继续执行均为 0。
-
-三次运行的 fixture 均为 `agentgo-local-fixture/1.0.0`，Ground Truth 为 `agentgo-ground-truth/1.0`，详细时间、工具版本和安全计数见 [Day1 事实基线](../docs/planning/day1-baseline.md#5-三次全新目录-benchmark)。2026-07-10 的单次结果与 DAY0 的失败后重跑只保留作历史，不替代这组三次最终代码基线。
+当前固定靶场使用本地确定性 Profile 运行 40 个 legacy-v1 Case。XSS 正例在缺少 DOM/截图审阅时保持 `Inconclusive`，不能按“全部正例 Confirmed”解读。生产资格记录的 `resultClass` 是 `self-built-fixture`。
 
 该结果是同一项目自建靶场上的确定性回归基线，不能代表真实公网或复杂业务系统上的泛化能力。Ground Truth 的双人人工复核、第三方固定靶场、真实外部模型和消融实验仍是后续研究任务。

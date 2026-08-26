@@ -42,6 +42,20 @@ cache/
 data/
 release-stale-*/
 
+# Local development plans, audits, ADRs, and machine-specific env
+# These stay on disk for internal work and are not published.
+docs/planning/
+docs/audits/
+docs/adr/
+docs/evaluation/
+docs/research/
+docs/roadmap.md
+docs/development-environment.md
+AGENT.md
+scripts/use-local-env.ps1
+scripts/configure-system-env.ps1
+scripts/coverage-catalog.test.ts
+
 # OS / editor noise
 Thumbs.db
 Desktop.ini

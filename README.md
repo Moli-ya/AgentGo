@@ -2,8 +2,6 @@
 
 基于 Multi-Agent 协作的授权 Web 漏洞挖掘与验证 Windows 桌面系统。
 
-> 当前状态：V1 可运行原型。2026-07-30，Day4 的 `protected-original` 后端能力已完成实现与终验：普通 Evidence 继续默认不保存原文，必要原件受固定捕获决策、加密与后端访问边界、hash、保留期/配额、脱敏派生和到期清理约束。Day5 的 Grant/单次 Lease/exact-wire Guard/统一 ExecutionPort 已在 Day4 最终代码上完成 post-Day4 全回归并正式闭环。验证事实分别见 [Day4 终验档案](docs/audits/day4-final-review-2026-07-30.md) 和 [Day5 复验档案](docs/audits/day5-post-day4-review-2026-07-30.md)。受保护存储能力不等于 Day18 的 DOM/截图实际执行与审阅链已经完成。
-
 > 自动验证边界：当前运行器只自动验证授权范围内的 **GET 查询参数**。表单、POST/PUT/PATCH、JSON Body、Header、Cookie、路径参数、复杂 SPA 交互和盲回连场景会被盘点或标记为 `Inconclusive`，不会被静默扩展为真实业务写操作。
 
 ## 使用边界
@@ -12,24 +10,25 @@ AgentGo 只允许用于教学靶场、自有系统和有明确书面授权的目
 
 V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、云元数据访问、持久化、横向移动、凭据喷洒和高强度 DoS。证据充分后立即停止验证，不扩大影响。
 
-`POST`、`PUT` 和 `PATCH` 默认不是 L1 自动动作。只有专用测试对象、可验证清理方案和可信逐次人工批准同时具备时，才可能作为 L2 动作执行；当前 V1 尚无完整 TestObject/Approval/Cleanup 闭环，因此产品环境 L2 保持禁用，相关能力属于后端 V2 计划。
+`POST`、`PUT` 和 `PATCH` 默认不是 L1 自动动作。只有专用测试对象、可验证清理方案和可信逐次人工批准同时具备时，才可能作为 L2 动作执行。当前已落地 TestObject/Bundle/Cleanup 纯状态协议，但产品环境在缺少会话绑定与可信批准时保持 L2 禁用，不得对目标发送 L2 请求。
 
 ## 已实现功能
 
 - 五 Agent：Planner、Knowledge、Strategy、Analysis、Verifier；所有模型调用统一经过 `ModelGateway`。
 - 四类 legacy 路径：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 目标响应内的受控 proof（非真实 OOB Collector）、IDOR 双授权身份只读对照。当前 XSS 只有 hash-only 执行摘要，没有可审阅 DOM/截图 Evidence，因此 marker 执行只能形成 `Inconclusive`，不能 Confirmed。
 - 漏洞扩展底座：开放 `familyId/techniqueId`、严格 Manifest/Bundle、不可变 Capability Catalog、Capability 风险下界校验、原子 DefinitionRegistry、Module Conformance testkit、canonical definition/snapshot hash 和 registered-only Activation 视图。
-- 执行资格门禁：CreateScan、start、resume、Candidate 同时核对冻结定义、精确运行时映射与 Activation/固定 legacy 兼容允许表；临时例外固定到 canonical definition hash 与 `active-l1`，未知 ID 和 registered-only 的 `security.headers` 失败关闭。
+- 执行资格门禁：CreateScan、start、resume、Candidate 同时核对冻结定义、精确运行时映射与 ActivationCatalog；四类 legacy technique 由 QualificationRecord 取得 `qualified`，未知 ID 和 registered-only 的 `security.headers` 失败关闭。
 - 确定性执行边界：三阶段请求证明、不可变 Grant、原子单次 Lease、exact-wire Runner Guard、HTTP DNS/重定向逐跳 fresh authority、浏览器断网渲染和 L3 永久拒绝。
+- 原子预算与网络门禁：scan 级请求/RPM/并发/字节/时长在 claim 事务内原子 reserve；精确网络条目与 URL canonicalization fail-closed；HTTP 响应实行 header/解压/压缩比/慢读上限。
 - 本地数据层：SQLite、迁移、不可变 Scope 快照、每 Target 单调 revision/显式 current pointer、Checkpoint、审计和扫描事件。
-- 凭据与证据：Electron `safeStorage`、内容寻址证据、SHA-256 完整性校验、默认最小化/脱敏写入，以及带加密、后端访问边界、保留期、配额、脱敏派生和到期 crypto-erase 的 `protected-original` 后端存储。实际 DOM/截图捕获与 XSS 证据消费仍由 Day18 交付。
+- 凭据与证据：Electron `safeStorage`、内容寻址证据、SHA-256 完整性校验、默认最小化/脱敏写入，以及带加密、后端访问边界、保留期、配额、脱敏派生和到期 crypto-erase 的 `protected-original` 后端存储。实际 DOM/截图捕获与 XSS 证据消费尚未接入在线执行路径。
 - 扫描控制：启动、暂停、恢复、取消；普通 queued/running 中断在下次启动时恢复为暂停，claimed-but-unknown 执行则终结为 `interrupted / unknown` 并进入 `awaiting-user`，两者都不自动重放。
 - 结论与报告：Confirmed、Not Confirmed、Inconclusive；Markdown、JSON、HTML 脱敏报告。
 - 知识库：四类内置知识、公开情报/PoC 文本导入、Extractor/Reviewer 双 Agent 结构化复核、人工发布、来源/许可证元数据、SQLite FTS5 与中文子串回退检索。
 - 桌面边界：Renderer 通过双向 Zod 校验的 IPC 使用应用服务，不能直接访问数据库、文件、凭据或执行器。
-- 评测：固定版本本地靶场、40 个正负 Case、指标计算和六项安全硬门禁。
+- 评测：versioned technique suite、40 个 legacy-v1 Case、三态/policy/version-mismatch 元测试、loopback fixture attestation 与六项安全硬门禁。
 
-Day2 只为固定四类 V1 adapter 保留临时 `legacy-v1` 兼容路径，其 Activation 状态仍是 `registered`，不得声明 qualified/supported。正式 qualification record、通用模块运行时和 `security.headers` 被动检测执行分别属于 Day7、Day14 和 Day19。
+`resultClass=self-built-fixture` 不得声明 supported。通用模块运行时和 `security.headers` 被动检测执行尚未作为产品能力开放。
 
 ## 技术架构
 
@@ -91,11 +90,7 @@ pnpm benchmark:fixture
 pnpm benchmark:run --output .\benchmark-results\my-run
 ```
 
-2026-07-10 对 `agentgo-local-fixture/1.0.0` 的确定性回归运行结果为：40/40 有结论，20 个正例均 Confirmed，20 个负例均 Not Confirmed，Precision/Recall/F1 和证据完整率均为 1，FPR 为 0，六项安全硬门禁均为 0。
-
-这只是自建、固定、同分布靶场的回归基线，用于证明闭环和防止代码回退；不能据此推断真实互联网或复杂业务系统上的检测效果。Ground Truth 人工复核、第三方靶场、重复稳定性和消融实验仍需按研究计划继续完成。运行结果默认写入被 Git 忽略的 `benchmark-results/`。
-
-2026-07-13 Day1 已修复 [DAY0](docs/planning/Day0.md) 复现的同毫秒 Scope 竞态：每个 Target 使用单调 revision 和显式 current pointer，Scan 冻结精确 scope ID/version，旧库可确定性回填，并由同毫秒、路径别名双连接并发、create/update、事务回滚和 Application 精确返回测试覆盖。最终代码在三个全新目录连续完成 40/40，三次均为 TP 20、TN 20、FP/FN/Inconclusive 0，六项安全计数全 0。完整版本、命令、数据库 hash 与限制见 [Day1 事实基线](docs/planning/day1-baseline.md)；该结果仍只代表自建固定 fixture。
+这只是自建、固定、同分布靶场的回归基线，用于证明闭环和防止代码回退；不能据此推断真实互联网或复杂业务系统上的检测效果。当前预期边界是：XSS 正例在缺少 DOM/截图审阅时保持 `Inconclusive`。运行结果默认写入被 Git 忽略的 `benchmark-results/`。
 
 ## Windows 打包
 
@@ -119,22 +114,7 @@ pnpm dist:win
 - [docs/security/active-probing-policy.md](docs/security/active-probing-policy.md)：主动探测安全规范
 - [docs/architecture/overview.md](docs/architecture/overview.md)：进程和模块边界
 - [docs/knowledge/knowledge-agent.md](docs/knowledge/knowledge-agent.md)：知识链路
-- [docs/evaluation/benchmark-plan.md](docs/evaluation/benchmark-plan.md)：研究评测计划
-- [docs/audits/v1-current-capability-audit.md](docs/audits/v1-current-capability-audit.md)：2026-07-13 V1 历史能力快照
-- [docs/audits/day4-completion-2026-07-28.md](docs/audits/day4-completion-2026-07-28.md)：Day4 在 protected-original 收口前的历史完成度复核
-- [docs/audits/day4-final-review-2026-07-30.md](docs/audits/day4-final-review-2026-07-30.md)：Day4 protected-original 后端收口与最终门禁档案
-- [docs/audits/day5-completion-2026-07-28.md](docs/audits/day5-completion-2026-07-28.md)：Day5 实现及 post-Day4 变更前的历史验证档案
-- [docs/audits/day5-post-day4-review-2026-07-30.md](docs/audits/day5-post-day4-review-2026-07-30.md)：Day4 变更后的 Day5 全回归与正式闭环档案
-- [docs/adr/0006-deterministic-execution-authority.md](docs/adr/0006-deterministic-execution-authority.md)：单次 Lease 和统一 ExecutionPort 决策
-- [docs/adr/0007-protected-evidence-envelope.md](docs/adr/0007-protected-evidence-envelope.md)：protected-original 加密封套、访问、配额、保留与派生决策
-- [docs/planning/Day0.md](docs/planning/Day0.md)：当前实况、Day1/Day2 撤销、二十个工作包依赖复审
-- [docs/planning/Day1.md](docs/planning/Day1.md)：Day1 目标与完成记录
-- [docs/planning/day1-baseline.md](docs/planning/day1-baseline.md)：Scope 修复、环境版本、测试/benchmark 与合成数据库事实基线
-- [docs/planning/requirements-traceability.md](docs/planning/requirements-traceability.md)：稳定需求 ID、支持声明格式和后续主责
-- [docs/planning/README.md](docs/planning/README.md)：后端 V2 顺序工作包、漏洞覆盖与复杂接口能力矩阵
-- [docs/roadmap.md](docs/roadmap.md)：当前事实与后续研究工作
-
-原始大创申报材料包含个人信息，不作为公开仓库文档发布。
+- [benchmarks/README.md](benchmarks/README.md)：固定靶场评测说明
 
 ## License
 
