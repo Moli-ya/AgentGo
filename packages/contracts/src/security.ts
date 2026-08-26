@@ -427,6 +427,39 @@ export const SideEffectSchema = z.enum([
 
 export type SideEffect = z.infer<typeof SideEffectSchema>
 
+export const NetworkAddressClassSchema = z.enum([
+  'private',
+  'loopback',
+  'link-local',
+  'reserved'
+])
+
+export type ScopeNetworkAddressClass = z.infer<typeof NetworkAddressClassSchema>
+
+export const NetworkEntryPurposeSchema = z.enum(['execution', 'ssrf-target'])
+
+export type NetworkEntryPurpose = z.infer<typeof NetworkEntryPurposeSchema>
+
+export const ScopeNetworkEntrySchema = z
+  .object({
+    id: z.string().min(1),
+    addressClass: NetworkAddressClassSchema,
+    host: z.string().min(1).optional(),
+    ip: z.string().min(1).optional(),
+    cidr: z.string().min(1).optional(),
+    ports: z.array(z.number().int().positive().max(65_535)).min(1),
+    purpose: NetworkEntryPurposeSchema
+  })
+  .refine(
+    (entry) =>
+      entry.host !== undefined ||
+      entry.ip !== undefined ||
+      entry.cidr !== undefined,
+    'A network entry must pin at least one of host, ip, or cidr.'
+  )
+
+export type ScopeNetworkEntry = z.infer<typeof ScopeNetworkEntrySchema>
+
 export const TargetScopeSchema = z.object({
   id: z.string().min(1),
   allowedOrigins: z.array(z.string().min(1)).min(1),
@@ -438,6 +471,7 @@ export const TargetScopeSchema = z.object({
   allowSensitiveProbing: z.boolean().default(false),
   allowPrivateNetworkTargets: z.boolean().default(false),
   allowLoopbackTargets: z.boolean().default(false),
+  networkEntries: z.array(ScopeNetworkEntrySchema).default([]),
   maxRequestsPerMinute: z.number().int().positive().max(600),
   maxConcurrency: z.number().int().positive().max(32),
   authorizationReference: z.string().max(500).optional(),
@@ -464,6 +498,10 @@ export const ProbeActionSchema = z.object({
   requestedConcurrency: z.number().int().positive().optional(),
   maxRequests: z.number().int().positive().max(100).default(1),
   timeoutMs: z.number().int().positive().max(120_000).default(15_000),
+  maxRequestBytes: z.number().int().positive().max(1_146_880).optional(),
+  maxResponseBytes: z.number().int().positive().max(16_777_216).optional(),
+  maxRedirects: z.number().int().nonnegative().max(10).optional(),
+  maxRepeats: z.number().int().nonnegative().max(100).optional(),
   userApproved: z.boolean().default(false)
 })
 
@@ -486,7 +524,19 @@ export const PolicyCodeSchema = z.enum([
   'http-method-blocked',
   'mutating-method-requires-l2',
   'rate-limit-exceeded',
-  'concurrency-limit-exceeded'
+  'concurrency-limit-exceeded',
+  'url-canonicalization-failed',
+  'network-target-not-authorized',
+  'budget-exhausted-rpm',
+  'budget-exhausted-concurrency',
+  'budget-exhausted-bytes',
+  'budget-exhausted-duration',
+  'response-header-too-large',
+  'response-decompressed-too-large',
+  'response-compression-bomb',
+  'response-decompression-failed',
+  'response-slow-read',
+  'redirect-protocol-downgraded'
 ])
 
 export type PolicyCode = z.infer<typeof PolicyCodeSchema>

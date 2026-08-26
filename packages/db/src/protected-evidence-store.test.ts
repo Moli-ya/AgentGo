@@ -25,7 +25,7 @@ import { openAgentGoDatabase } from './database'
 import { EvidenceStore } from './evidence-store'
 import { AgentGoRepository } from './repository'
 
-const SENTINEL = 'DAY4-PROTECTED-ORIGINAL-SENTINEL'
+const SENTINEL = 'PROTECTED_ORIGINAL_EVIDENCE_SENTINEL'
 const WRAP_MASK = Buffer.from(
   '9d11ed9fc4ac475bb8ad836a0c7f49e7',
   'hex'
@@ -104,6 +104,7 @@ async function createProtectedFixture(
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
+      networkEntries: [],
       maxRequestsPerMinute: 10,
       maxConcurrency: 1
     }
@@ -112,7 +113,7 @@ async function createProtectedFixture(
     {
       targetId: target.target.id,
       name: 'Protected Evidence scan',
-      description: 'Day 4 protected Evidence test fixture.',
+      description: 'Protected Evidence test fixture.',
       families: ['sqli'],
       identityIds: [],
       budget: {
@@ -122,7 +123,9 @@ async function createProtectedFixture(
         maxPlanRevisions: 1,
         maxDurationMinutes: 10,
         maxModelTokens: 1_000,
-        maxEstimatedCost: 1
+        maxEstimatedCost: 1,
+        maxRequestBytes: 10 * 1_146_880,
+        maxResponseBytes: 10 * 16_777_216
       }
     },
     {},

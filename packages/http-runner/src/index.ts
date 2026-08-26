@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib'
 import { Agent, request, type Dispatcher } from 'undici'
 
 export interface ResolvedAddress {
@@ -64,6 +65,10 @@ export interface HttpExecutionRequest {
   readonly wire: HttpExactWireRequest
   readonly timeoutMs: number
   readonly maxResponseBytes?: number
+  readonly maxHeaderBytes?: number
+  readonly maxDecompressedBytes?: number
+  readonly maxCompressionRatio?: number
+  readonly slowReadTimeoutMs?: number
   readonly signal?: AbortSignal
 }
 
@@ -96,6 +101,11 @@ export interface HttpExecutionResult<ClaimToken extends object = object> {
     | 'response-start-mark-failed'
     | 'timeout'
     | 'response-too-large'
+    | 'response-header-too-large'
+    | 'response-decompressed-too-large'
+    | 'response-compression-bomb'
+    | 'response-decompression-failed'
+    | 'response-slow-read'
     | 'network-error'
     | 'cancelled'
     | 'runner-output-invalid'
@@ -110,6 +120,9 @@ const httpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]+$/u
 const httpFieldNamePattern = /^[!#$%&'*+.^_`|~0-9a-z-]{1,128}$/u
 const printableHeaderValuePattern = /^[\x20-\x7e]*$/u
 const defaultMaxResponseBytes = 5 * 1024 * 1024
+const defaultMaxHeaderBytes = 64 * 1024
+const defaultMaxCompressionRatio = 100
+const defaultSlowReadTimeoutMs = 10_000
 
 /**
  * These are the only fields that the pinned HTTP/1 transport may add to the
@@ -146,6 +159,15 @@ const safeErrorMessages: Record<HttpExecutionErrorCode, string> = {
   'response-start-mark-failed': 'The response-start transition could not be persisted.',
   timeout: 'The HTTP execution timed out.',
   'response-too-large': 'The HTTP response exceeded the configured byte limit.',
+  'response-header-too-large':
+    'The HTTP response headers exceeded the configured byte limit.',
+  'response-decompressed-too-large':
+    'The HTTP response exceeded the decompressed byte limit.',
+  'response-compression-bomb':
+    'The HTTP response exceeded the compression ratio limit.',
+  'response-decompression-failed':
+    'The HTTP response body could not be decompressed.',
+  'response-slow-read': 'The HTTP response body read timed out between chunks.',
   'network-error': 'The HTTP execution failed.',
   cancelled: 'The HTTP execution was cancelled.',
   'runner-output-invalid': 'The HTTP runner returned an invalid result.'
@@ -175,6 +197,67 @@ function attachClaimToken<ClaimToken extends object>(
 
 function sha256(value: Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function headerByteLength(
+  headers: Record<string, string | string[] | undefined>
+): number {
+  let total = 0
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined) continue
+    const values = Array.isArray(value) ? value : [value]
+    for (const item of values) {
+      total +=
+        Buffer.byteLength(name, 'latin1') +
+        Buffer.byteLength(item, 'latin1') +
+        4
+    }
+  }
+  return total
+}
+
+function declaredContentLength(
+  headers: Record<string, string | string[] | undefined>
+): number | undefined {
+  const raw = headers['content-length']
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
+}
+
+function compressedContentEncoding(
+  headers: Record<string, string | string[] | undefined>
+): 'gzip' | 'deflate' | 'br' | undefined {
+  const raw = headers['content-encoding']
+  const value = (Array.isArray(raw) ? raw[0] : raw)?.toLowerCase() ?? ''
+  if (/(?:^|,)\s*gzip\s*(?:$|,)/.test(value)) return 'gzip'
+  if (/(?:^|,)\s*deflate\s*(?:$|,)/.test(value)) return 'deflate'
+  if (/(?:^|,)\s*br\s*(?:$|,)/.test(value)) return 'br'
+  return undefined
+}
+
+function decompressBounded(
+  encoding: 'gzip' | 'deflate' | 'br',
+  raw: Buffer,
+  maxDecompressedBytes: number
+): Uint8Array {
+  try {
+    const options = { maxOutputLength: maxDecompressedBytes }
+    if (encoding === 'gzip') return new Uint8Array(gunzipSync(raw, options))
+    if (encoding === 'deflate') return new Uint8Array(inflateSync(raw, options))
+    return new Uint8Array(brotliDecompressSync(raw, options))
+  } catch (error) {
+    if (
+      error instanceof RangeError ||
+      (error instanceof Error && /exceeded/i.test(error.message))
+    ) {
+      throw new HttpRunnerStageError('response-decompressed-too-large')
+    }
+    // Corrupt or otherwise undecodable payloads are not compression bombs;
+    // only the post-decompression ratio check may raise that code.
+    throw new HttpRunnerStageError('response-decompression-failed')
+  }
 }
 
 function redactRequestHeaders(
@@ -310,13 +393,24 @@ function snapshotExecutionRequest(
       wire: HttpExactWireRequest
       timeoutMs: number
       maxResponseBytes?: number
+      maxHeaderBytes?: number
+      maxDecompressedBytes?: number
+      maxCompressionRatio?: number
+      slowReadTimeoutMs?: number
       signal?: AbortSignal
     }>
   | undefined {
   const candidate = snapshotExactDataObject(
     input,
     ['requestId', 'leaseId', 'wire', 'timeoutMs'],
-    ['maxResponseBytes', 'signal']
+    [
+      'maxResponseBytes',
+      'maxHeaderBytes',
+      'maxDecompressedBytes',
+      'maxCompressionRatio',
+      'slowReadTimeoutMs',
+      'signal'
+    ]
   )
   if (
     !candidate ||
@@ -339,6 +433,18 @@ function snapshotExecutionRequest(
     timeoutMs: candidate.timeoutMs as number,
     ...(candidate.maxResponseBytes !== undefined
       ? { maxResponseBytes: candidate.maxResponseBytes as number }
+      : {}),
+    ...(candidate.maxHeaderBytes !== undefined
+      ? { maxHeaderBytes: candidate.maxHeaderBytes as number }
+      : {}),
+    ...(candidate.maxDecompressedBytes !== undefined
+      ? { maxDecompressedBytes: candidate.maxDecompressedBytes as number }
+      : {}),
+    ...(candidate.maxCompressionRatio !== undefined
+      ? { maxCompressionRatio: candidate.maxCompressionRatio as number }
+      : {}),
+    ...(candidate.slowReadTimeoutMs !== undefined
+      ? { slowReadTimeoutMs: candidate.slowReadTimeoutMs as number }
       : {}),
     ...(candidate.signal !== undefined
       ? { signal: candidate.signal as AbortSignal }
@@ -630,7 +736,19 @@ export class UndiciHttpRunner<ClaimToken extends object = object> {
         executionRequest.timeoutMs <= 0 ||
         (executionRequest.maxResponseBytes !== undefined &&
           (!Number.isSafeInteger(executionRequest.maxResponseBytes) ||
-            executionRequest.maxResponseBytes < 0))
+            executionRequest.maxResponseBytes < 0)) ||
+        (executionRequest.maxHeaderBytes !== undefined &&
+          (!Number.isSafeInteger(executionRequest.maxHeaderBytes) ||
+            executionRequest.maxHeaderBytes < 0)) ||
+        (executionRequest.maxDecompressedBytes !== undefined &&
+          (!Number.isSafeInteger(executionRequest.maxDecompressedBytes) ||
+            executionRequest.maxDecompressedBytes < 0)) ||
+        (executionRequest.maxCompressionRatio !== undefined &&
+          (!Number.isFinite(executionRequest.maxCompressionRatio) ||
+            executionRequest.maxCompressionRatio < 1)) ||
+        (executionRequest.slowReadTimeoutMs !== undefined &&
+          (!Number.isSafeInteger(executionRequest.slowReadTimeoutMs) ||
+            executionRequest.slowReadTimeoutMs <= 0))
       ) {
         throw new HttpRunnerStageError('invalid-wire')
       }
@@ -641,6 +759,16 @@ export class UndiciHttpRunner<ClaimToken extends object = object> {
       prepared = snapshotWire(executionRequest.wire)
       const maxResponseBytes =
         executionRequest.maxResponseBytes ?? defaultMaxResponseBytes
+      const maxHeaderBytes =
+        executionRequest.maxHeaderBytes ?? defaultMaxHeaderBytes
+      const maxDecompressedBytes =
+        executionRequest.maxDecompressedBytes ?? maxResponseBytes
+      const maxCompressionRatio =
+        executionRequest.maxCompressionRatio ?? defaultMaxCompressionRatio
+      const slowReadTimeoutMs = Math.min(
+        executionRequest.slowReadTimeoutMs ?? defaultSlowReadTimeoutMs,
+        executionRequest.timeoutMs
+      )
 
       try {
         claimToken = await this.guard.claim(
@@ -714,9 +842,43 @@ export class UndiciHttpRunner<ClaimToken extends object = object> {
       }
       this.throwIfCancelled(controller.signal)
 
+      if (headerByteLength(response.headers) > maxHeaderBytes) {
+        this.abortResponseBody(response.body)
+        throw new HttpRunnerStageError('response-header-too-large')
+      }
+      const contentEncoding = compressedContentEncoding(response.headers)
+      const declaredLength = declaredContentLength(response.headers)
+      if (declaredLength !== undefined && declaredLength > maxResponseBytes) {
+        this.abortResponseBody(response.body)
+        throw new HttpRunnerStageError('response-too-large')
+      }
+
       const chunks: Uint8Array[] = []
-      for await (const chunk of response.body) {
-        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
+      const bodyIterator = response.body[Symbol.asyncIterator]()
+      while (true) {
+        let timedOut = false
+        let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+        const timeout = new Promise<never>((_resolve, reject) => {
+          timeoutTimer = setTimeout(() => {
+            timedOut = true
+            this.abortResponseBody(response.body)
+            reject(new HttpRunnerStageError('response-slow-read'))
+          }, slowReadTimeoutMs)
+        })
+        let next: IteratorResult<unknown>
+        try {
+          next = await Promise.race([bodyIterator.next(), timeout])
+        } catch (error) {
+          if (timedOut || (error instanceof HttpRunnerStageError && error.code === 'response-slow-read')) {
+            throw new HttpRunnerStageError('response-slow-read')
+          }
+          throw error
+        } finally {
+          if (timeoutTimer) clearTimeout(timeoutTimer)
+        }
+        if (next.done) break
+        const chunk = next.value
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayBufferLike)
         responseBytes += bytes.byteLength
         if (responseBytes > maxResponseBytes) {
           this.abortResponseBody(response.body)
@@ -725,9 +887,22 @@ export class UndiciHttpRunner<ClaimToken extends object = object> {
         chunks.push(bytes)
       }
       this.throwIfCancelled(controller.signal)
-      const responseBody = Uint8Array.from(
-        Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
-      )
+      const rawBody = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
+      let responseBody: Uint8Array = new Uint8Array(rawBody)
+      if (contentEncoding) {
+        responseBody = decompressBounded(
+          contentEncoding,
+          rawBody,
+          maxDecompressedBytes
+        )
+        if (rawBody.byteLength > 0 &&
+          responseBody.byteLength > rawBody.byteLength * maxCompressionRatio
+        ) {
+          throw new HttpRunnerStageError('response-compression-bomb')
+        }
+      } else if (responseBody.byteLength > maxDecompressedBytes) {
+        throw new HttpRunnerStageError('response-decompressed-too-large')
+      }
       const result: HttpExecutionResult<ClaimToken> = {
         requestId: executionRequest.requestId,
         status: 'succeeded',

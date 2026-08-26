@@ -92,7 +92,7 @@ import {
   requireSealedScanModuleSnapshotSet,
   verifyScanModuleSnapshots
 } from './scan-module-snapshot'
-import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
+import type { VulnerabilityPlatform } from './vulnerability-platform'
 
 export * from './execution-policy'
 export * from './execution-authority'
@@ -113,6 +113,10 @@ export * from './validation-engine'
 export * from './vulnerability-bundles'
 export * from './vulnerability-execution-gate'
 export * from './vulnerability-platform'
+export * from './qualification-record'
+export * from './l2-protocol-service'
+export * from './legacy-v1-qualification-records'
+export * from './record-backed-activation-catalog'
 
 export interface ScanCoordinator {
   control(scanId: string, action: ScanControlAction): Promise<ScanRecord>
@@ -151,7 +155,7 @@ export interface AgentGoApplicationDependencies {
   protectedEvidenceCaptureService?: ProtectedEvidenceCaptureService
   scanCoordinator?: ScanCoordinator
   inventoryService?: InventoryService
-  vulnerabilityPlatform: Day2VulnerabilityPlatform
+  vulnerabilityPlatform: VulnerabilityPlatform
   vulnerabilityExecutionEnvironment: Environment
 }
 
@@ -164,7 +168,7 @@ export class AgentGoApplicationService {
   private readonly reportService?: ReportService
   private readonly evidenceCapturePolicy: EvidenceCapturePolicy
   private readonly protectedEvidenceCaptureService?: ProtectedEvidenceCaptureService
-  private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
+  private readonly vulnerabilityPlatform: VulnerabilityPlatform
   private readonly vulnerabilityExecutionEnvironment: Environment
   private readonly inventoryService: InventoryService
   private scanCoordinator?: ScanCoordinator

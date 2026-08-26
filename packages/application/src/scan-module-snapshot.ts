@@ -14,7 +14,7 @@ import {
   stableInventoryHash
 } from '@agentgo/domain'
 import type { ExecutableLegacyV1Binding } from './vulnerability-execution-gate'
-import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
+import type { VulnerabilityPlatform } from './vulnerability-platform'
 
 export type ScanModuleSnapshotErrorCode =
   | 'snapshot-set-unsealed'
@@ -49,7 +49,7 @@ export class ScanModuleSnapshotError extends Error {
 }
 
 type SnapshotPlatform = Pick<
-  Day2VulnerabilityPlatform,
+  VulnerabilityPlatform,
   | 'capabilityCatalog'
   | 'capabilitySnapshot'
   | 'definitionRegistry'

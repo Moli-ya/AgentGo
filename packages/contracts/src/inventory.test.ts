@@ -67,7 +67,7 @@ const upsertInput = {
   }
 }
 
-describe('Day 3 inventory write contracts', () => {
+describe('Inventory write contracts', () => {
   it('exports and parses a strict producer-owned upsert shape', () => {
     expect(RootUpsertInventoryInputSchema).toBe(UpsertInventoryInputSchema)
     expect(UpsertInventoryInputSchema.parse(upsertInput)).toEqual(upsertInput)
@@ -114,7 +114,7 @@ describe('Day 3 inventory write contracts', () => {
         ...upsertInput,
         source: {
           ...upsertInput.source,
-          evidenceRef: 'DAY3_SENTINEL_SECRET_must-not-leak'
+          evidenceRef: 'INVENTORY_SENTINEL_SECRET_must-not-leak'
         }
       }).success
     ).toBe(false)
@@ -374,7 +374,7 @@ describe('opaque references and immutable scan module snapshots', () => {
     ).toBe(false)
 
     for (const secret of [
-      'DAY3_SENTINEL_SECRET_must-not-leak',
+      'INVENTORY_SENTINEL_SECRET_must-not-leak',
       'Bearer N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa',
       'N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa'
     ]) {

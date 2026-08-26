@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { ProbeAction, TargetScope } from '@agentgo/contracts'
 import {
+  canonicalizeTargetUrl,
   classifyNetworkAddress,
+  deriveScopeNetworkEntriesFromOrigins,
+  evaluateExecutionAddresses,
   evaluateProbe,
-  evaluateResolvedAddresses
+  evaluateResolvedAddresses,
+  evaluateSsrfTargetAddresses
 } from './index'
 
 const scope: TargetScope = {
@@ -17,6 +21,7 @@ const scope: TargetScope = {
   allowSensitiveProbing: true,
   allowPrivateNetworkTargets: false,
   allowLoopbackTargets: false,
+  networkEntries: [],
   maxRequestsPerMinute: 30,
   maxConcurrency: 2
 }
@@ -57,7 +62,7 @@ describe('evaluateProbe', () => {
 
     expect(decision).toMatchObject({
       allowed: false,
-      code: 'invalid-target'
+      code: 'url-canonicalization-failed'
     })
     expect(decision.normalizedTarget).toBeUndefined()
     expect(JSON.stringify(decision)).not.toContain('operator:secret')
@@ -279,52 +284,174 @@ describe('resolved network boundary', () => {
     expect(classifyNetworkAddress('169.254.169.254')).toBe('metadata')
     expect(classifyNetworkAddress('8.8.8.8')).toBe('public')
     expect(classifyNetworkAddress('::1')).toBe('loopback')
+    expect(classifyNetworkAddress('0:0:0:0:0:0:0:1')).toBe('loopback')
     expect(classifyNetworkAddress('::ffff:127.0.0.1')).toBe('loopback')
     expect(classifyNetworkAddress('::ffff:7f00:1')).toBe('loopback')
     expect(classifyNetworkAddress('0:0:0:0:0:ffff:7f00:1')).toBe('loopback')
     expect(classifyNetworkAddress('::ffff:a9fe:a9fe')).toBe('metadata')
   })
 
-  it('gates loopback independently from private and link-local addresses', () => {
-    expect(evaluateResolvedAddresses(['127.0.0.1'], scope)).toMatchObject({
-      allowed: false,
-      code: 'network-address-blocked'
-    })
+  it('does not let allowLoopbackTargets open every loopback address', () => {
     expect(
       evaluateResolvedAddresses(['127.0.0.1'], {
         ...scope,
         allowLoopbackTargets: true,
         allowPrivateNetworkTargets: false
       })
+    ).toMatchObject({
+      allowed: false,
+      code: 'network-target-not-authorized'
+    })
+  })
+
+  it('allows loopback only when a precise execution network entry matches host, ip and port', () => {
+    const loopbackScope: TargetScope = {
+      ...scope,
+      allowedOrigins: ['http://127.0.0.1:8080'],
+      allowedPorts: [8080],
+      networkEntries: [
+        {
+          id: 'loopback-entry',
+          addressClass: 'loopback',
+          ip: '127.0.0.1',
+          ports: [8080],
+          purpose: 'execution'
+        }
+      ]
+    }
+    expect(
+      evaluateExecutionAddresses(
+        { hostname: '127.0.0.1', port: 8080, addresses: ['127.0.0.1'] },
+        loopbackScope
+      )
     ).toMatchObject({ allowed: true, code: 'allowed' })
     expect(
-      evaluateResolvedAddresses(['::ffff:7f00:1'], {
-        ...scope,
-        allowLoopbackTargets: true,
-        allowPrivateNetworkTargets: false
-      })
-    ).toMatchObject({ allowed: true, code: 'allowed' })
+      evaluateExecutionAddresses(
+        { hostname: '127.0.0.1', port: 80, addresses: ['127.0.0.1'] },
+        loopbackScope
+      )
+    ).toMatchObject({
+      allowed: false,
+      code: 'network-target-not-authorized'
+    })
+    expect(
+      evaluateSsrfTargetAddresses(
+        { hostname: '127.0.0.1', port: 8080, addresses: ['127.0.0.1'] },
+        loopbackScope
+      )
+    ).toMatchObject({
+      allowed: false,
+      code: 'network-target-not-authorized'
+    })
+  })
 
+  it('requires every specified host and IP locator on a network entry to match', () => {
+    const dualPinScope: TargetScope = {
+      ...scope,
+      networkEntries: [
+        {
+          id: 'dual-pin',
+          addressClass: 'private',
+          host: 'lab.internal',
+          ip: '10.0.0.1',
+          ports: [443],
+          purpose: 'execution'
+        }
+      ]
+    }
+    expect(
+      evaluateExecutionAddresses(
+        { hostname: 'lab.internal', port: 443, addresses: ['10.0.0.1'] },
+        dualPinScope
+      )
+    ).toMatchObject({ allowed: true, code: 'allowed' })
+    expect(
+      evaluateExecutionAddresses(
+        { hostname: 'lab.internal', port: 443, addresses: ['10.0.0.99'] },
+        dualPinScope
+      )
+    ).toMatchObject({
+      allowed: false,
+      code: 'network-target-not-authorized'
+    })
+  })
+
+  it('authorizes IPv6 unique-local CIDR entries and rejects adjacent prefixes', () => {
+    const ipv6Scope: TargetScope = {
+      ...scope,
+      networkEntries: [
+        {
+          id: 'ula-cidr',
+          addressClass: 'private',
+          cidr: 'fd12:3456:789a:1::/64',
+          ports: [443],
+          purpose: 'execution'
+        }
+      ]
+    }
+    expect(
+      evaluateExecutionAddresses(
+        {
+          hostname: 'fd12:3456:789a:1::10',
+          port: 443,
+          addresses: ['fd12:3456:789a:1::10']
+        },
+        ipv6Scope
+      )
+    ).toMatchObject({ allowed: true, code: 'allowed' })
+    expect(
+      evaluateExecutionAddresses(
+        {
+          hostname: 'fd12:3456:789a:2::10',
+          port: 443,
+          addresses: ['fd12:3456:789a:2::10']
+        },
+        ipv6Scope
+      )
+    ).toMatchObject({
+      allowed: false,
+      code: 'network-target-not-authorized'
+    })
+  })
+
+  it('does not let allowPrivateNetworkTargets open reserved, link-local or loopback classes', () => {
     const privateOnlyScope: TargetScope = {
       ...scope,
       allowPrivateNetworkTargets: true,
-      allowLoopbackTargets: false
+      allowLoopbackTargets: false,
+      networkEntries: [
+        {
+          id: 'private-entry',
+          addressClass: 'private',
+          ip: '10.1.2.3',
+          ports: [443],
+          purpose: 'execution'
+        }
+      ]
     }
-    expect(evaluateResolvedAddresses(['10.1.2.3'], privateOnlyScope)).toMatchObject({
-      allowed: true,
-      code: 'allowed'
-    })
-    expect(evaluateResolvedAddresses(['169.254.1.1'], privateOnlyScope)).toMatchObject({
-      allowed: true,
-      code: 'allowed'
-    })
-    expect(evaluateResolvedAddresses(['127.0.0.1'], privateOnlyScope)).toMatchObject({
+    expect(
+      evaluateExecutionAddresses(
+        { hostname: '10.1.2.3', port: 443, addresses: ['10.1.2.3'] },
+        privateOnlyScope
+      )
+    ).toMatchObject({ allowed: true, code: 'allowed' })
+    expect(
+      evaluateExecutionAddresses(
+        { hostname: '169.254.1.1', port: 443, addresses: ['169.254.1.1'] },
+        privateOnlyScope
+      )
+    ).toMatchObject({
       allowed: false,
-      code: 'network-address-blocked'
+      code: 'network-target-not-authorized'
     })
-    expect(evaluateResolvedAddresses(['::ffff:7f00:1'], privateOnlyScope)).toMatchObject({
+    expect(
+      evaluateExecutionAddresses(
+        { hostname: '127.0.0.1', port: 443, addresses: ['127.0.0.1'] },
+        privateOnlyScope
+      )
+    ).toMatchObject({
       allowed: false,
-      code: 'network-address-blocked'
+      code: 'network-target-not-authorized'
     })
   })
 
@@ -338,11 +465,129 @@ describe('resolved network boundary', () => {
     '::ffff:a9fe:a9fe'
   ])('never allows the blocked network address %s', (address) => {
     expect(
-      evaluateResolvedAddresses([address], {
-        ...scope,
-        allowLoopbackTargets: true,
-        allowPrivateNetworkTargets: true
-      })
+      evaluateExecutionAddresses(
+        {
+          hostname: 'lab.example.test',
+          port: 443,
+          addresses: [address]
+        },
+        {
+          ...scope,
+          allowLoopbackTargets: true,
+          allowPrivateNetworkTargets: true,
+          networkEntries: [
+            {
+              id: 'loopback-entry',
+              addressClass: 'loopback',
+              host: 'lab.example.test',
+              ports: [443],
+              purpose: 'execution'
+            },
+            {
+              id: 'private-entry',
+              addressClass: 'private',
+              host: 'lab.example.test',
+              ports: [443],
+              purpose: 'execution'
+            }
+          ]
+        }
+      )
     ).toMatchObject({ allowed: false, code: 'network-address-blocked' })
+  })
+})
+
+describe('URL canonicalization', () => {
+  it.each([
+    ['https://user:pass@lab.example.test/search', 'userinfo'],
+    ['https://lab.example.test\\search', 'backslash'],
+    ['http://127.1/search', 'short IPv4'],
+    ['http://0x7f000001/search', 'hex IPv4'],
+    ['http://2130706433/search', 'integer IPv4'],
+    ['http://[::1%eth0]/search', 'IPv6 zone'],
+    ['https://lab.example.test/%252e%252e/secret', 'double-encoded path'],
+    ['javascript:alert(1)', 'scheme confusion']
+  ])('fails closed for %s', (url) => {
+    expect(canonicalizeTargetUrl(url).ok).toBe(false)
+  })
+
+  it('rejects a schema-valid userinfo URL with the canonicalization code', () => {
+    expect(
+      evaluateProbe(
+        action({ targetUrl: 'https://user:pass@lab.example.test/search' }),
+        scope
+      )
+    ).toMatchObject({
+      allowed: false,
+      code: 'url-canonicalization-failed'
+    })
+  })
+
+  it('normalizes default HTTPS ports and accepts the in-scope form', () => {
+    const canonical = canonicalizeTargetUrl(
+      'https://lab.example.test:443/search?q=marker'
+    )
+    expect(canonical.ok).toBe(true)
+    if (canonical.ok) {
+      expect(canonical.value.href).toBe(
+        'https://lab.example.test/search?q=marker'
+      )
+    }
+    expect(
+      evaluateProbe(
+        action({ targetUrl: 'https://lab.example.test:443/search?q=marker' }),
+        scope
+      )
+    ).toMatchObject({ allowed: true, code: 'allowed' })
+  })
+
+  it('allows @ in path and query while still rejecting userinfo', () => {
+    expect(
+      canonicalizeTargetUrl('https://lab.example.test/user@home?q=a@b').ok
+    ).toBe(true)
+    expect(canonicalizeTargetUrl('https://user@lab.example.test/').ok).toBe(false)
+    expect(
+      canonicalizeTargetUrl('https://user:pass@lab.example.test/').ok
+    ).toBe(false)
+  })
+
+  it('keeps leading-zero DNS names while rejecting non-standard IPv4', () => {
+    expect(canonicalizeTargetUrl('http://07.example.test/').ok).toBe(true)
+    expect(canonicalizeTargetUrl('http://0177.0.0.1/').ok).toBe(false)
+    expect(canonicalizeTargetUrl('http://0x7f.0.0.1/').ok).toBe(false)
+    expect(canonicalizeTargetUrl('http://1.2.3.010/').ok).toBe(false)
+    expect(canonicalizeTargetUrl('http://2130706433:8080/').ok).toBe(false)
+  })
+
+  it('accepts unicode IDN and pure punycode but rejects mixed input', () => {
+    expect(canonicalizeTargetUrl('https://münchen.de/').ok).toBe(true)
+    expect(canonicalizeTargetUrl('https://xn--mnchen-3ya.de/').ok).toBe(true)
+    expect(canonicalizeTargetUrl('https://xn--mnchen-3ya.münchen/').ok).toBe(false)
+  })
+})
+
+describe('derived network entries', () => {
+  it('derives loopback execution entries from literal origins and not from public hosts', () => {
+    const entries = deriveScopeNetworkEntriesFromOrigins([
+      'http://127.0.0.1:4173',
+      'https://lab.example.test'
+    ])
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          addressClass: 'loopback',
+          ip: '127.0.0.1',
+          ports: [4173],
+          purpose: 'execution'
+        }),
+        expect.objectContaining({
+          addressClass: 'loopback',
+          ip: '127.0.0.1',
+          ports: [4173],
+          purpose: 'ssrf-target'
+        })
+      ])
+    )
+    expect(entries).toHaveLength(2)
   })
 })

@@ -113,7 +113,9 @@ export function createDefaultScanPlan(
       maxPlanRevisions: 3,
       maxDurationMinutes: 60,
       maxModelTokens: 80_000,
-      maxEstimatedCost: 10
+      maxEstimatedCost: 10,
+      maxRequestBytes: Math.min(300 * 1_146_880, 1_073_741_824),
+      maxResponseBytes: Math.min(300 * 16_777_216, 1_073_741_824)
     },
     stopConditions: [
       '获得满足确认规则的最小证据',

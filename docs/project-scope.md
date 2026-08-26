@@ -44,11 +44,11 @@ V1 必须让四类漏洞都能走通 Signal -> Validation -> Verdict -> Report�
 
 ### 4.1 V2 完整 Web 分类目标
 
-V1 四类仍是已经实现的研究基线，不是项目长期上限。V2 计划采用开放式 Family/Technique DefinitionRegistry 与独立 ActivationCatalog，把 WSTG、ASVS、API Security Top 10 和授权 SRC 场景纳入 [Web 漏洞覆盖矩阵](planning/web-vulnerability-coverage-matrix.md)，包括配置/泄漏、认证/会话/授权、各类注入、文件/XML/服务器解析、客户端、REST/GraphQL/WebSocket、业务逻辑/竞态、协议/缓存、组件情报和 LLM Web。注册只说明定义完整，不能替代评测资格或主动执行授权。
+V1 四类仍是已经实现的研究基线，不是项目长期上限。V2 采用开放式 Family/Technique DefinitionRegistry 与独立 ActivationCatalog，把 WSTG、ASVS、API Security Top 10 和授权 SRC 场景纳入覆盖目录，包括配置/泄漏、认证/会话/授权、各类注入、文件/XML/服务器解析、客户端、REST/GraphQL/WebSocket、业务逻辑/竞态、协议/缓存、组件情报和 LLM Web。注册只说明定义完整，不能替代评测资格或主动执行授权。
 
 “纳入”必须有明确状态：`active-l1`、`active-l2`、`signal-only`、`fixture-only`、`inventory-only` 或 `forbidden`。项目不承诺自动发现所有未知漏洞，也不通过高风险利用证明追求表面覆盖；无法在真实业务中安全确认的类别保持 Signal、Inconclusive 或专用 fixture。
 
-20 个近期工作包先交付通用后端和四个参考主动模块，随后按 [七波后端路线](planning/post-20-day-vulnerability-roadmap.md) 逐类完成 Module DoD。当前前端仅维持可构建、可启动和既有流程可用，后端合同稳定后再统一重建。
+近期工作先交付通用后端和四个参考主动模块，再按共享能力逐类完成模块交付定义。当前前端仅维持可构建、可启动和既有流程可用，后端合同稳定后再统一重建。
 
 ## 5. 主动探测定位
 

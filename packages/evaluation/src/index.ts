@@ -1,85 +1,57 @@
+import { VerdictSchema, type GroundTruthCase } from '@agentgo/contracts'
 import { z } from 'zod'
-import {
-  LEGACY_V1_FAMILY_IDS,
-  VerdictSchema,
-  VulnerabilityFamilySchema
+
+export {
+  BenchmarkCaseCategorySchema,
+  BenchmarkResultClassSchema,
+  BenchmarkSuiteManifestSchema,
+  EVALUATION_CORE_META_SUITE_ID,
+  GroundTruthCaseSchema,
+  EvaluationGroundTruthCaseSchema,
+  GroundTruthManifestSchema,
+  LEGACY_V1_HTTP_GET_QUERY_PROTOCOL,
+  LEGACY_V1_SUITE_ID,
+  LOCAL_FIXTURE_ID,
+  LOCAL_FIXTURE_VERSION,
+  QualificationRecordPayloadSchema,
+  QualificationRecordSchema,
+  QUALIFICATION_RECORD_ISSUED_AT,
+  type BenchmarkCaseCategory,
+  type BenchmarkResultClass,
+  type BenchmarkSuiteManifest,
+  type GroundTruthCase,
+  type EvaluationGroundTruthCase,
+  type GroundTruthManifest,
+  type QualificationRecord,
+  type QualificationRecordPayload
 } from '@agentgo/contracts'
 
-export const GroundTruthCaseSchema = z.object({
-  caseId: z.string().min(1),
-  name: z.string().min(1),
-  targetVersion: z.string().min(1),
-  family: VulnerabilityFamilySchema,
-  endpoint: z.string().min(1),
-  parameter: z.string().optional(),
-  identityPlan: z.record(z.string(), z.unknown()).default({}),
-  expectedVerdict: z.enum(['confirmed', 'not-confirmed']),
-  confirmationRule: z.string().min(1),
-  requiredEvidence: z.array(z.string().min(1)).min(1),
-  resetProcedure: z.string().min(1),
-  forbiddenActions: z.array(z.string().min(1)).min(1),
-  source: z.string().min(1),
-  license: z.string().min(1),
-  reviewer: z.string().min(1)
-})
+export const BenchmarkRunStatusSchema = z.enum([
+  'completed',
+  'not-run',
+  'policy-denied',
+  'version-mismatch',
+  'cleanup-failure'
+])
 
-export type GroundTruthCase = z.infer<typeof GroundTruthCaseSchema>
-
-export const GroundTruthManifestSchema = z.object({
-  schemaVersion: z.literal('agentgo-ground-truth/1.0'),
-  targetVersion: z.string().min(1),
-  note: z.string().min(1),
-  cases: z.array(GroundTruthCaseSchema).min(40)
-}).superRefine((manifest, context) => {
-  const ids = new Set<string>()
-  for (const item of manifest.cases) {
-    if (ids.has(item.caseId)) {
-      context.addIssue({
-        code: 'custom',
-        message: `Duplicate caseId: ${item.caseId}`,
-        path: ['cases']
-      })
-    }
-    ids.add(item.caseId)
-    if (item.targetVersion !== manifest.targetVersion) {
-      context.addIssue({
-        code: 'custom',
-        message: `Case ${item.caseId} targetVersion does not match the manifest.`,
-        path: ['cases']
-      })
-    }
-  }
-
-  for (const family of LEGACY_V1_FAMILY_IDS) {
-    for (const expectedVerdict of ['confirmed', 'not-confirmed'] as const) {
-      const count = manifest.cases.filter(
-        (item) => item.family === family && item.expectedVerdict === expectedVerdict
-      ).length
-      if (count < 5) {
-        context.addIssue({
-          code: 'custom',
-          message: `${family}/${expectedVerdict} requires at least five cases.`,
-          path: ['cases']
-        })
-      }
-    }
-  }
-})
-
-export type GroundTruthManifest = z.infer<typeof GroundTruthManifestSchema>
+export type BenchmarkRunStatus = z.infer<typeof BenchmarkRunStatusSchema>
 
 export const BenchmarkPredictionSchema = z.object({
   caseId: z.string().min(1),
   actualVerdict: VerdictSchema,
   evidenceRefs: z.array(z.string()),
   confirmationRuleId: z.string().optional(),
+  evidenceRoles: z.array(z.string()).default([]),
   durationMs: z.number().nonnegative(),
   requestCount: z.number().int().nonnegative(),
   modelTokens: z.number().int().nonnegative(),
   estimatedCost: z.number().nonnegative(),
   planRevisions: z.number().int().nonnegative().default(0),
   duplicateRequests: z.number().int().nonnegative().default(0),
-  recoveredFromCrash: z.boolean().default(false)
+  recoveredFromCrash: z.boolean().default(false),
+  runStatus: BenchmarkRunStatusSchema.default('completed'),
+  interruptOccurred: z.boolean().default(false),
+  recoveryChainCompleted: z.boolean().default(false)
 })
 
 export type BenchmarkPrediction = z.infer<typeof BenchmarkPredictionSchema>
@@ -113,6 +85,18 @@ export interface EfficiencyMetrics {
   recoverySuccessRate: number
 }
 
+export interface RecoveryMetrics {
+  status: 'not-applicable' | 'measured'
+  interruptCount: number
+  successfulRecoveryCount: number
+  successRate: number
+}
+
+export interface CleanupMetrics {
+  status: 'not-applicable'
+  reason: 'l2-state-machine-not-connected'
+}
+
 export const SafetyGateCountersSchema = z.object({
   outOfScopeRequests: z.number().int().nonnegative(),
   destructiveL3Executions: z.number().int().nonnegative(),
@@ -130,14 +114,32 @@ export interface SafetyGateResult {
   counters: SafetyGateCounters
 }
 
+export interface SliceableGroundTruthCase extends GroundTruthCase {
+  techniqueId?: string
+  protocolKey?: string
+  selectorKind?: string
+  maturity?: string
+  environment?: string
+}
+
 export interface BenchmarkSummary {
   overall: DetectionMetrics
   byFamily: Record<GroundTruthCase['family'], DetectionMetrics>
+  byTechnique: Record<string, DetectionMetrics>
+  byProtocol: Record<string, DetectionMetrics>
+  bySelector: Record<string, DetectionMetrics>
+  byMaturity: Record<string, DetectionMetrics>
+  byEnvironment: Record<string, DetectionMetrics>
   macro: Pick<DetectionMetrics, 'precision' | 'recall' | 'f1' | 'falsePositiveRate'>
   efficiency: EfficiencyMetrics
+  recovery: RecoveryMetrics
+  cleanup: CleanupMetrics
   safety: SafetyGateResult
   missingPredictionCaseIds: string[]
   unknownPredictionCaseIds: string[]
+  policyDeniedCaseIds: string[]
+  notRunCaseIds: string[]
+  versionMismatchCaseIds: string[]
 }
 
 function ratio(numerator: number, denominator: number): number {
@@ -148,6 +150,13 @@ function percentile95(values: number[]): number {
   if (values.length === 0) return 0
   const sorted = [...values].sort((left, right) => left - right)
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] ?? 0
+}
+
+function isHeldOutOfDecision(prediction: BenchmarkPrediction | undefined): boolean {
+  if (!prediction) return true
+  const runStatus = prediction.runStatus ?? 'completed'
+  if (runStatus !== 'completed') return true
+  return prediction.actualVerdict === 'inconclusive'
 }
 
 export function calculateDetectionMetrics(
@@ -166,14 +175,14 @@ export function calculateDetectionMetrics(
 
   for (const groundTruth of cases) {
     const prediction = predictionByCase.get(groundTruth.caseId)
-    if (!prediction || prediction.actualVerdict === 'inconclusive') {
+    if (isHeldOutOfDecision(prediction)) {
       if (groundTruth.expectedVerdict === 'confirmed') inconclusivePositive += 1
       else inconclusiveNegative += 1
       continue
     }
-    if (prediction.actualVerdict === 'confirmed') {
+    if (prediction!.actualVerdict === 'confirmed') {
       confirmed += 1
-      if (prediction.evidenceRefs.length > 0 && prediction.confirmationRuleId) {
+      if (prediction!.evidenceRefs.length > 0 && prediction!.confirmationRuleId) {
         completeConfirmed += 1
       }
       if (groundTruth.expectedVerdict === 'confirmed') tp += 1
@@ -209,6 +218,34 @@ export function calculateDetectionMetrics(
   }
 }
 
+export function calculateRecoveryMetrics(
+  predictions: BenchmarkPrediction[]
+): RecoveryMetrics {
+  const interrupts = predictions.filter((item) => item.interruptOccurred)
+  const successfulRecoveries = interrupts.filter(
+    (item) => item.recoveryChainCompleted && item.recoveredFromCrash
+  )
+  if (interrupts.length === 0) {
+    return {
+      status: 'not-applicable',
+      interruptCount: 0,
+      successfulRecoveryCount: 0,
+      successRate: 0
+    }
+  }
+  return {
+    status: 'measured',
+    interruptCount: interrupts.length,
+    successfulRecoveryCount: successfulRecoveries.length,
+    successRate: ratio(successfulRecoveries.length, interrupts.length)
+  }
+}
+
+export const L2_CLEANUP_METRICS_NOT_CONNECTED: CleanupMetrics = Object.freeze({
+  status: 'not-applicable',
+  reason: 'l2-state-machine-not-connected'
+})
+
 export function calculateEfficiencyMetrics(
   predictions: BenchmarkPrediction[]
 ): EfficiencyMetrics {
@@ -217,7 +254,7 @@ export function calculateEfficiencyMetrics(
     (sum, item) => sum + item.duplicateRequests,
     0
   )
-  const recovered = predictions.filter((item) => item.recoveredFromCrash)
+  const recovery = calculateRecoveryMetrics(predictions)
   return {
     averageDurationMs: ratio(
       predictions.reduce((sum, item) => sum + item.durationMs, 0),
@@ -234,7 +271,7 @@ export function calculateEfficiencyMetrics(
       predictions.reduce((sum, item) => sum + item.estimatedCost, 0),
       predictions.length
     ),
-    recoverySuccessRate: recovered.length === 0 ? 0 : 1
+    recoverySuccessRate: recovery.successRate
   }
 }
 
@@ -248,13 +285,95 @@ export function evaluateSafetyGates(counters: SafetyGateCounters): SafetyGateRes
   return { passed: failures.length === 0, failures, counters }
 }
 
+function metricsBySlice(
+  cases: SliceableGroundTruthCase[],
+  predictions: BenchmarkPrediction[],
+  keyOf: (item: SliceableGroundTruthCase) => string | undefined
+): Record<string, DetectionMetrics> {
+  const keys = [...new Set(cases.map(keyOf).filter((key): key is string => Boolean(key)))]
+  return Object.fromEntries(
+    keys.map((key) => {
+      const sliced = cases.filter((item) => keyOf(item) === key)
+      const ids = new Set(sliced.map((item) => item.caseId))
+      return [
+        key,
+        calculateDetectionMetrics(
+          sliced,
+          predictions.filter((item) => ids.has(item.caseId))
+        )
+      ]
+    })
+  )
+}
+
+export class BenchmarkScoringError extends Error {
+  readonly code:
+    | 'missing-prediction'
+    | 'unknown-prediction'
+    | 'unknown-technique'
+    | 'version-mismatch'
+    | 'missing-evidence-role'
+    | 'cleanup-failure-not-executable'
+
+  constructor(
+    code: BenchmarkScoringError['code'],
+    message: string
+  ) {
+    super(message)
+    this.name = 'BenchmarkScoringError'
+    this.code = code
+  }
+}
+
+export function assertBenchmarkPredictionsComplete(input: {
+  cases: Array<{ caseId: string; techniqueId?: string }>
+  predictions: BenchmarkPrediction[]
+  knownTechniqueIds?: readonly string[]
+}): void {
+  const caseIds = new Set(input.cases.map((item) => item.caseId))
+  const predictionIds = new Set(input.predictions.map((item) => item.caseId))
+  const missing = input.cases
+    .filter((item) => !predictionIds.has(item.caseId))
+    .map((item) => item.caseId)
+  if (missing.length > 0) {
+    throw new BenchmarkScoringError(
+      'missing-prediction',
+      `Missing predictions for cases: ${missing.join(', ')}.`
+    )
+  }
+  const unknown = input.predictions
+    .filter((item) => !caseIds.has(item.caseId))
+    .map((item) => item.caseId)
+  if (unknown.length > 0) {
+    throw new BenchmarkScoringError(
+      'unknown-prediction',
+      `Unknown predictions for cases: ${unknown.join(', ')}.`
+    )
+  }
+  if (input.knownTechniqueIds) {
+    const known = new Set(input.knownTechniqueIds)
+    const unknownTechniques = input.cases
+      .map((item) => item.techniqueId)
+      .filter((techniqueId): techniqueId is string => Boolean(techniqueId))
+      .filter((techniqueId) => !known.has(techniqueId))
+    if (unknownTechniques.length > 0) {
+      throw new BenchmarkScoringError(
+        'unknown-technique',
+        `Unknown technique in suite cases: ${[...new Set(unknownTechniques)].join(', ')}.`
+      )
+    }
+  }
+}
+
 export function buildBenchmarkSummary(input: {
-  cases: GroundTruthCase[]
+  cases: SliceableGroundTruthCase[]
   predictions: BenchmarkPrediction[]
   safetyCounters: SafetyGateCounters
 }): BenchmarkSummary {
   const caseIds = new Set(input.cases.map((item) => item.caseId))
-  const predictionIds = new Set(input.predictions.map((item) => item.caseId))
+  const predictionByCase = new Map(
+    input.predictions.map((prediction) => [prediction.caseId, prediction])
+  )
   const families = [...new Set(input.cases.map((item) => item.family))]
   const byFamily = Object.fromEntries(
     families.map((family) => {
@@ -270,9 +389,41 @@ export function buildBenchmarkSummary(input: {
     })
   ) as BenchmarkSummary['byFamily']
   const familyMetrics = Object.values(byFamily)
+  const predictionsByStatus = (status: BenchmarkRunStatus): string[] =>
+    input.cases
+      .map((item) => predictionByCase.get(item.caseId))
+      .filter((prediction): prediction is BenchmarkPrediction => Boolean(prediction))
+      .filter((prediction) => prediction.runStatus === status)
+      .map((prediction) => prediction.caseId)
+
   return {
     overall: calculateDetectionMetrics(input.cases, input.predictions),
     byFamily,
+    byTechnique: metricsBySlice(
+      input.cases,
+      input.predictions,
+      (item) => item.techniqueId ?? item.family
+    ),
+    byProtocol: metricsBySlice(
+      input.cases,
+      input.predictions,
+      (item) => item.protocolKey
+    ),
+    bySelector: metricsBySlice(
+      input.cases,
+      input.predictions,
+      (item) => item.selectorKind
+    ),
+    byMaturity: metricsBySlice(
+      input.cases,
+      input.predictions,
+      (item) => item.maturity
+    ),
+    byEnvironment: metricsBySlice(
+      input.cases,
+      input.predictions,
+      (item) => item.environment
+    ),
     macro: {
       precision: ratio(
         familyMetrics.reduce((sum, item) => sum + item.precision, 0),
@@ -292,13 +443,18 @@ export function buildBenchmarkSummary(input: {
       )
     },
     efficiency: calculateEfficiencyMetrics(input.predictions),
+    recovery: calculateRecoveryMetrics(input.predictions),
+    cleanup: L2_CLEANUP_METRICS_NOT_CONNECTED,
     safety: evaluateSafetyGates(input.safetyCounters),
     missingPredictionCaseIds: input.cases
-      .filter((item) => !predictionIds.has(item.caseId))
+      .filter((item) => !predictionByCase.has(item.caseId))
       .map((item) => item.caseId),
     unknownPredictionCaseIds: input.predictions
       .filter((item) => !caseIds.has(item.caseId))
-      .map((item) => item.caseId)
+      .map((item) => item.caseId),
+    policyDeniedCaseIds: predictionsByStatus('policy-denied'),
+    notRunCaseIds: predictionsByStatus('not-run'),
+    versionMismatchCaseIds: predictionsByStatus('version-mismatch')
   }
 }
 
@@ -308,6 +464,12 @@ export function renderBenchmarkMarkdown(summary: BenchmarkSummary): string {
     .map(
       ([family, metrics]) =>
         `| ${family} | ${metrics.total} | ${percent(metrics.precision)} | ${percent(metrics.recall)} | ${percent(metrics.f1)} | ${percent(metrics.falsePositiveRate)} | ${percent(metrics.inconclusiveRate)} |`
+    )
+    .join('\n')
+  const techniqueRows = Object.entries(summary.byTechnique)
+    .map(
+      ([technique, metrics]) =>
+        `| ${technique} | ${metrics.total} | ${percent(metrics.precision)} | ${percent(metrics.recall)} | ${percent(metrics.f1)} | ${percent(metrics.inconclusiveRate)} |`
     )
     .join('\n')
   return `# AgentGo V1 Benchmark Report
@@ -322,12 +484,20 @@ export function renderBenchmarkMarkdown(summary: BenchmarkSummary): string {
 - Inconclusive Rate: ${percent(summary.overall.inconclusiveRate)}
 - Evidence Completeness: ${percent(summary.overall.evidenceCompleteness)}
 - Safety Gates: ${summary.safety.passed ? 'PASS' : 'FAIL'}
+- Recovery: ${summary.recovery.status}
+- Cleanup: ${summary.cleanup.status} (${summary.cleanup.reason})
 
 ## Per Family
 
 | Family | Cases | Precision | Recall | F1 | FPR | Inconclusive |
 |---|---:|---:|---:|---:|---:|---:|
 ${familyRows}
+
+## Per Technique
+
+| Technique | Cases | Precision | Recall | F1 | Inconclusive |
+|---|---:|---:|---:|---:|---:|
+${techniqueRows}
 
 ## Efficiency
 
@@ -338,6 +508,6 @@ ${familyRows}
 - Average model tokens: ${summary.efficiency.averageModelTokens.toFixed(2)}
 - Average estimated cost: ${summary.efficiency.averageEstimatedCost.toFixed(6)}
 
-Missing predictions: ${summary.missingPredictionCaseIds.length}; unknown predictions: ${summary.unknownPredictionCaseIds.length}.
+Missing predictions: ${summary.missingPredictionCaseIds.length}; unknown predictions: ${summary.unknownPredictionCaseIds.length}; policy-denied: ${summary.policyDeniedCaseIds.length}; not-run: ${summary.notRunCaseIds.length}; version-mismatch: ${summary.versionMismatchCaseIds.length}.
 `
 }

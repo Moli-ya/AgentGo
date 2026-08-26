@@ -63,7 +63,9 @@ const fixtureBudget = {
   maxPlanRevisions: 1,
   maxDurationMinutes: 10,
   maxModelTokens: 0,
-  maxEstimatedCost: 0
+  maxEstimatedCost: 0,
+  maxRequestBytes: 344_064_000,
+  maxResponseBytes: 1_073_741_824
 } as const
 
 const fixtureConfig = {

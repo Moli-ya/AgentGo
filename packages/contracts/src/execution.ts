@@ -187,7 +187,7 @@ function captureDecisionCanonicalKey(
 /**
  * The complete, immutable capture authority for one execution grant.
  *
- * Day 5 execution pre-authorizes two runtime summary sources for four normal
+ * Execution pre-authorizes two runtime summary sources for four normal
  * terminal states plus one crash-interruption summary. Canonical ordering
  * makes the signed set hash stable and
  * prevents semantically equivalent arrays from producing different proofs.

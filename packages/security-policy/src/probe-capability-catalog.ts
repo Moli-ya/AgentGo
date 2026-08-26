@@ -205,7 +205,7 @@ export const BUILT_IN_PROBE_CAPABILITY_DESCRIPTORS = Object.freeze([
 ] as const satisfies readonly ProbeCapabilityDescriptor[])
 
 /**
- * Closed Day 2 catalog. Catalog membership is not runtime support or an
+ * Closed built-in catalog. Catalog membership is not runtime support or an
  * ActivationCatalog qualification record.
  */
 export const DEFAULT_PROBE_CAPABILITY_CATALOG = new ProbeCapabilityCatalog(

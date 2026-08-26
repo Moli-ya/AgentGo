@@ -48,6 +48,7 @@ describe('AgentGo fixed local benchmark fixture', () => {
       })
       expect(response.status, item.caseId).toBe(200)
       expect(response.headers.get('x-agentgo-fixture-version')).toBe(LOCAL_FIXTURE_VERSION)
+      expect(response.headers.get('x-agentgo-fixture-id')).toBe('agentgo-local-fixture')
     }
   })
 
@@ -101,5 +102,35 @@ describe('AgentGo fixed local benchmark fixture', () => {
     )
 
     expect(response.status).toBe(404)
+  })
+
+  it('resets only the fixture namespace and keeps attestation stable', () => {
+    const first = fixture.reset()
+    const second = fixture.reset()
+    expect(first.namespaceHash).toBe(second.namespaceHash)
+    expect(second.generation).toBe(first.generation + 1)
+    expect(fixture.attestationHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(fixture.bindAddress).toBe('127.0.0.1')
+  })
+
+  it('rejects non-loopback SSRF targets without making an outbound fetch', async () => {
+    const before = fixture.outboundAttempts.length
+    const target = new URL(`/cases/ssrf/positive/1`, fixture.baseUrl)
+    target.searchParams.set('url', 'http://example.test/callback')
+    expect(await fetch(target).then((item) => item.text())).toBe('target rejected')
+    expect(fixture.outboundAttempts.slice(before)).toEqual([
+      'http://example.test/callback'
+    ])
+  })
+
+  it('binds only loopback ephemeral ports', async () => {
+    const second = await startLocalBenchmarkFixture()
+    try {
+      expect(second.port).not.toBe(fixture.port)
+      expect(new URL(second.baseUrl).hostname).toBe('127.0.0.1')
+      expect(second.attestationHash).toBe(fixture.attestationHash)
+    } finally {
+      await second.close()
+    }
   })
 })

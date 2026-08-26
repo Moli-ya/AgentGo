@@ -586,7 +586,7 @@ function assertModeCombination(
       if (!flags.every(Boolean)) {
         registryError(
           'invalid-mode-combination',
-          `Active L2 strategy ${strategy.strategyId}@${strategy.version} must declare all Day 2 L2 safety booleans.`
+          `Active L2 strategy ${strategy.strategyId}@${strategy.version} must declare all L2 safety booleans.`
         )
       }
     } else if (technique.declaredMode === 'fixture-only') {
@@ -594,7 +594,7 @@ function assertModeCombination(
       if (enabledCount !== 0 && enabledCount !== flags.length) {
         registryError(
           'invalid-mode-combination',
-          `Fixture-only strategy ${strategy.strategyId}@${strategy.version} must declare either all or none of the Day 2 L2 safety booleans.`
+          `Fixture-only strategy ${strategy.strategyId}@${strategy.version} must declare either all or none of the L2 safety booleans.`
         )
       }
     } else if (flags.some(Boolean)) {

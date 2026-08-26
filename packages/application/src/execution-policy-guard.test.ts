@@ -243,6 +243,15 @@ function createFixture(options: {
     allowSensitiveProbing: false,
     allowPrivateNetworkTargets: true,
     allowLoopbackTargets: true,
+    networkEntries: [
+      {
+        id: 'loopback-3100',
+        addressClass: 'loopback',
+        ip: '127.0.0.1',
+        ports: [3100],
+        purpose: 'execution'
+      }
+    ],
     maxRequestsPerMinute: 20,
     maxConcurrency: 1
   }
@@ -290,7 +299,9 @@ function createFixture(options: {
       maxPlanRevisions: 1,
       maxDurationMinutes: 10,
       maxModelTokens: 1_000,
-      maxEstimatedCost: 1
+      maxEstimatedCost: 1,
+      maxRequestBytes: 10 * 1_146_880,
+      maxResponseBytes: 10 * 16_777_216
     },
     requestCount: 0,
     scanId: ids.scan,
@@ -342,7 +353,8 @@ function createFixture(options: {
       ...claimedLease,
       input
     })),
-    revokeExecutionLease: vi.fn(async () => issuedLease)
+    revokeExecutionLease: vi.fn(async () => issuedLease),
+    incrementScanSecurityCounter: vi.fn(async () => undefined)
   }
   const repository = methods as unknown as AgentGoRepository
   let credentialListCall = 0
@@ -402,7 +414,7 @@ function withTamperedWire(
   }
 }
 
-describe('PolicyExecutionGuard Day 5 lease boundary', () => {
+describe('PolicyExecutionGuard lease boundary', () => {
   it.each(['method', 'url', 'header-order', 'body'] as const)(
     'rejects %s tampering before the atomic claim',
     async (kind) => {
@@ -465,6 +477,9 @@ describe('PolicyExecutionGuard Day 5 lease boundary', () => {
     ).rejects.toThrow()
     expect(dnsFixture.methods.claimExecutionLease).toHaveBeenCalledOnce()
     expect(dnsFixture.methods.markExecutionLeaseDelivery).not.toHaveBeenCalled()
+    expect(
+      dnsFixture.methods.incrementScanSecurityCounter
+    ).toHaveBeenCalledWith(ids.scan, 'network-address-blocked')
   })
 
   it('returns an opaque identity token and rejects a second lease claim', async () => {
@@ -704,7 +719,7 @@ describe('PolicyExecutionGuard Day 5 lease boundary', () => {
   })
 })
 
-describe('PolicyBroker Day 5 wire authorization', () => {
+describe('PolicyBroker wire authorization', () => {
   it('passes the compiled wire proof into policy persistence', async () => {
     const fixture = createFixture()
     const recordPolicyDecision = vi.fn(async (input: {
@@ -722,8 +737,25 @@ describe('PolicyBroker Day 5 wire authorization', () => {
       createdAt: '2026-01-01T00:00:00.000Z'
     }))
     const repository = {
-      getScanRow: vi.fn(async () => ({ scopeSnapshotId: ids.scope })),
-      getScope: vi.fn(async () => fixture.context.scope),
+      getScanRow: vi.fn(async () => ({
+        scopeSnapshotId: ids.scope,
+        budgetJson: {
+          maxRequests: 20,
+          maxRequestsPerMinute: 20,
+          maxConcurrency: 1,
+          maxPlanRevisions: 1,
+          maxDurationMinutes: 60,
+          maxModelTokens: 0,
+          maxEstimatedCost: 0,
+          maxRequestBytes: 1_146_880,
+          maxResponseBytes: 16_777_216
+        },
+        startedAt: Date.parse('2026-01-01T00:00:00.000Z')
+      })),
+      getScope: vi.fn(async () => ({
+        ...fixture.context.scope,
+        networkEntries: fixture.context.scope.networkEntries ?? []
+      })),
       createProbeProposal: vi.fn(async (input: { action: unknown }) => ({
         id: ids.proposal,
         scanId: ids.scan,
@@ -733,7 +765,8 @@ describe('PolicyBroker Day 5 wire authorization', () => {
         createdAt: '2026-01-01T00:00:00.000Z'
       })),
       recordPolicyDecision,
-      addScanEvent: vi.fn(async () => undefined)
+      addScanEvent: vi.fn(async () => undefined),
+      incrementScanSecurityCounter: vi.fn(async () => undefined)
     } as unknown as AgentGoRepository
     await new PolicyBroker(repository).evaluate({
       scanId: ids.scan,

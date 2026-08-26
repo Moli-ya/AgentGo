@@ -63,6 +63,10 @@ export interface AgentEnvelope<T> {
   payload: T
 }
 
+export const SCAN_BUDGET_MAX_BYTES = 1_073_741_824
+export const DEFAULT_SCAN_MAX_REQUEST_BYTES = 344_064_000
+export const DEFAULT_SCAN_MAX_RESPONSE_BYTES = SCAN_BUDGET_MAX_BYTES
+
 export interface ScanBudget {
   maxRequests: number
   maxRequestsPerMinute: number
@@ -71,6 +75,8 @@ export interface ScanBudget {
   maxDurationMinutes: number
   maxModelTokens: number
   maxEstimatedCost: number
+  maxRequestBytes: number
+  maxResponseBytes: number
 }
 
 export const ScanBudgetSchema = z.object({
@@ -80,5 +86,17 @@ export const ScanBudgetSchema = z.object({
   maxPlanRevisions: z.number().int().nonnegative().max(20),
   maxDurationMinutes: z.number().int().positive().max(1_440),
   maxModelTokens: z.number().int().nonnegative().max(10_000_000),
-  maxEstimatedCost: z.number().nonnegative().max(100_000)
+  maxEstimatedCost: z.number().nonnegative().max(100_000),
+  maxRequestBytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(SCAN_BUDGET_MAX_BYTES)
+    .default(DEFAULT_SCAN_MAX_REQUEST_BYTES),
+  maxResponseBytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(SCAN_BUDGET_MAX_BYTES)
+    .default(DEFAULT_SCAN_MAX_RESPONSE_BYTES)
 })

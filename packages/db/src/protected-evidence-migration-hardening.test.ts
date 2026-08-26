@@ -162,6 +162,7 @@ async function createFixture(): Promise<Fixture> {
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
+      networkEntries: [],
       maxRequestsPerMinute: 10,
       maxConcurrency: 1
     }
@@ -170,7 +171,7 @@ async function createFixture(): Promise<Fixture> {
     {
       targetId: target.target.id,
       name: 'Protected migration hardening scan',
-      description: 'Exercises Day 4 protected Evidence SQL boundaries.',
+      description: 'Exercises protected Evidence SQL boundaries.',
       families: ['sqli'],
       identityIds: [],
       budget: {
@@ -180,7 +181,9 @@ async function createFixture(): Promise<Fixture> {
         maxPlanRevisions: 1,
         maxDurationMinutes: 10,
         maxModelTokens: 1_000,
-        maxEstimatedCost: 1
+        maxEstimatedCost: 1,
+        maxRequestBytes: 10 * 1_146_880,
+        maxResponseBytes: 10 * 16_777_216
       }
     },
     {},
@@ -481,7 +484,7 @@ function inTransaction(
   }
 }
 
-describe('Day 4 protected Evidence SQL hardening', () => {
+describe('Protected Evidence SQL hardening', () => {
   it('preserves the production original-child-derivative transaction order', async () => {
     const fixture = await createFixture()
     const rows = protectedRows(fixture)

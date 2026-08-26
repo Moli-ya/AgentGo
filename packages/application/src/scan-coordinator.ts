@@ -54,7 +54,7 @@ import {
   requireSealedScanModuleSnapshotSet,
   verifyScanModuleSnapshots
 } from './scan-module-snapshot'
-import type { Day2VulnerabilityPlatform } from './vulnerability-platform'
+import type { VulnerabilityPlatform } from './vulnerability-platform'
 import {
   V1_CONFIRMATION_RULES,
   assessIdor,
@@ -81,7 +81,7 @@ export interface ScanCoordinatorDependencies {
   executionPort: ExecutionPort
   modelGateway: ModelGateway
   reportService: ReportService
-  vulnerabilityPlatform: Day2VulnerabilityPlatform
+  vulnerabilityPlatform: VulnerabilityPlatform
   vulnerabilityExecutionEnvironment: Environment
   inventoryService?: InventoryService
   onEvent?: (event: ScanEvent) => void
@@ -204,7 +204,7 @@ export class DefaultScanCoordinator {
   private readonly executionPort: ExecutionPort
   private readonly modelGateway: ModelGateway
   private readonly reportService: ReportService
-  private readonly vulnerabilityPlatform: Day2VulnerabilityPlatform
+  private readonly vulnerabilityPlatform: VulnerabilityPlatform
   private readonly vulnerabilityExecutionEnvironment: Environment
   private readonly inventoryService: InventoryService
   private readonly onEvent?: (event: ScanEvent) => void

@@ -27,6 +27,7 @@ async function fixture(): Promise<{
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: true,
       allowLoopbackTargets: true,
+      networkEntries: [],
       maxRequestsPerMinute: 20,
       maxConcurrency: 1
     }
@@ -45,7 +46,9 @@ async function fixture(): Promise<{
         maxPlanRevisions: 1,
         maxDurationMinutes: 10,
         maxModelTokens: 1_000,
-        maxEstimatedCost: 1
+        maxEstimatedCost: 1,
+        maxRequestBytes: 10 * 1_146_880,
+        maxResponseBytes: 10 * 16_777_216
       }
     },
     {},
@@ -85,6 +88,10 @@ describe('PolicyBroker and execution guard', () => {
       stopConditions: ['获得最小证据']
     })
     expect(result.decision.allowed).toBe(true)
+    expect(result.executionLimits.maxRedirects).toBe(5)
+    expect(result.executionLimits.maxResponseBytes).toBeLessThanOrEqual(
+      5 * 1024 * 1024
+    )
 
     const guard = new PolicyExecutionGuard(state.repository)
     await expect(
@@ -113,6 +120,161 @@ describe('PolicyBroker and execution guard', () => {
       })
     ).rejects.toThrow('元数据')
     state.database.close()
+  })
+
+  it('keeps SSRF target authorization independent from execution entries', async () => {
+    const state = await fixture()
+    const broker = new PolicyBroker(state.repository)
+    const allowedCallback = await broker.evaluate({
+      scanId: state.scanId,
+      agentRunId: state.agentRunId,
+      action: {
+        kind: 'http-request',
+        targetUrl: 'http://127.0.0.1:3100/fetch',
+        method: 'GET',
+        probeLevel: 'active-safe',
+        sideEffect: 'none',
+        summary: 'SSRF 受控回调验证',
+        expectedEvidence: '受控证明',
+        maxRequests: 1,
+        timeoutMs: 5_000,
+        maxRedirects: 2,
+        maxResponseBytes: 4_096,
+        userApproved: false
+      },
+      stopConditions: ['获得最小证据'],
+      ssrfTargetUrl: 'http://127.0.0.1:3100/callback'
+    })
+    expect(allowedCallback.decision.allowed).toBe(true)
+    expect(allowedCallback.executionLimits.maxRedirects).toBe(2)
+    expect(allowedCallback.executionLimits.maxResponseBytes).toBe(4_096)
+
+    const blockedMetadata = await broker.evaluate({
+      scanId: state.scanId,
+      agentRunId: state.agentRunId,
+      action: {
+        kind: 'http-request',
+        targetUrl: 'http://127.0.0.1:3100/fetch',
+        method: 'GET',
+        probeLevel: 'active-safe',
+        sideEffect: 'none',
+        summary: 'SSRF 元数据目标',
+        expectedEvidence: 'must not execute',
+        maxRequests: 1,
+        timeoutMs: 5_000,
+        userApproved: false
+      },
+      stopConditions: [],
+      ssrfTargetUrl: 'http://169.254.169.254/'
+    })
+    expect(blockedMetadata.decision).toMatchObject({
+      allowed: false,
+      code: 'network-address-blocked'
+    })
+    state.database.close()
+  })
+
+  it('authorizes literal IPv6 SSRF targets instead of failing on bracket syntax', async () => {
+    const database = openAgentGoDatabase(':memory:')
+    const repository = new AgentGoRepository(database)
+    const workspace = await repository.createWorkspace({ name: 'Policy v6', description: '' })
+    const target = await repository.createTarget({
+      workspaceId: workspace.id,
+      name: 'Local v6 lab',
+      baseUrl: 'http://[::1]:3100',
+      description: '',
+      authorizationReference: 'approval',
+      scope: {
+        allowedOrigins: ['http://[::1]:3100'],
+        allowedPathPrefixes: ['/'],
+        deniedPathPrefixes: [],
+        allowedPorts: [3100],
+        allowedIdentityIds: [],
+        allowActiveProbing: true,
+        allowSensitiveProbing: false,
+        allowPrivateNetworkTargets: true,
+        allowLoopbackTargets: true,
+        networkEntries: [],
+        maxRequestsPerMinute: 20,
+        maxConcurrency: 1
+      }
+    })
+    const scan = await repository.createScan(
+      {
+        targetId: target.target.id,
+        name: 'Policy v6 scan',
+        description: 'SSRF 字面 IPv6 目标夹具。',
+        families: ['ssrf'],
+        identityIds: [],
+        budget: {
+          maxRequests: 10,
+          maxRequestsPerMinute: 20,
+          maxConcurrency: 1,
+          maxPlanRevisions: 1,
+          maxDurationMinutes: 10,
+          maxModelTokens: 1_000,
+          maxEstimatedCost: 1,
+          maxRequestBytes: 10 * 1_146_880,
+          maxResponseBytes: 10 * 16_777_216
+        }
+      },
+      {},
+      { phase: 'intake', status: 'running' }
+    )
+    await repository.updateScan(scan.id, { status: 'running', startedAt: Date.now() })
+    const agentRun = await repository.createAgentRun({
+      scanId: scan.id,
+      role: 'strategy',
+      promptId: 'strategy-safe-probe',
+      promptVersion: '1.0.0',
+      promptHash: 'hash',
+      modelProfileId: 'deterministic-strategy'
+    })
+
+    const broker = new PolicyBroker(repository)
+    const allowed = await broker.evaluate({
+      scanId: scan.id,
+      agentRunId: agentRun.id,
+      action: {
+        kind: 'http-request',
+        targetUrl: 'http://[::1]:3100/fetch',
+        method: 'GET',
+        probeLevel: 'active-safe',
+        sideEffect: 'none',
+        summary: 'SSRF 字面 IPv6 回调验证',
+        expectedEvidence: '受控证明',
+        maxRequests: 1,
+        timeoutMs: 5_000,
+        userApproved: false
+      },
+      stopConditions: [],
+      ssrfTargetUrl: 'http://[::1]:3100/callback'
+    })
+    expect(allowed.decision).toMatchObject({ allowed: true, code: 'allowed' })
+
+    const unlistedPort = await broker.evaluate({
+      scanId: scan.id,
+      agentRunId: agentRun.id,
+      action: {
+        kind: 'http-request',
+        targetUrl: 'http://[::1]:3100/fetch',
+        method: 'GET',
+        probeLevel: 'active-safe',
+        sideEffect: 'none',
+        summary: 'SSRF 字面 IPv6 未授权端口',
+        expectedEvidence: 'must not execute',
+        maxRequests: 1,
+        timeoutMs: 5_000,
+        userApproved: false
+      },
+      stopConditions: [],
+      ssrfTargetUrl: 'http://[::1]:9/callback'
+    })
+    expect(unlistedPort.decision).toMatchObject({
+      allowed: false,
+      code: 'network-target-not-authorized'
+    })
+    database.close()
   })
 
   it('never turns a denied destructive decision into an executable token', async () => {

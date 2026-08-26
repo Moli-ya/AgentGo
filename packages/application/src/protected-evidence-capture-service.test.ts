@@ -26,7 +26,7 @@ import { EvidenceCapturePolicy } from './evidence-capture-policy'
 import { ProtectedEvidenceCaptureService } from './protected-evidence-capture-service'
 import { ProtectedEvidenceRetentionScheduler } from './protected-evidence-retention-scheduler'
 
-const SENTINEL = 'DAY4-END-TO-END-PROTECTED-SENTINEL'
+const SENTINEL = 'PROTECTED_END_TO_END_SENTINEL'
 const directories: string[] = []
 
 afterEach(() => {
@@ -81,6 +81,7 @@ describe('ProtectedEvidenceCaptureService', () => {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: false,
           allowLoopbackTargets: false,
+          networkEntries: [],
           maxRequestsPerMinute: 10,
           maxConcurrency: 1
         }
@@ -99,7 +100,9 @@ describe('ProtectedEvidenceCaptureService', () => {
             maxPlanRevisions: 1,
             maxDurationMinutes: 10,
             maxModelTokens: 1_000,
-            maxEstimatedCost: 1
+            maxEstimatedCost: 1,
+            maxRequestBytes: 10 * 1_146_880,
+            maxResponseBytes: 10 * 16_777_216
           }
         },
         {},

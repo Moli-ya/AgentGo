@@ -26,7 +26,7 @@ import type {
 } from './execution-port'
 import {
   AgentGoApplicationService,
-  createDay2VulnerabilityPlatform
+  createVulnerabilityPlatform
 } from './index'
 import { PolicyBroker } from './execution-policy'
 import { ReportService } from './report-service'
@@ -451,7 +451,7 @@ async function createHarness(
     invocations: repository
   })
   const reportService = new ReportService(repository, evidenceStore)
-  const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
+  const vulnerabilityPlatform = createVulnerabilityPlatform()
   const executionPort = new StrictExecutionPort(
     baseUrl,
     repository,
@@ -498,6 +498,7 @@ async function createHarness(
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
+      networkEntries: [],
       maxRequestsPerMinute: 120,
       maxConcurrency: 1
     }
@@ -532,6 +533,7 @@ async function createHarness(
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
+      networkEntries: [],
       maxRequestsPerMinute: 120,
       maxConcurrency: 1,
       authorizationReference: 'coordinator-test-owner'

@@ -21,7 +21,7 @@ import {
   AgentGoApplicationService,
   AgentPromptCatalog,
   EvidenceCapturePolicy,
-  createDay2VulnerabilityPlatform
+  createVulnerabilityPlatform
 } from './index'
 
 const temporaryDirectories: string[] = []
@@ -40,7 +40,7 @@ const protector: SecretProtector = {
 
 function vulnerabilityDependencies() {
   return {
-    vulnerabilityPlatform: createDay2VulnerabilityPlatform(),
+    vulnerabilityPlatform: createVulnerabilityPlatform(),
     vulnerabilityExecutionEnvironment: 'authorized-test-environment' as const
   }
 }
@@ -102,7 +102,7 @@ function recoveredInterruptedLease(
 
 async function createRunningRecoveryScan(repository: AgentGoRepository) {
   const workspace = await repository.createWorkspace({
-    name: 'Day 5 recovery test',
+    name: 'Execution recovery test',
     description: ''
   })
   const target = await repository.createTarget({
@@ -110,7 +110,7 @@ async function createRunningRecoveryScan(repository: AgentGoRepository) {
     name: 'Authorized recovery fixture',
     baseUrl: 'http://127.0.0.1:3000/',
     description: '',
-    authorizationReference: 'automated-day5-recovery-test',
+    authorizationReference: 'automated-execution-recovery-test',
     scope: {
       allowedOrigins: ['http://127.0.0.1:3000'],
       allowedPathPrefixes: ['/'],
@@ -121,9 +121,10 @@ async function createRunningRecoveryScan(repository: AgentGoRepository) {
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: true,
       allowLoopbackTargets: true,
+      networkEntries: [],
       maxRequestsPerMinute: 30,
       maxConcurrency: 1,
-      authorizationReference: 'automated-day5-recovery-test'
+      authorizationReference: 'automated-execution-recovery-test'
     }
   })
   const plan = createDefaultScanPlan(['sqli'])
@@ -131,7 +132,7 @@ async function createRunningRecoveryScan(repository: AgentGoRepository) {
     {
       targetId: target.target.id,
       name: 'Claimed execution recovery',
-      description: 'Day 5 claimed lease recovery fixture.',
+      description: 'Claimed lease recovery fixture.',
       families: ['sqli'],
       identityIds: [],
       budget: plan.budget
@@ -180,6 +181,7 @@ describe('AgentGoApplicationService recovery', () => {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: true,
           allowLoopbackTargets: true,
+          networkEntries: [],
           maxRequestsPerMinute: 30,
           maxConcurrency: 1,
           authorizationReference: 'automated-recovery-test'
@@ -245,7 +247,7 @@ describe('AgentGoApplicationService recovery', () => {
   })
 
   it('terminalizes a claimed lease without fabricating Evidence when EvidenceStore is absent', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-no-evidence-'))
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-execution-no-evidence-'))
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
@@ -302,7 +304,7 @@ describe('AgentGoApplicationService recovery', () => {
   })
 
   it('recovers the scan after a crash between lease terminalization and checkpointing', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-crash-window-'))
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-execution-crash-window-'))
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
@@ -355,7 +357,7 @@ describe('AgentGoApplicationService recovery', () => {
   })
 
   it('uses no-Evidence recovery when scan target lookup is unavailable', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-missing-target-'))
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-execution-missing-target-'))
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
@@ -406,7 +408,7 @@ describe('AgentGoApplicationService recovery', () => {
 
   it('cleans recovered staging files without reopening a terminalized lease when file deletion fails', async () => {
     const directory = mkdtempSync(
-      join(tmpdir(), 'agentgo-day5-staging-file-cleanup-')
+      join(tmpdir(), 'agentgo-execution-staging-file-cleanup-')
     )
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
@@ -473,7 +475,7 @@ describe('AgentGoApplicationService recovery', () => {
 
   it('removes files whose crash-staged metadata was atomically discarded', async () => {
     const directory = mkdtempSync(
-      join(tmpdir(), 'agentgo-day5-staging-file-delete-')
+      join(tmpdir(), 'agentgo-execution-staging-file-delete-')
     )
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
@@ -538,7 +540,7 @@ describe('AgentGoApplicationService recovery', () => {
 
   it('keeps the current recovery summary and removes one abandoned by a second crash', async () => {
     const directory = mkdtempSync(
-      join(tmpdir(), 'agentgo-day5-repeated-recovery-')
+      join(tmpdir(), 'agentgo-execution-repeated-recovery-')
     )
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
@@ -650,7 +652,7 @@ describe('AgentGoApplicationService recovery', () => {
 
   it('sweeps a content file left after metadata commit but before file GC', async () => {
     const directory = mkdtempSync(
-      join(tmpdir(), 'agentgo-day5-persistent-file-gc-')
+      join(tmpdir(), 'agentgo-execution-persistent-file-gc-')
     )
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
@@ -697,7 +699,7 @@ describe('AgentGoApplicationService recovery', () => {
   })
 
   it('falls back to no-Evidence terminalization when recovery Evidence cannot be saved', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-save-failure-'))
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-execution-save-failure-'))
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
@@ -797,6 +799,7 @@ describe('AgentGoApplicationService recovery', () => {
         allowSensitiveProbing: false,
         allowPrivateNetworkTargets: false,
         allowLoopbackTargets: false,
+        networkEntries: [],
         maxRequestsPerMinute: 20,
         maxConcurrency: 1
       }
@@ -921,6 +924,7 @@ describe('AgentGoApplicationService recovery', () => {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: false,
           allowLoopbackTargets: false,
+          networkEntries: [],
           maxRequestsPerMinute: 20,
           maxConcurrency: 1
         }
@@ -1117,6 +1121,7 @@ describe('AgentGoApplicationService recovery', () => {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: true,
           allowLoopbackTargets: true,
+          networkEntries: [],
           maxRequestsPerMinute: 30,
           maxConcurrency: 1,
           authorizationReference: 'automated-deletion-test'
@@ -1194,6 +1199,7 @@ describe('AgentGoApplicationService recovery', () => {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: true,
           allowLoopbackTargets: true,
+          networkEntries: [],
           maxRequestsPerMinute: 30,
           maxConcurrency: 1,
           authorizationReference: 'automated-workspace-deletion-test'

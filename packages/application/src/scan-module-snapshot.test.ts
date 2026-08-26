@@ -16,10 +16,10 @@ import {
   ScanModuleSnapshotError,
   verifyScanModuleSnapshots as verifyPersistedScanModuleSnapshots
 } from './scan-module-snapshot'
-import { createDay2VulnerabilityPlatform } from './vulnerability-platform'
+import { createVulnerabilityPlatform } from './vulnerability-platform'
 
 const CREATED_AT = '2026-07-17T00:00:00.000Z'
-const SCAN_ID = 'scan-day3'
+const SCAN_ID = 'scan-inventory'
 
 function verifyScanModuleSnapshots(
   inputs: readonly ScanModuleSnapshotRecord[],
@@ -108,7 +108,7 @@ describe('scan module snapshots', () => {
 
   it('builds immutable, binary-ordered drafts and verifies a network-free roundtrip', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const first = buildScanModuleSnapshotDrafts(
       ['xss', 'sqli'],
       'authorized-real-target',
@@ -143,7 +143,7 @@ describe('scan module snapshots', () => {
   })
 
   it('rejects a non-canonical self hash and strict-schema forgery', () => {
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const [record] = asRecords(
       buildScanModuleSnapshotDrafts(
         ['sqli'],
@@ -176,7 +176,7 @@ describe('scan module snapshots', () => {
   })
 
   it('rejects semantically valid snapshots bound to another scan', () => {
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const records = asRecords(
       buildScanModuleSnapshotDrafts(
         ['sqli', 'xss'],
@@ -198,7 +198,7 @@ describe('scan module snapshots', () => {
   })
 
   it('fails closed for missing, extra, and duplicate family snapshots', () => {
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const records = asRecords(
       buildScanModuleSnapshotDrafts(
         ['sqli', 'xss'],
@@ -252,7 +252,7 @@ describe('scan module snapshots', () => {
   })
 
   it('rejects legacy-unknown, environment, authorization, and selected definition drift', () => {
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const [record] = asRecords(
       buildScanModuleSnapshotDrafts(
         ['sqli'],
@@ -285,7 +285,7 @@ describe('scan module snapshots', () => {
     expectSnapshotError(
       () =>
         verifyScanModuleSnapshots(
-          [replaceDraft(record!, { authorization: 'qualified' })],
+          [replaceDraft(record!, { authorization: 'legacy-v1-compatibility' })],
           ['sqli'],
           'authorized-real-target',
           platform
@@ -305,7 +305,7 @@ describe('scan module snapshots', () => {
   })
 
   it('rejects selected capability drift but permits unrelated global snapshot drift', () => {
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const [record] = asRecords(
       buildScanModuleSnapshotDrafts(
         ['sqli'],
@@ -337,7 +337,7 @@ describe('scan module snapshots', () => {
       'snapshot-capability-mismatch'
     )
 
-    const selectedSemanticDrift = createDay2VulnerabilityPlatform(
+    const selectedSemanticDrift = createVulnerabilityPlatform(
       new ProbeCapabilityCatalog(
         BUILT_IN_PROBE_CAPABILITY_DESCRIPTORS.map((capability) =>
           capability.id === 'http.reviewed-read'
@@ -357,10 +357,10 @@ describe('scan module snapshots', () => {
           'authorized-real-target',
           selectedSemanticDrift
         ),
-      'snapshot-capability-mismatch'
+      'snapshot-definition-unavailable'
     )
 
-    const unrelatedCatalogDrift = createDay2VulnerabilityPlatform(
+    const unrelatedCatalogDrift = createVulnerabilityPlatform(
       new ProbeCapabilityCatalog([
         ...BUILT_IN_PROBE_CAPABILITY_DESCRIPTORS,
         {

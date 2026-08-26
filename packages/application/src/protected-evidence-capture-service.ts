@@ -31,7 +31,7 @@ export interface PersistedProtectedEvidenceCapture {
 }
 
 /**
- * Trusted backend-only composition boundary for Day 4 protected originals.
+ * Trusted backend-only composition boundary for protected originals.
  * It snapshots the source once, lets the pure policy seal the persistence
  * artifact, persists that exact artifact with the same bytes, and clears the
  * shared snapshot. It is intentionally not exposed through Renderer IPC.

@@ -40,6 +40,15 @@ const httpErrorMessages = Object.freeze({
   timeout: 'The HTTP execution timed out.',
   'response-too-large':
     'The HTTP response exceeded the configured byte limit.',
+  'response-header-too-large':
+    'The HTTP response headers exceeded the configured byte limit.',
+  'response-decompressed-too-large':
+    'The HTTP response exceeded the decompressed byte limit.',
+  'response-compression-bomb':
+    'The HTTP response exceeded the compression ratio limit.',
+  'response-decompression-failed':
+    'The HTTP response body could not be decompressed.',
+  'response-slow-read': 'The HTTP response body read timed out between chunks.',
   'network-error': 'The HTTP execution failed.',
   cancelled: 'The HTTP execution was cancelled.'
 } as const)
@@ -90,6 +99,11 @@ const HttpRunnerResultSchema = z
       'response-start-mark-failed',
       'timeout',
       'response-too-large',
+      'response-header-too-large',
+      'response-decompressed-too-large',
+      'response-compression-bomb',
+      'response-decompression-failed',
+      'response-slow-read',
       'network-error',
       'cancelled'
     ]).optional(),

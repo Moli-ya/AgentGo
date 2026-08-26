@@ -430,7 +430,7 @@ function createFixture(options: FixtureOptions = {}) {
   }
 }
 
-describe('ExecutionService V2 offline audit boundary', () => {
+describe('ExecutionService offline audit boundary', () => {
   it('persists only hash-only artifacts before atomic audit and successful finalization', async () => {
     const fixture = createFixture()
 

@@ -27,7 +27,9 @@ const context: ReportContext = {
       maxPlanRevisions: 1,
       maxDurationMinutes: 10,
       maxModelTokens: 1_000,
-      maxEstimatedCost: 1
+      maxEstimatedCost: 1,
+      maxRequestBytes: 20 * 1_146_880,
+      maxResponseBytes: 20 * 16_777_216
     },
     requestCount: 3,
     modelTokens: 10,
@@ -59,6 +61,7 @@ const context: ReportContext = {
     allowSensitiveProbing: false,
     allowPrivateNetworkTargets: false,
     allowLoopbackTargets: false,
+    networkEntries: [],
     maxRequestsPerMinute: 10,
     maxConcurrency: 1,
     snapshotHash: 'hash',

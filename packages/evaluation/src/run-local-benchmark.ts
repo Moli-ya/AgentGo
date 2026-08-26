@@ -13,12 +13,14 @@ import {
   ExecutionAuthority,
   ExecutionService,
   InventoryService,
+  LEGACY_V1_EVIDENCE_ROLES,
+  LEGACY_V1_TECHNIQUE_IDS,
   LegacyV1RequestCompilerAdapter,
   PolicyBroker,
   PolicyExecutionGuard,
   ReportService,
   V1_CONFIRMATION_RULES,
-  createDay2VulnerabilityPlatform
+  createVulnerabilityPlatform
 } from '@agentgo/application'
 import { PlaywrightBrowserRunner } from '@agentgo/browser-runner'
 import {
@@ -31,21 +33,28 @@ import {
 } from '@agentgo/db'
 import { UndiciHttpRunner } from '@agentgo/http-runner'
 import { DefaultModelGateway } from '@agentgo/model-gateway'
+import { isLegacyV1VulnerabilityFamily } from '@agentgo/contracts'
 import {
   BenchmarkPredictionSchema,
   GroundTruthManifestSchema,
   SafetyGateCountersSchema,
+  assertBenchmarkPredictionsComplete,
   buildBenchmarkSummary,
   renderBenchmarkMarkdown,
   type BenchmarkPrediction,
   type GroundTruthCase,
   type SafetyGateCounters
 } from './index'
+import { createFrozenBenchmarkSuiteRegistry } from './benchmark-registry'
+import {
+  createLegacyV1BenchmarkSuites
+} from './legacy-v1-suites'
 import {
   LOCAL_FIXTURE_VERSION,
   fixtureIdentityPlan,
   startLocalBenchmarkFixture
 } from './local-fixture'
+import { scoreTechniqueSuite } from './qualification-service'
 
 interface BenchmarkCliOptions {
   manifestPath: string
@@ -245,6 +254,9 @@ async function run(): Promise<void> {
   const manifest = GroundTruthManifestSchema.parse(
     JSON.parse(await readFile(options.manifestPath, 'utf8'))
   )
+  const suiteRegistry = createFrozenBenchmarkSuiteRegistry(
+    createLegacyV1BenchmarkSuites(manifest)
+  )
   if (manifest.targetVersion !== LOCAL_FIXTURE_VERSION) {
     throw new Error(
       `Manifest target ${manifest.targetVersion} does not match fixture ${LOCAL_FIXTURE_VERSION}.`
@@ -294,7 +306,7 @@ async function run(): Promise<void> {
     prompts: new AgentPromptCatalog(),
     invocations: repository
   })
-  const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
+  const vulnerabilityPlatform = createVulnerabilityPlatform()
   const inventoryService = new InventoryService(
     repository,
     vulnerabilityPlatform.capabilityCatalog
@@ -353,6 +365,7 @@ async function run(): Promise<void> {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: true,
           allowLoopbackTargets: true,
+          networkEntries: [],
           maxRequestsPerMinute: 120,
           maxConcurrency: 1,
           authorizationReference: `local-benchmark:${item.caseId}`
@@ -376,6 +389,7 @@ async function run(): Promise<void> {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: true,
           allowLoopbackTargets: true,
+          networkEntries: [],
           maxRequestsPerMinute: 120,
           maxConcurrency: 1,
           authorizationReference: `local-benchmark:${item.caseId}`
@@ -433,11 +447,16 @@ async function run(): Promise<void> {
       const finding = (await application.listFindings({ scanId: scan.id })).find(
         (candidate) => candidate.family === item.family
       )
+      const actualVerdict = finding?.verdict ?? 'inconclusive'
       predictions.push(
         BenchmarkPredictionSchema.parse({
           caseId: item.caseId,
-          actualVerdict: finding?.verdict ?? 'inconclusive',
+          actualVerdict,
           evidenceRefs: finding?.evidenceRefs ?? [],
+          evidenceRoles:
+            actualVerdict === 'confirmed' && isLegacyV1VulnerabilityFamily(item.family)
+              ? [...LEGACY_V1_EVIDENCE_ROLES[item.family]]
+              : [],
           ...(finding
             ? {
                 confirmationRuleId: `${finding.confirmationRuleId}@${finding.confirmationRuleVersion}`
@@ -458,8 +477,32 @@ async function run(): Promise<void> {
     }
 
     const safetyCounters = await deriveSafetyCounters({ database, artifactRoot, secrets })
+    const suiteCases = suiteRegistry.list().flatMap((suite) => suite.cases)
+    assertBenchmarkPredictionsComplete({
+      cases: suiteCases,
+      predictions,
+      knownTechniqueIds: suiteRegistry.list().map((suite) => suite.techniqueId)
+    })
+    for (const suite of suiteRegistry.list()) {
+      scoreTechniqueSuite({
+        suite,
+        predictions: predictions.filter((prediction) =>
+          suite.cases.some((item) => item.caseId === prediction.caseId)
+        ),
+        fixtureVersion: fixture.version
+      })
+    }
     const summary = buildBenchmarkSummary({
-      cases: manifest.cases,
+      cases: manifest.cases.map((item) => ({
+        ...item,
+        techniqueId: isLegacyV1VulnerabilityFamily(item.family)
+          ? LEGACY_V1_TECHNIQUE_IDS[item.family]
+          : undefined,
+        protocolKey: 'standard-http/none',
+        selectorKind: 'query',
+        maturity: 'active-l1',
+        environment: 'attested-fixture'
+      })),
       predictions,
       safetyCounters
     })

@@ -600,4 +600,90 @@ describe('UndiciHttpRunner single-hop lease guard', () => {
     expect(cancelled.claimToken).toBeDefined()
     expect(limitEvents.filter((event) => event === 'response-started')).toHaveLength(2)
   })
+
+  it('fails closed for oversized headers, compression bombs, and slow body reads', async () => {
+    const { gzipSync } = await import('node:zlib')
+    const bomb = gzipSync(Buffer.alloc(50_000, 65))
+    const baseUrl = await listen(
+      createServer((request, response) => {
+        if (request.url === '/headers') {
+          response.writeHead(200, { 'x-padding': 'h'.repeat(2_048) })
+          response.end('ok')
+          return
+        }
+        if (request.url === '/bomb') {
+          response.writeHead(200, {
+            'content-encoding': 'gzip',
+            'content-length': String(bomb.byteLength)
+          })
+          response.end(bomb)
+          return
+        }
+        if (request.url === '/corrupt-gzip') {
+          response.writeHead(200, {
+            'content-encoding': 'gzip',
+            'content-length': '17'
+          })
+          response.end('not-a-gzip-payload')
+          return
+        }
+        if (request.url === '/stalled') {
+          response.writeHead(200, { 'content-type': 'text/plain' })
+          response.flushHeaders()
+          return
+        }
+        response.writeHead(200, { 'content-type': 'text/plain' })
+        response.flushHeaders()
+        setTimeout(() => response.end('late'), 250)
+      })
+    )
+    const runner = new UndiciHttpRunner(allowingGuard())
+
+    const headers = await runner.execute({
+      requestId: 'request-headers',
+      leaseId: 'lease-headers',
+      wire: { method: 'GET', url: `${baseUrl}/headers`, headers: [] },
+      timeoutMs: 2_000,
+      maxHeaderBytes: 1_024
+    })
+    expect(headers.errorCode).toBe('response-header-too-large')
+
+    const compressed = await runner.execute({
+      requestId: 'request-bomb',
+      leaseId: 'lease-bomb',
+      wire: { method: 'GET', url: `${baseUrl}/bomb`, headers: [] },
+      timeoutMs: 2_000,
+      maxResponseBytes: 65_536,
+      maxDecompressedBytes: 65_536,
+      maxCompressionRatio: 10
+    })
+    expect(compressed.errorCode).toBe('response-compression-bomb')
+
+    const corrupt = await runner.execute({
+      requestId: 'request-corrupt-gzip',
+      leaseId: 'lease-corrupt-gzip',
+      wire: { method: 'GET', url: `${baseUrl}/corrupt-gzip`, headers: [] },
+      timeoutMs: 2_000
+    })
+    expect(corrupt.errorCode).toBe('response-decompression-failed')
+
+    const slow = await runner.execute({
+      requestId: 'request-slow-read',
+      leaseId: 'lease-slow-read',
+      wire: { method: 'GET', url: `${baseUrl}/slow`, headers: [] },
+      timeoutMs: 2_000,
+      slowReadTimeoutMs: 50
+    })
+    expect(slow.errorCode).toBe('response-slow-read')
+
+    const stalled = await runner.execute({
+      requestId: 'request-stalled-read',
+      leaseId: 'lease-stalled-read',
+      wire: { method: 'GET', url: `${baseUrl}/stalled`, headers: [] },
+      timeoutMs: 2_000,
+      slowReadTimeoutMs: 50
+    })
+    expect(stalled.errorCode).toBe('response-slow-read')
+    expect(stalled.durationMs).toBeLessThan(1_500)
+  })
 })

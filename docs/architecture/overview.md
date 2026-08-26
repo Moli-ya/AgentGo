@@ -60,20 +60,22 @@ Renderer 只展示数据和发起用户意图；Main 负责生命周期、双向
 
 - apps/desktop：Electron Main、Preload、React Renderer。
 - packages/contracts：跨进程和跨包共享的版本化类型。
-- packages/domain：Target、Scan、Signal、Validation、Finding 等领域模型，以及原子 DefinitionRegistry/canonical snapshot。
+- packages/domain：Target、Scan、Signal、Validation、Finding 等领域模型，原子 DefinitionRegistry/canonical snapshot，以及 L2 纯状态机/hash/cleanup 资格。
 - packages/security-policy：授权范围和主动探测硬门禁，以及不可变 ProbeCapabilityCatalog。
 - packages/agent-runtime：阶段状态机、预算、检查点和 Agent 调度。
 - packages/knowledge-base：知识摄取、检索和 KnowledgePack。
 - packages/model-gateway：Provider-neutral 模型接口、模型配置和脱敏。
 - packages/db：Drizzle schema、迁移和仓储边界。
 - packages/application：Application-owned `ExecutionPort`、RequestCompiler、
-  ExecutionAuthority、Runner Guard 编排、Evidence capture/audit 与 crash
-  recovery；Coordinator 不能直接持有 Runner。
+  ExecutionAuthority、Runner Guard 编排、Evidence capture/audit、crash
+  recovery 与 `L2ProtocolService`；Coordinator 不能直接持有 Runner，
+  L2 协议模块不得 import Runner。
 - packages/browser-runner：Playwright 断网渲染封装，只执行已 claim 的
   offline lease，不包含业务策略判断。
 - packages/http-runner：单跳 HTTP transport；claim 后解析 DNS，经 Guard
   授权并持久化 dispatch 后才发包，不自动跟随 redirect。
 - packages/reporting：Findings、证据和修复建议的模板化输出。
+- packages/evaluation：versioned technique suite、loopback fixture、指标与 QualificationService；只在评测进程使用。生产 Application 不 import 本包，只加载内容寻址 QualificationRecord。
 - packages/mcp-hub：官方 MCP SDK 封装，负责 STDIO / Streamable HTTP 连接测试和能力发现。
 
 ## 6. 依赖方向
@@ -116,7 +118,7 @@ ExecutionGrant/Lease/Guard。
 - Credential Store：API Key 和其他长期凭据。
 - Browser Context：每次隔离渲染临时创建，阻断全部页面网络请求，结束后关闭，不保存持久 Profile。
 
-普通证据使用内容哈希寻址并保存 SHA-256、来源和脱敏状态。Day4 的
+普通证据使用内容哈希寻址并保存 SHA-256、来源和脱敏状态。
 protected-original 后端能力要求完整的 capture context/decision 封套，
 使用随机数据密钥进行 AES-256-GCM 加密，再由操作系统安全存储封装数据密钥；
 磁盘只落内容寻址 ciphertext。普通 `read`、Renderer 和报告路径拒绝原件，
@@ -131,15 +133,11 @@ Agent 自动调用 MCP 工具、逐次权限审批、Evidence 映射、Kali 工�
 
 ## 10. 技术验证状态
 
-截至 2026-07-30，除既有桌面基线外，Day4/Day5 已把 reviewed HTTP 与
-离线 Browser I/O 接入统一 Compiler/Grant/Lease/Guard/Evidence 链。
-Day5 的既有终验数字与失败首跑记录见
-[Day5 历史完成档案](../audits/day5-completion-2026-07-28.md)；Day4 现已补齐
-protected-original 的后端存储、访问拒绝、派生、配额、保留期和审计能力。
-当前顺序终验事实见 [Day4 最终复核](../audits/day4-final-review-2026-07-30.md)
-与 [Day5 post-Day4 复验](../audits/day5-post-day4-review-2026-07-30.md)。
-这些后端能力不改变 Day5 在线执行的 capture authority：当前实际在线路径
-仍固定保存 hash-only 请求/结果摘要。
+reviewed HTTP 与离线 Browser I/O 已接入统一 Compiler/Grant/Lease/Guard/Evidence 链。
+原子预算与精确网络门禁已落地；四类 legacy 执行资格由 QualificationRecord
+接管，默认临时兼容允许表已移除。protected-original 后端已补齐存储、
+访问拒绝、派生、配额、保留期和审计能力。这些后端能力不改变在线执行的
+capture authority：当前实际在线路径仍固定保存 hash-only 请求/结果摘要。
 当前技术边界还包括：
 
 - Electron Main/Preload/Renderer 可构建并启动；
@@ -162,8 +160,8 @@ protected-original 的后端存储、访问拒绝、派生、配额、保留期�
   普通 Evidence `read`、Renderer、报告与导出只见元数据或
   metadata-only redacted derivative。到期先事务性擦除 wrapped key，再
   清理 ciphertext，并记录创建、拒绝访问、完整性验证和到期审计。
-- Day5 在线路径仍只持久化 capture-decision-bound hash-only 摘要。真实
-  DOM/截图采集、与 Lease 的完整 provenance 绑定及其确认规则接线属于
-  Day18；在此之前需要这类证据的 XSS 必须保持 Inconclusive。
+- 在线路径仍只持久化 capture-decision-bound hash-only 摘要。真实
+  DOM/截图采集、与 Lease 的完整 provenance 绑定及其确认规则接线尚未接入；
+  在此之前需要这类证据的 XSS 必须保持 Inconclusive。
 
 仍需在正式发布前完成代码签名、自定义图标、不同 Windows 版本的真实安装/升级/卸载矩阵和长期运行压测。

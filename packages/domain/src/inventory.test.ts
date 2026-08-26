@@ -19,7 +19,7 @@ import {
   stableInventoryHash
 } from './inventory'
 
-const sentinel = 'DAY3_SENTINEL_SECRET_must-not-leak'
+const sentinel = 'INVENTORY_SENTINEL_SECRET_must-not-leak'
 const jwt =
   'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkYXkzLXVzZXIifQ.QWx3YXlzUmVkYWN0VGhpc1NpZ25hdHVyZQ'
 const highEntropy = 'N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa'

@@ -1,10 +1,10 @@
 import type { DatabaseMigration } from './migrations'
 
 /**
- * Day 4 protected Evidence is deliberately additive. Existing rows remain
+ * Protected Evidence is deliberately additive. Existing rows remain
  * legacy/unprotected; no migration may relabel plaintext as encrypted.
  */
-export const DAY4_PROTECTED_EVIDENCE_MIGRATION: DatabaseMigration = {
+export const PROTECTED_EVIDENCE_ENVELOPE_MIGRATION: DatabaseMigration = {
   id: '0010_protected_evidence_envelopes',
   sql: `
 CREATE TABLE protected_evidence_items (

@@ -662,7 +662,7 @@ export class ExecutionAuthority {
     const purpose = ExecutionPurposeSchema.parse(input.purpose)
     const adapterKind = ExecutionAdapterKindSchema.parse(input.adapterKind)
     if (adapterKind !== 'http' && adapterKind !== 'browser-offline') {
-      throw new Error('Execution adapter is not supported by Day 5 authority.')
+      throw new Error('Execution adapter is not supported by execution authority.')
     }
     assertAdapterCapability(adapterKind, capabilityIds)
     const retryClass = ExecutionRetryClassSchema.parse(input.retryClass)

@@ -3,11 +3,13 @@ import type { DatabaseSync } from 'node:sqlite'
 import { TargetBaseUrlSchema } from '@agentgo/contracts'
 import { redactInventoryText } from '@agentgo/domain'
 import {
-  DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION,
-  DAY5_EXECUTION_MIGRATION,
-  DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION
+  EXECUTION_DISPATCH_HARDENING_MIGRATION,
+  EXECUTION_GRANTS_AND_LEASES_MIGRATION,
+  EXECUTION_RECOVERY_HARDENING_MIGRATION
 } from './execution-migration'
-import { DAY4_PROTECTED_EVIDENCE_MIGRATION } from './protected-evidence-migration'
+import { PROTECTED_EVIDENCE_ENVELOPE_MIGRATION } from './protected-evidence-migration'
+import { ATOMIC_BUDGET_AND_NETWORK_GATES_MIGRATION } from './budget-migration'
+import { L2_PROTOCOL_MIGRATION } from './l2-migration'
 
 export interface DatabaseMigration {
   id: string
@@ -838,7 +840,7 @@ function readLegacyFamilies(configJson: string): string[] {
   }
 }
 
-function migrateDay3Inventory(database: DatabaseSync): void {
+function migrateLegacyInventory(database: DatabaseSync): void {
   redactLegacyPages(database)
   const endpoints = database
     .prepare(
@@ -2093,7 +2095,7 @@ CREATE TABLE scan_module_snapshots (
 );
 CREATE INDEX scan_module_snapshots_scan_idx ON scan_module_snapshots(scan_id);
 `,
-    dataHook: migrateDay3Inventory,
+    dataHook: migrateLegacyInventory,
     finalizeSql: `
 UPDATE scans SET module_snapshots_sealed = 1;
 
@@ -2345,8 +2347,10 @@ BEGIN
 END;
 `
   },
-  DAY5_EXECUTION_MIGRATION,
-  DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION,
-  DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION,
-  DAY4_PROTECTED_EVIDENCE_MIGRATION
+  EXECUTION_GRANTS_AND_LEASES_MIGRATION,
+  EXECUTION_RECOVERY_HARDENING_MIGRATION,
+  EXECUTION_DISPATCH_HARDENING_MIGRATION,
+  PROTECTED_EVIDENCE_ENVELOPE_MIGRATION,
+  ATOMIC_BUDGET_AND_NETWORK_GATES_MIGRATION,
+  L2_PROTOCOL_MIGRATION
 ]

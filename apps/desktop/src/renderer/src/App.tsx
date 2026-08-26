@@ -281,6 +281,7 @@ function scopeInput(scope: TargetScopeRecord) {
     allowSensitiveProbing: scope.allowSensitiveProbing,
     allowPrivateNetworkTargets: scope.allowPrivateNetworkTargets,
     allowLoopbackTargets: scope.allowLoopbackTargets,
+    networkEntries: scope.networkEntries,
     maxRequestsPerMinute: scope.maxRequestsPerMinute,
     maxConcurrency: scope.maxConcurrency,
     ...(scope.authorizationReference
@@ -607,6 +608,7 @@ export function App(): React.JSX.Element {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: targetForm.allowPrivate,
           allowLoopbackTargets: targetForm.allowLoopback,
+          networkEntries: [],
           maxRequestsPerMinute: targetForm.maxRpm,
           maxConcurrency: targetForm.maxConcurrency,
           authorizationReference: targetForm.authorizationReference
@@ -716,7 +718,15 @@ export function App(): React.JSX.Element {
           maxPlanRevisions: 3,
           maxDurationMinutes: scanForm.maxDurationMinutes,
           maxModelTokens: 80_000,
-          maxEstimatedCost: 10
+          maxEstimatedCost: 10,
+          maxRequestBytes: Math.min(
+            scanForm.maxRequests * 1_146_880,
+            1_073_741_824
+          ),
+          maxResponseBytes: Math.min(
+            scanForm.maxRequests * 16_777_216,
+            1_073_741_824
+          )
         }
       })
     )

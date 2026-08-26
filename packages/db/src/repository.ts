@@ -57,6 +57,7 @@ import type {
   TargetRecord,
   TargetScope,
   TargetScopeRecord,
+  ScopeNetworkEntry,
   UpdateTargetInput,
   RedactedInventoryPreview,
   TransportKind,
@@ -79,6 +80,7 @@ import {
   redactInventoryUrlPreview,
   stableInventoryHash
 } from '@agentgo/domain'
+import { stabilizeScopeNetworkEntries } from '@agentgo/security-policy'
 import type { AgentGoDatabase } from './database'
 import {
   ExecutionLeaseRepository,
@@ -129,6 +131,7 @@ import {
   scanModuleSnapshots,
   scans,
   signals,
+  targetScopeNetworkEntries,
   targetScopes,
   targets,
   toolCalls,
@@ -511,7 +514,52 @@ function mapTarget(row: TargetRow): TargetRecord {
   }
 }
 
-function mapScope(row: TargetScopeRow): TargetScopeRecord {
+function mapNetworkEntry(
+  row: typeof targetScopeNetworkEntries.$inferSelect
+): ScopeNetworkEntry {
+  return {
+    id: row.id,
+    addressClass: row.addressClass,
+    ...(row.host ? { host: row.host } : {}),
+    ...(row.ip ? { ip: row.ip } : {}),
+    ...(row.cidr ? { cidr: row.cidr } : {}),
+    ports: row.portsJson,
+    purpose: row.purpose
+  }
+}
+
+function persistableNetworkEntries(
+  scopeId: string,
+  entries: readonly ScopeNetworkEntry[]
+): ScopeNetworkEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    id: sha256Text(`${scopeId}:${entry.id}`)
+  }))
+}
+
+function networkEntryInserts(
+  scopeId: string,
+  entries: readonly ScopeNetworkEntry[],
+  createdAt: number
+): Array<typeof targetScopeNetworkEntries.$inferInsert> {
+  return persistableNetworkEntries(scopeId, entries).map((entry) => ({
+    id: entry.id,
+    scopeId,
+    addressClass: entry.addressClass,
+    host: entry.host ?? null,
+    ip: entry.ip ?? null,
+    cidr: entry.cidr ?? null,
+    portsJson: entry.ports,
+    purpose: entry.purpose,
+    createdAt
+  }))
+}
+
+function mapScope(
+  row: TargetScopeRow,
+  networkEntries: readonly ScopeNetworkEntry[] = []
+): TargetScopeRecord {
   return {
     id: row.id,
     targetId: row.targetId,
@@ -525,6 +573,7 @@ function mapScope(row: TargetScopeRow): TargetScopeRecord {
     allowSensitiveProbing: row.allowSensitiveProbing,
     allowPrivateNetworkTargets: row.allowPrivateNetworkTargets,
     allowLoopbackTargets: row.allowLoopbackTargets,
+    networkEntries: [...networkEntries],
     maxRequestsPerMinute: row.maxRequestsPerMinute,
     maxConcurrency: row.maxConcurrency,
     ...(row.authorizationReference
@@ -1041,6 +1090,9 @@ function scopeSnapshotHash(scope: Omit<TargetScope, 'id'>): string {
   return sha256Text(
     stableJson({
       ...scope,
+      networkEntries: [...scope.networkEntries]
+        .map(({ id: _id, ...entry }) => entry)
+        .sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
       ...(scope.validFrom
         ? { validFrom: new Date(Date.parse(scope.validFrom)).toISOString() }
         : {}),
@@ -1767,11 +1819,11 @@ export class AgentGoRepository {
     const targetId = randomUUID()
     const scopeId = randomUUID()
     const normalizedBaseUrl = normalizedTargetBaseUrl(input.baseUrl)
-    const scopeValue: Omit<TargetScope, 'id'> = {
+    const scopeValue: Omit<TargetScope, 'id'> = stabilizeScopeNetworkEntries({
       ...input.scope,
       authorizationReference:
         input.scope.authorizationReference ?? input.authorizationReference
-    }
+    })
     const snapshotHash = scopeSnapshotHash(scopeValue)
 
     const targetRow: typeof targets.$inferSelect = {
@@ -1812,6 +1864,11 @@ export class AgentGoRepository {
       async (transaction) => {
         await transaction.insert(targets).values(targetRow)
         await transaction.insert(targetScopes).values(scopeRow)
+        if (scopeValue.networkEntries.length > 0) {
+          await transaction.insert(targetScopeNetworkEntries).values(
+            networkEntryInserts(scopeId, scopeValue.networkEntries, now)
+          )
+        }
         await transaction
           .update(targets)
           .set({ currentScopeId: scopeId })
@@ -1832,7 +1889,7 @@ export class AgentGoRepository {
       }
     })
 
-    return { target: mapTarget(targetRow), scope: mapScope(scopeRow) }
+    return { target: mapTarget(targetRow), scope: mapScope(scopeRow, persistableNetworkEntries(scopeId, scopeValue.networkEntries)) }
   }
 
   updateTarget(input: UpdateTargetInput): Promise<{
@@ -1860,13 +1917,13 @@ export class AgentGoRepository {
       await this.database.orm.transaction(
         async (transaction) => {
           if (input.scope) {
-            const scopeValue: Omit<TargetScope, 'id'> = {
+            const scopeValue: Omit<TargetScope, 'id'> = stabilizeScopeNetworkEntries({
               ...input.scope,
               authorizationReference:
                 input.scope.authorizationReference ??
                 input.authorizationReference ??
                 current.authorizationReference
-            }
+            })
             const hash = scopeSnapshotHash(scopeValue)
             const [existing] = await transaction
               .select()
@@ -1880,7 +1937,11 @@ export class AgentGoRepository {
               .limit(1)
 
             if (existing) {
-              createdScope = mapScope(existing)
+              const existingEntries = await transaction
+                .select()
+                .from(targetScopeNetworkEntries)
+                .where(eq(targetScopeNetworkEntries.scopeId, existing.id))
+              createdScope = mapScope(existing, existingEntries.map(mapNetworkEntry))
             } else {
               const [latest] = await transaction
                 .select({ revision: targetScopes.revision })
@@ -1910,7 +1971,12 @@ export class AgentGoRepository {
                 createdAt: now
               }
               await transaction.insert(targetScopes).values(row)
-              createdScope = mapScope(row)
+              if (scopeValue.networkEntries.length > 0) {
+                await transaction.insert(targetScopeNetworkEntries).values(
+                  networkEntryInserts(row.id, scopeValue.networkEntries, now)
+                )
+              }
+              createdScope = mapScope(row, persistableNetworkEntries(row.id, scopeValue.networkEntries))
             }
             patch.currentScopeId = createdScope.id
           }
@@ -1956,13 +2022,23 @@ export class AgentGoRepository {
     return result.length > 0
   }
 
+  private async loadScopeNetworkEntries(
+    scopeId: string
+  ): Promise<ScopeNetworkEntry[]> {
+    const rows = await this.database.orm
+      .select()
+      .from(targetScopeNetworkEntries)
+      .where(eq(targetScopeNetworkEntries.scopeId, scopeId))
+    return rows.map(mapNetworkEntry)
+  }
+
   async getScope(scopeId: string): Promise<TargetScopeRecord | undefined> {
     const [row] = await this.database.orm
       .select()
       .from(targetScopes)
       .where(eq(targetScopes.id, scopeId))
       .limit(1)
-    return row ? mapScope(row) : undefined
+    return row ? mapScope(row, await this.loadScopeNetworkEntries(row.id)) : undefined
   }
 
   async getLatestScope(targetId: string): Promise<TargetScopeRecord | undefined> {
@@ -1978,7 +2054,9 @@ export class AgentGoRepository {
       )
       .where(eq(targets.id, targetId))
       .limit(1)
-    return row ? mapScope(row.scope) : undefined
+    return row
+      ? mapScope(row.scope, await this.loadScopeNetworkEntries(row.scope.id))
+      : undefined
   }
 
   async listIdentities(targetId: string): Promise<IdentityRecord[]> {
@@ -2150,6 +2228,12 @@ export class AgentGoRepository {
       requestCount: 0,
       modelTokens: 0,
       estimatedCostMicros: 0,
+      reservedRequestBytes: 0,
+      reservedResponseBytes: 0,
+      activeConcurrency: 0,
+      securityCountersJson: {},
+      oobPollCount: 0,
+      browserActionCount: 0,
       checkpointCount: 0,
       lastError: null,
       moduleSnapshotsSealed: false,
@@ -2639,7 +2723,7 @@ export class AgentGoRepository {
     return this.executionRepository.listExecutionLeaseEvidence(leaseId)
   }
 
-  /** @deprecated Day 4 read compatibility only; it never authorizes new execution. */
+  /** @deprecated Legacy read compatibility only; it never authorizes new execution. */
   async getExecutionDecision(
     policyDecisionId: string
   ): Promise<ExecutionDecisionContext | undefined> {
@@ -2674,7 +2758,7 @@ export class AgentGoRepository {
     return {
       decision: mapPolicyDecision(row.decision),
       proposal,
-      scope: mapScope(row.scope),
+      scope: mapScope(row.scope, await this.loadScopeNetworkEntries(row.scope.id)),
       scanStatus: row.scanStatus as ScanRecord['status'],
       scanBudget: row.scanBudget,
       requestCount: row.requestCount,
@@ -2806,6 +2890,28 @@ export class AgentGoRepository {
         updatedAt: Date.now()
       })
       .where(eq(scans.id, input.scanId))
+  }
+
+  async incrementScanSecurityCounter(
+    scanId: string,
+    code: string
+  ): Promise<void> {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(code)) {
+      throw new Error('Security counter code is invalid.')
+    }
+    const path = `$."${code}"`
+    this.database.native
+      .prepare(
+        `UPDATE scans
+         SET security_counters_json = json_set(
+               security_counters_json,
+               ?,
+               COALESCE(json_extract(security_counters_json, ?), 0) + 1
+             ),
+             updated_at = ?
+         WHERE id = ?`
+      )
+      .run(path, path, Date.now(), scanId)
   }
 
   async getLatestCheckpoint(scanId: string): Promise<{

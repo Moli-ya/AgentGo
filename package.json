@@ -20,7 +20,7 @@
     "dist:win": "pnpm --filter @agentgo/desktop dist:win",
     "smoke:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-desktop.ps1",
     "smoke:packaged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-packaged.ps1",
-    "benchmark:verify": "pnpm vitest run packages/evaluation/src/evaluation.test.ts",
+    "benchmark:verify": "pnpm vitest run packages/evaluation/src/evaluation.test.ts packages/evaluation/src/qualification.test.ts packages/evaluation/src/local-fixture.test.ts packages/contracts/src/evaluation.test.ts",
     "benchmark:fixture": "tsx packages/evaluation/src/serve-local-fixture.ts",
     "benchmark:run": "tsx packages/evaluation/src/run-local-benchmark.ts",
     "db:baseline": "tsx scripts/v1-database-baseline.ts",

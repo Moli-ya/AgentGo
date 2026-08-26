@@ -20,8 +20,8 @@ import {
 } from './database'
 import { EvidenceStore } from './evidence-store'
 import {
-  DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION,
-  DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION
+  EXECUTION_DISPATCH_HARDENING_MIGRATION,
+  EXECUTION_RECOVERY_HARDENING_MIGRATION
 } from './execution-migration'
 import {
   AgentGoRepository,
@@ -124,15 +124,22 @@ function nextWireProof(
 
 async function createExecutionFixture(
   maxRequests = 20,
-  withIdentity = false
+  withIdentity = false,
+  limits: {
+    maxConcurrency?: number
+    maxRequestsPerMinute?: number
+    maxDurationMinutes?: number
+    maxRequestBytes?: number
+    maxResponseBytes?: number
+  } = {}
 ): Promise<ExecutionFixture> {
-  const directory = mkdtempSync(join(tmpdir(), 'agentgo-day5-execution-'))
+  const directory = mkdtempSync(join(tmpdir(), 'agentgo-execution-execution-'))
   temporaryDirectories.push(directory)
   const filePath = join(directory, 'agentgo.sqlite')
   const database = trackDatabase(openAgentGoDatabase(filePath))
   const repository = new AgentGoRepository(database)
   const workspace = await repository.createWorkspace({
-    name: 'Day 5 execution fixture',
+    name: 'Execution fixture',
     description: 'Single-use execution lease repository tests.'
   })
   const target = await repository.createTarget({
@@ -140,7 +147,7 @@ async function createExecutionFixture(
     name: 'Authorized execution lab',
     baseUrl: 'https://lab.example.test',
     description: 'Network-free database fixture.',
-    authorizationReference: 'day5-db-test-authorization',
+    authorizationReference: 'execution-db-test-authorization',
     scope: {
       allowedOrigins: ['https://lab.example.test'],
       allowedPathPrefixes: ['/'],
@@ -151,15 +158,16 @@ async function createExecutionFixture(
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
-      maxRequestsPerMinute: 100,
-      maxConcurrency: 4,
-      authorizationReference: 'day5-db-test-authorization'
+      networkEntries: [],
+      maxRequestsPerMinute: limits.maxRequestsPerMinute ?? 100,
+      maxConcurrency: limits.maxConcurrency ?? 4,
+      authorizationReference: 'execution-db-test-authorization'
     }
   })
   const identity = withIdentity
     ? await repository.saveIdentity({
         targetId: target.target.id,
-        label: 'Day 5 dispatch identity',
+        label: 'Dispatch identity',
         role: 'owner',
         authType: 'none',
         isTestIdentity: true,
@@ -181,6 +189,7 @@ async function createExecutionFixture(
             allowPrivateNetworkTargets:
               target.scope.allowPrivateNetworkTargets,
             allowLoopbackTargets: target.scope.allowLoopbackTargets,
+            networkEntries: target.scope.networkEntries,
             maxRequestsPerMinute: target.scope.maxRequestsPerMinute,
             maxConcurrency: target.scope.maxConcurrency,
             ...(target.scope.authorizationReference
@@ -200,15 +209,15 @@ async function createExecutionFixture(
   }
   const moduleDraft = ScanModuleSnapshotDraftSchema.parse({
     familyId: 'sqli',
-    moduleId: 'day5.sqli.module',
+    moduleId: 'test.sqli.module',
     moduleVersion: '1.0.0',
-    definitionHash: sha256('day5-module-definition'),
+    definitionHash: sha256('execution-module-definition'),
     techniqueId: 'sqli.query-differential',
     techniqueVersion: '1.0.0',
-    strategyRefs: [{ id: 'day5.sqli.strategy', version: '1.0.0' }],
-    confirmationRuleRefs: [{ id: 'day5.sqli.rule', version: '1.0.0' }],
-    evidenceProfileRefs: [{ id: 'day5.sqli.evidence', version: '1.0.0' }],
-    remediationRefs: [{ id: 'day5.sqli.remediation', version: '1.0.0' }],
+    strategyRefs: [{ id: 'test.sqli.strategy', version: '1.0.0' }],
+    confirmationRuleRefs: [{ id: 'test.sqli.rule', version: '1.0.0' }],
+    evidenceProfileRefs: [{ id: 'test.sqli.evidence', version: '1.0.0' }],
+    remediationRefs: [{ id: 'test.sqli.remediation', version: '1.0.0' }],
     requiredCapabilityIds: ['http.reviewed-read'],
     capabilityDescriptors: [
       {
@@ -217,33 +226,37 @@ async function createExecutionFixture(
         descriptorHash: sha256('http.reviewed-read')
       }
     ],
-    capabilitySnapshotHash: sha256('day5-capability-snapshot'),
-    selectedCapabilitiesHash: sha256('day5-selected-capabilities'),
-    selectedDefinitionsHash: sha256('day5-selected-definitions'),
-    registrySnapshotHash: sha256('day5-registry-snapshot'),
+    capabilitySnapshotHash: sha256('execution-capability-snapshot'),
+    selectedCapabilitiesHash: sha256('execution-selected-capabilities'),
+    selectedDefinitionsHash: sha256('execution-selected-definitions'),
+    registrySnapshotHash: sha256('execution-registry-snapshot'),
     environment: 'authorized-test-environment',
     authorization: 'qualified'
   })
   const scan = await repository.createScan(
     {
       targetId: target.target.id,
-      name: 'Day 5 execution scan',
+      name: 'Execution scan',
       description: 'Exercises immutable grants and single-use leases.',
       families: ['sqli'],
       identityIds: identity ? [identity.id] : [],
       budget: {
         maxRequests,
-        maxRequestsPerMinute: 100,
-        maxConcurrency: 4,
+        maxRequestsPerMinute: limits.maxRequestsPerMinute ?? 100,
+        maxConcurrency: limits.maxConcurrency ?? 4,
         maxPlanRevisions: 0,
-        maxDurationMinutes: 10,
+        maxDurationMinutes: limits.maxDurationMinutes ?? 10,
         maxModelTokens: 0,
-        maxEstimatedCost: 0
+        maxEstimatedCost: 0,
+        maxRequestBytes: limits.maxRequestBytes ?? maxRequests * 1_146_880,
+        maxResponseBytes:
+          limits.maxResponseBytes ??
+          Math.min(maxRequests * 16_777_216, 1_073_741_824)
       }
     },
     plan,
     {},
-    [{ draft: moduleDraft, snapshotHash: sha256('day5-module-snapshot') }]
+    [{ draft: moduleDraft, snapshotHash: sha256('execution-module-snapshot') }]
   )
   const [moduleSnapshot] = await repository.listScanModuleSnapshots(scan.id)
   if (!moduleSnapshot) throw new Error('Execution fixture has no module snapshot.')
@@ -254,9 +267,9 @@ async function createExecutionFixture(
   const agentRun = await repository.createAgentRun({
     scanId: scan.id,
     role: 'strategy',
-    promptId: 'day5-db-test',
+    promptId: 'execution-db-test',
     promptVersion: '1.0.0',
-    promptHash: sha256('day5-db-test-prompt'),
+    promptHash: sha256('execution-db-test-prompt'),
     modelProfileId: 'deterministic-test-profile'
   })
   return {
@@ -301,7 +314,7 @@ async function authorizeWire(
       scopeSnapshotId: fixture.scopeSnapshotId,
       probeLevel: 'active-safe',
       sideEffect: 'none',
-      summary: 'Day 5 database-bound read probe.',
+      summary: 'Database-bound read probe.',
       expectedEvidence: 'Minimized response summary.',
       ...(fixture.identityId ? { identityId: fixture.identityId } : {}),
       maxRequests: 1,
@@ -444,7 +457,7 @@ function captureDecisionSet(
         id: randomUUID(),
         scanId: draft.scanId,
         policyDecisionId: draft.policyDecisionId,
-        capturePolicyId: 'day5.execution-summary-capture',
+        capturePolicyId: 'execution-summary-capture',
         capturePolicyVersion: '1.0.0',
         techniqueId: draft.techniqueId,
         techniqueVersion: draft.techniqueVersion,
@@ -530,8 +543,8 @@ async function recordAuditPair(
   claimed: Awaited<ReturnType<typeof claimLease>>,
   executionState: NormalExecutionState,
   contentTag = 'shared-summary',
-  createdBy = 'day5-db-test',
-  captureTool = 'day5-db-test'
+  createdBy = 'execution-db-test',
+  captureTool = 'execution-db-test'
 ) {
   const decisionSet = await fixture.repository.getExecutionCaptureDecisionSet(
     issued.grant.id
@@ -733,7 +746,7 @@ afterEach(() => {
   proofSequence = 0
 })
 
-describe('Day 5 execution grant and lease repository', () => {
+describe('Execution grant and lease repository', () => {
   it('binds issuance and claim to the exact policy-authorized wire proof', async () => {
     const fixture = await createExecutionFixture()
     const authorizedWire = nextWireProof(fixture, 'authorized')
@@ -917,6 +930,93 @@ describe('Day 5 execution grant and lease repository', () => {
     ])
   })
 
+  it('does not oversell concurrency below the remaining request budget', async () => {
+    const fixture = await createExecutionFixture(20, false, {
+      maxConcurrency: 1
+    })
+    const first = await issueGrant(fixture)
+    const second = await issueGrant(fixture)
+    await claimLease(fixture.repository, first, fixture.integrityKey)
+    await expect(
+      claimLease(fixture.repository, second, fixture.integrityKey)
+    ).rejects.toThrow(/budget-exhausted-concurrency/)
+    expect((await fixture.repository.getScan(fixture.scanId))?.requestCount).toBe(
+      1
+    )
+    expect(
+      (await fixture.repository.getExecutionLease(second.lease.id))?.state
+    ).toBe('issued')
+    const counters = fixture.database.native
+      .prepare(
+        'SELECT security_counters_json AS counters FROM scans WHERE id = ?'
+      )
+      .get(fixture.scanId) as { counters: string }
+    expect(JSON.parse(counters.counters)).toMatchObject({
+      'budget-exhausted-concurrency': 1
+    })
+  })
+
+  it('preserves the underlying cause when a claim is rejected', async () => {
+    const fixture = await createExecutionFixture(20, false, {
+      maxConcurrency: 1
+    })
+    const first = await issueGrant(fixture)
+    const second = await issueGrant(fixture)
+    await claimLease(fixture.repository, first, fixture.integrityKey)
+    const rejection = await claimLease(
+      fixture.repository,
+      second,
+      fixture.integrityKey
+    ).catch((error: unknown) => error)
+    expect(rejection).toBeInstanceOf(Error)
+    expect((rejection as Error).message).toMatch(/budget-exhausted-concurrency/)
+    expect((rejection as Error & { cause?: unknown }).cause).toBeDefined()
+  })
+
+  it('does not oversell the sliding-window request rate', async () => {
+    const fixture = await createExecutionFixture(20, false, {
+      maxRequestsPerMinute: 1
+    })
+    const first = await issueGrant(fixture)
+    const second = await issueGrant(fixture)
+    await claimLease(fixture.repository, first, fixture.integrityKey)
+    await expect(
+      claimLease(fixture.repository, second, fixture.integrityKey)
+    ).rejects.toThrow(/budget-exhausted-rpm/)
+    expect((await fixture.repository.getScan(fixture.scanId))?.requestCount).toBe(
+      1
+    )
+  })
+
+  it('does not oversell reserved response bytes', async () => {
+    const fixture = await createExecutionFixture(20, false, {
+      maxResponseBytes: 1
+    })
+    const issued = await issueGrant(fixture)
+    await expect(
+      claimLease(fixture.repository, issued, fixture.integrityKey)
+    ).rejects.toThrow(/claim/i)
+    expect((await fixture.repository.getScan(fixture.scanId))?.requestCount).toBe(
+      0
+    )
+  })
+
+  it('does not claim after the scan duration budget has elapsed', async () => {
+    const fixture = await createExecutionFixture(20, false, {
+      maxDurationMinutes: 1
+    })
+    const issued = await issueGrant(fixture)
+    await fixture.repository.updateScan(fixture.scanId, {
+      startedAt: Date.now() - 61_000
+    })
+    await expect(
+      claimLease(fixture.repository, issued, fixture.integrityKey)
+    ).rejects.toThrow(/claim/i)
+    expect((await fixture.repository.getScan(fixture.scanId))?.requestCount).toBe(
+      0
+    )
+  })
+
   it('fails closed for expired, revoked, and replayed leases without budget drift', async () => {
     const baseTime = Date.parse('2026-07-24T08:00:00.000Z')
     const clock = vi.spyOn(Date, 'now').mockReturnValue(baseTime)
@@ -1029,9 +1129,9 @@ describe('Day 5 execution grant and lease repository', () => {
     `)
     fixture.database.native
       .prepare('DELETE FROM __agentgo_migrations WHERE id = ?')
-      .run(DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION.id)
+      .run(EXECUTION_DISPATCH_HARDENING_MIGRATION.id)
     applyDatabaseMigrations(fixture.database.native, {
-      migrations: [DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION],
+      migrations: [EXECUTION_DISPATCH_HARDENING_MIGRATION],
       appliedAt: () => Date.parse('2026-07-28T00:00:00.000Z')
     })
     const upgradedTrigger = fixture.database.native
@@ -1121,9 +1221,9 @@ describe('Day 5 execution grant and lease repository', () => {
 
     fixture.database.native
       .prepare('DELETE FROM __agentgo_migrations WHERE id = ?')
-      .run(DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION.id)
+      .run(EXECUTION_RECOVERY_HARDENING_MIGRATION.id)
     applyDatabaseMigrations(fixture.database.native, {
-      migrations: [DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION],
+      migrations: [EXECUTION_RECOVERY_HARDENING_MIGRATION],
       appliedAt: () => Date.parse('2026-07-28T00:00:00.000Z')
     })
 
@@ -1131,8 +1231,8 @@ describe('Day 5 execution grant and lease repository', () => {
     expect(
       fixture.database.native
         .prepare('SELECT id FROM __agentgo_migrations WHERE id = ?')
-        .get(DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION.id)
-    ).toEqual({ id: DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION.id })
+        .get(EXECUTION_RECOVERY_HARDENING_MIGRATION.id)
+    ).toEqual({ id: EXECUTION_RECOVERY_HARDENING_MIGRATION.id })
   })
 
   it('validates Evidence refs before commit and finalizes tool traces atomically', async () => {
@@ -1200,8 +1300,8 @@ describe('Day 5 execution grant and lease repository', () => {
       mimeType: 'application/json',
       content: '{"kind":"wrong-type"}',
       source: requestDecision.source,
-      createdBy: 'day5-db-test',
-      captureTool: 'day5-db-test',
+      createdBy: 'execution-db-test',
+      captureTool: 'execution-db-test',
       captureToolVersion: '1.0.0',
       redactionState: 'redacted'
     })
@@ -1213,8 +1313,8 @@ describe('Day 5 execution grant and lease repository', () => {
       mimeType: 'application/json',
       content: '{"kind":"exact-response"}',
       source: responseDecision.source,
-      createdBy: 'day5-db-test',
-      captureTool: 'day5-db-test',
+      createdBy: 'execution-db-test',
+      captureTool: 'execution-db-test',
       captureToolVersion: '1.0.0',
       redactionState: 'redacted'
     })
@@ -1361,8 +1461,8 @@ describe('Day 5 execution grant and lease repository', () => {
         ).toISOString()
       }),
       source: captureDecision.source,
-      createdBy: 'day5-db-test',
-      captureTool: 'day5-db-test',
+      createdBy: 'execution-db-test',
+      captureTool: 'execution-db-test',
       captureToolVersion: '1.0.0',
       redactionState: 'redacted'
     })
@@ -1565,7 +1665,7 @@ describe('Day 5 execution grant and lease repository', () => {
     const derivedSource = await saveStaged('derived-source')
     const derivative = await evidenceStore.createRedactedTextDerivative(
       derivedSource.id,
-      'day5-db-test'
+      'execution-db-test'
     )
     const findingEvidence = await saveStaged('finding-evidence')
     const agentEvidence = await saveStaged('agent-input-evidence')
@@ -1587,9 +1687,9 @@ describe('Day 5 execution grant and lease repository', () => {
     await fixture.repository.createAgentRun({
       scanId: fixture.scanId,
       role: 'analysis',
-      promptId: 'day5.recovery-reference-test',
+      promptId: 'recovery-reference-test',
       promptVersion: '1.0.0',
-      promptHash: sha256('day5.recovery-reference-test@1.0.0'),
+      promptHash: sha256('recovery-reference-test@1.0.0'),
       modelProfileId: randomUUID(),
       inputRefs: [agentEvidence.id]
     })
@@ -1631,7 +1731,7 @@ describe('Day 5 execution grant and lease repository', () => {
       contentRef: reportEvidence.id
     })
     await fixture.repository.ensureConfirmationRule({
-      id: 'day5.sqli.source-rule',
+      id: 'test.sqli.source-rule',
       version: '1.0.0',
       family: 'sqli',
       rule: { kind: 'differential' },
@@ -1639,7 +1739,7 @@ describe('Day 5 execution grant and lease repository', () => {
       sourceRefs: [ruleSourceEvidence.id]
     })
     await fixture.repository.ensureConfirmationRule({
-      id: 'day5.sqli.rule',
+      id: 'test.sqli.rule',
       version: '1.0.0',
       family: 'sqli',
       rule: { kind: 'differential' },
@@ -1653,7 +1753,7 @@ describe('Day 5 execution grant and lease repository', () => {
       verdict: 'inconclusive',
       severity: 'info',
       confidence: 0.5,
-      confirmationRuleId: 'day5.sqli.rule',
+      confirmationRuleId: 'test.sqli.rule',
       confirmationRuleVersion: '1.0.0',
       reproducibility: 'Crash-recovery reference fixture.',
       remediation: [],

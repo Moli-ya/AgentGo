@@ -5,6 +5,7 @@ import {
   GroundTruthManifestSchema,
   buildBenchmarkSummary,
   renderBenchmarkMarkdown,
+  BenchmarkPredictionSchema,
   type BenchmarkPrediction,
   type GroundTruthCase
 } from './index'
@@ -50,22 +51,24 @@ describe('benchmark metrics', () => {
 
   it('calculates four-family metrics for the required 40-case minimum', () => {
     const groundTruth = cases()
-    const predictions: BenchmarkPrediction[] = groundTruth.map((item, index) => ({
-      caseId: item.caseId,
-      actualVerdict:
-        index === 0
-          ? 'inconclusive'
-          : item.expectedVerdict,
-      evidenceRefs: ['evidence'],
-      confirmationRuleId: `${item.family}-rule`,
-      durationMs: 100 + index,
-      requestCount: 4,
-      modelTokens: 50,
-      estimatedCost: 0,
-      planRevisions: 0,
-      duplicateRequests: 0,
-      recoveredFromCrash: false
-    }))
+    const predictions: BenchmarkPrediction[] = groundTruth.map((item, index) =>
+      BenchmarkPredictionSchema.parse({
+        caseId: item.caseId,
+        actualVerdict:
+          index === 0
+            ? 'inconclusive'
+            : item.expectedVerdict,
+        evidenceRefs: ['evidence'],
+        confirmationRuleId: `${item.family}-rule`,
+        durationMs: 100 + index,
+        requestCount: 4,
+        modelTokens: 50,
+        estimatedCost: 0,
+        planRevisions: 0,
+        duplicateRequests: 0,
+        recoveredFromCrash: false
+      })
+    )
     const summary = buildBenchmarkSummary({
       cases: groundTruth,
       predictions,
@@ -84,7 +87,175 @@ describe('benchmark metrics', () => {
     expect(summary.overall.precision).toBe(1)
     expect(summary.overall.recall).toBe(19 / 20)
     expect(summary.safety.passed).toBe(true)
+    expect(summary.recovery.status).toBe('not-applicable')
+    expect(summary.cleanup).toEqual({
+      status: 'not-applicable',
+      reason: 'l2-state-machine-not-connected'
+    })
     expect(renderBenchmarkMarkdown(summary)).toContain('Safety Gates: PASS')
+  })
+
+  it('does not count recoveredFromCrash without a real interrupt as recovery success', () => {
+    const groundTruth = cases().slice(0, 2)
+    const predictions: BenchmarkPrediction[] = groundTruth.map((item) =>
+      BenchmarkPredictionSchema.parse({
+        caseId: item.caseId,
+        actualVerdict: item.expectedVerdict,
+        evidenceRefs: ['evidence'],
+        confirmationRuleId: `${item.family}-rule`,
+        durationMs: 10,
+        requestCount: 1,
+        modelTokens: 0,
+        estimatedCost: 0,
+        recoveredFromCrash: true
+      })
+    )
+    const summary = buildBenchmarkSummary({
+      cases: groundTruth,
+      predictions,
+      safetyCounters: {
+        outOfScopeRequests: 0,
+        destructiveL3Executions: 0,
+        unapprovedL2Executions: 0,
+        plaintextSecretsInLogsOrReports: 0,
+        confirmedWithoutEvidenceOrRule: 0,
+        continuedAfterCleanupFailure: 0
+      }
+    })
+    expect(summary.recovery.status).toBe('not-applicable')
+    expect(summary.efficiency.recoverySuccessRate).toBe(0)
+  })
+
+  it('records recovery only when a real interrupt and recovery chain exist', () => {
+    const groundTruth = cases().slice(0, 1)
+    const predictions: BenchmarkPrediction[] = [
+      BenchmarkPredictionSchema.parse({
+        caseId: groundTruth[0]!.caseId,
+        actualVerdict: groundTruth[0]!.expectedVerdict,
+        evidenceRefs: ['evidence'],
+        confirmationRuleId: `${groundTruth[0]!.family}-rule`,
+        durationMs: 10,
+        requestCount: 1,
+        modelTokens: 0,
+        estimatedCost: 0,
+        interruptOccurred: true,
+        recoveryChainCompleted: true,
+        recoveredFromCrash: true
+      })
+    ]
+    const summary = buildBenchmarkSummary({
+      cases: groundTruth,
+      predictions,
+      safetyCounters: {
+        outOfScopeRequests: 0,
+        destructiveL3Executions: 0,
+        unapprovedL2Executions: 0,
+        plaintextSecretsInLogsOrReports: 0,
+        confirmedWithoutEvidenceOrRule: 0,
+        continuedAfterCleanupFailure: 0
+      }
+    })
+    expect(summary.recovery).toEqual({
+      status: 'measured',
+      interruptCount: 1,
+      successfulRecoveryCount: 1,
+      successRate: 1
+    })
+    expect(summary.efficiency.recoverySuccessRate).toBe(1)
+  })
+
+  it('slices metrics by technique, protocol, selector, maturity and environment', () => {
+    const groundTruth = [
+      {
+        ...cases()[0]!,
+        techniqueId: 'sqli.boolean-differential',
+        protocolKey: 'standard-http/none',
+        selectorKind: 'query',
+        maturity: 'active-l1',
+        environment: 'attested-fixture'
+      },
+      {
+        ...cases()[5]!,
+        techniqueId: 'sqli.boolean-differential',
+        protocolKey: 'standard-http/none',
+        selectorKind: 'query',
+        maturity: 'active-l1',
+        environment: 'attested-fixture'
+      }
+    ]
+    const predictions: BenchmarkPrediction[] = groundTruth.map((item) =>
+      BenchmarkPredictionSchema.parse({
+        caseId: item.caseId,
+        actualVerdict: item.expectedVerdict,
+        evidenceRefs: ['evidence'],
+        confirmationRuleId: `${item.family}-rule`,
+        durationMs: 10,
+        requestCount: 1,
+        modelTokens: 0,
+        estimatedCost: 0
+      })
+    )
+    const summary = buildBenchmarkSummary({
+      cases: groundTruth,
+      predictions,
+      safetyCounters: {
+        outOfScopeRequests: 0,
+        destructiveL3Executions: 0,
+        unapprovedL2Executions: 0,
+        plaintextSecretsInLogsOrReports: 0,
+        confirmedWithoutEvidenceOrRule: 0,
+        continuedAfterCleanupFailure: 0
+      }
+    })
+    expect(summary.byTechnique['sqli.boolean-differential']?.total).toBe(2)
+    expect(summary.byProtocol['standard-http/none']?.total).toBe(2)
+    expect(summary.bySelector.query?.total).toBe(2)
+    expect(summary.byMaturity['active-l1']?.total).toBe(2)
+    expect(summary.byEnvironment['attested-fixture']?.total).toBe(2)
+    expect(summary.byTechnique['sqli.boolean-differential']?.tp).toBe(1)
+    expect(summary.byTechnique['sqli.boolean-differential']?.tn).toBe(1)
+  })
+
+  it('keeps policy-denied and not-run out of Not Confirmed', () => {
+    const groundTruth = cases().slice(0, 2)
+    const predictions: BenchmarkPrediction[] = [
+      BenchmarkPredictionSchema.parse({
+        caseId: groundTruth[0]!.caseId,
+        actualVerdict: 'inconclusive',
+        evidenceRefs: [],
+        durationMs: 1,
+        requestCount: 0,
+        modelTokens: 0,
+        estimatedCost: 0,
+        runStatus: 'policy-denied'
+      }),
+      BenchmarkPredictionSchema.parse({
+        caseId: groundTruth[1]!.caseId,
+        actualVerdict: 'inconclusive',
+        evidenceRefs: [],
+        durationMs: 1,
+        requestCount: 0,
+        modelTokens: 0,
+        estimatedCost: 0,
+        runStatus: 'not-run'
+      })
+    ]
+    const summary = buildBenchmarkSummary({
+      cases: groundTruth,
+      predictions,
+      safetyCounters: {
+        outOfScopeRequests: 0,
+        destructiveL3Executions: 0,
+        unapprovedL2Executions: 0,
+        plaintextSecretsInLogsOrReports: 0,
+        confirmedWithoutEvidenceOrRule: 0,
+        continuedAfterCleanupFailure: 0
+      }
+    })
+    expect(summary.overall.tn).toBe(0)
+    expect(summary.overall.fn).toBe(0)
+    expect(summary.policyDeniedCaseIds).toEqual([groundTruth[0]!.caseId])
+    expect(summary.notRunCaseIds).toEqual([groundTruth[1]!.caseId])
   })
 
   it('keeps V1 coverage requirements anchored to the explicit legacy family set', () => {

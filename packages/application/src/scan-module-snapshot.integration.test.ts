@@ -19,7 +19,7 @@ import {
   computeScanModuleSnapshotHash,
   verifyScanModuleSnapshots
 } from './scan-module-snapshot'
-import { createDay2VulnerabilityPlatform } from './vulnerability-platform'
+import { createVulnerabilityPlatform } from './vulnerability-platform'
 
 const temporaryDirectories: string[] = []
 
@@ -38,11 +38,11 @@ const protector: SecretProtector = {
 
 describe('scan-scoped module snapshot persistence gate', () => {
   it('creates exact immutable snapshots atomically and rejects forged scan fields', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day3-snapshot-'))
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-module-snapshot-'))
     temporaryDirectories.push(directory)
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const application = new AgentGoApplicationService({
       repository,
       credentialStore: new FileCredentialStore(
@@ -74,6 +74,7 @@ describe('scan-scoped module snapshot persistence gate', () => {
           allowSensitiveProbing: false,
           allowPrivateNetworkTargets: false,
           allowLoopbackTargets: false,
+          networkEntries: [],
           maxRequestsPerMinute: 10,
           maxConcurrency: 1,
           authorizationReference: 'snapshot-test'
@@ -251,11 +252,11 @@ describe('scan-scoped module snapshot persistence gate', () => {
   ])(
     'moves a $mode historical scan to awaiting-user before coordinator/tool side effects',
     async ({ mode, expectedCode }) => {
-      const directory = mkdtempSync(join(tmpdir(), `agentgo-day3-${mode}-`))
+      const directory = mkdtempSync(join(tmpdir(), `agentgo-inventory-${mode}-`))
       temporaryDirectories.push(directory)
       const database = openAgentGoDatabase(':memory:')
       const repository = new AgentGoRepository(database)
-      const platform = createDay2VulnerabilityPlatform()
+      const platform = createVulnerabilityPlatform()
       const coordinatorControl = vi.fn()
       const coordinator = { control: coordinatorControl } as unknown as ScanCoordinator
       const application = new AgentGoApplicationService({
@@ -290,6 +291,7 @@ describe('scan-scoped module snapshot persistence gate', () => {
             allowSensitiveProbing: false,
             allowPrivateNetworkTargets: false,
             allowLoopbackTargets: false,
+            networkEntries: [],
             maxRequestsPerMinute: 10,
             maxConcurrency: 1,
             authorizationReference: `${mode}-test`

@@ -502,8 +502,60 @@ function validateGrantRetryClass(grant: ExecutionGrant): void {
   }
 }
 
+const CLAIM_BUDGET_REJECTION_CODES = [
+  'budget-exhausted-concurrency',
+  'budget-exhausted-rpm',
+  'budget-exhausted-bytes',
+  'budget-exhausted-duration'
+] as const
+
+type ClaimBudgetRejectionCode = (typeof CLAIM_BUDGET_REJECTION_CODES)[number]
+
+function errorChainText(error: unknown): string {
+  const messages: string[] = []
+  const seen = new Set<object>()
+  let current = error
+  while (
+    current !== null &&
+    (typeof current === 'object' || typeof current === 'function') &&
+    !seen.has(current as object) &&
+    messages.length < 8
+  ) {
+    const object = current as object
+    seen.add(object)
+    const message = Reflect.get(object, 'message')
+    if (typeof message === 'string') messages.push(message)
+    current = Reflect.get(object, 'cause')
+  }
+  return messages.join('\ncaused by: ')
+}
+
+function claimBudgetRejectionCode(
+  error: unknown
+): ClaimBudgetRejectionCode | undefined {
+  const text = errorChainText(error)
+  return CLAIM_BUDGET_REJECTION_CODES.find((code) => text.includes(code))
+}
+
 export class ExecutionLeaseRepository {
   constructor(private readonly database: AgentGoDatabase) {}
+
+  private incrementScanSecurityCounter(scanId: string, code: string): void {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(code)) return
+    const path = `$."${code}"`
+    this.database.native
+      .prepare(
+        `UPDATE scans
+         SET security_counters_json = json_set(
+               security_counters_json,
+               ?,
+               COALESCE(json_extract(security_counters_json, ?), 0) + 1
+             ),
+             updated_at = ?
+         WHERE id = ?`
+      )
+      .run(path, path, Date.now(), scanId)
+  }
 
   async getExecutionGrant(id: string): Promise<ExecutionGrant | undefined> {
     const [row] = await this.database.orm
@@ -1242,7 +1294,16 @@ export class ExecutionLeaseRepository {
       transactionStarted = false
     } catch (error) {
       if (transactionStarted) native.exec('ROLLBACK')
-      throw error
+      transactionStarted = false
+      const budgetCode = claimBudgetRejectionCode(error)
+      if (budgetCode) {
+        this.incrementScanSecurityCounter(binding.scanId, budgetCode)
+        throw new Error(
+          `Execution lease claim was rejected (${budgetCode}).`,
+          { cause: error }
+        )
+      }
+      throw new Error('Execution lease claim was rejected.', { cause: error })
     }
 
     const claimedLease = await this.getExecutionLease(input.leaseId)

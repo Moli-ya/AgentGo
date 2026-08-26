@@ -61,7 +61,7 @@ function makeWire(path = '/root'): MaterializedWireRequest {
     url: 'http://127.0.0.1:3100' + path,
     headers: Object.freeze([
       Object.freeze({ name: 'accept', value: 'text/plain' }),
-      Object.freeze({ name: 'user-agent', value: 'AgentGo-Day5-Test' })
+      Object.freeze({ name: 'user-agent', value: 'AgentGo-Execution-Test' })
     ])
   })
 }
@@ -263,6 +263,22 @@ function makeContext(
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: true,
       allowLoopbackTargets: true,
+      networkEntries: [
+        {
+          id: 'loopback-3100-ip',
+          addressClass: 'loopback',
+          ip: '127.0.0.1',
+          ports: [3100],
+          purpose: 'execution'
+        },
+        {
+          id: 'loopback-3100-host',
+          addressClass: 'loopback',
+          host: 'localhost',
+          ports: [3100],
+          purpose: 'execution'
+        }
+      ],
       maxRequestsPerMinute: 20,
       maxConcurrency: 1,
       validFrom: '2020-01-01T00:00:00.000Z',
@@ -276,7 +292,9 @@ function makeContext(
       maxPlanRevisions: 2,
       maxDurationMinutes: 30,
       maxModelTokens: 10_000,
-      maxEstimatedCost: 10
+      maxEstimatedCost: 10,
+      maxRequestBytes: 10 * 1_146_880,
+      maxResponseBytes: 10 * 16_777_216
     },
     requestCount: 0,
     scanId: ids.scan,
@@ -324,7 +342,7 @@ function createFixture(
   const scan = {
     id: ids.scan,
     targetId: ids.target,
-    name: 'Day 5 test scan',
+    name: 'Execution test scan',
     scopeSnapshotId: ids.scope,
     status: 'running',
     phase: 'active-validation',
@@ -336,10 +354,12 @@ function createFixture(
       maxPlanRevisions: 2,
       maxDurationMinutes: 30,
       maxModelTokens: 10_000,
-      maxEstimatedCost: 10
+      maxEstimatedCost: 10,
+      maxRequestBytes: 10 * 1_146_880,
+      maxResponseBytes: 10 * 16_777_216
     },
     configJson: {
-      description: 'Day 5 authority fixture',
+      description: 'Execution authority fixture',
       families: ['sqli'],
       identityIds: [ids.identity],
       modelProfileIds: {}
@@ -503,7 +523,7 @@ function createFixture(
   }
 }
 
-describe('ExecutionAuthority Day 5 issuance boundary', () => {
+describe('ExecutionAuthority issuance boundary', () => {
   it('rejects an integrity key whose overridden length hides a one-byte backing store', async () => {
     const fixture = createFixture()
     class ForgedKey extends Uint8Array {

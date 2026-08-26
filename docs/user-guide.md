@@ -25,7 +25,7 @@ pnpm dev
 免安装构建位于 `release/win-unpacked/AgentGo.exe`，NSIS 安装器由 `pnpm dist:win` 生成。XSS 隔离验证会调用系统 Microsoft Edge 或 Google Chrome；浏览器只用于断网渲染已取得的 HTML，不会从页面继续发起网络请求。
 
 首次启动会自动完成数据库迁移、内置知识索引和五个本地确定性模型 Profile
-的初始化。migration `0010` 会为 Day4 protected-original 后端建立独立加密
+的初始化。migration `0010` 会为 protected-original 后端建立独立加密
 封套；它不会把既有普通 Evidence 重新标记成受保护原件。
 
 ## 3. 工作区与安全自检
@@ -116,16 +116,16 @@ MCP Token、环境变量和自定义请求头只进入 `safeStorage`，SQLite �
 扫描详情显示阶段事件、发现的接口、证据数量和 Findings。普通 Evidence
 采用内容寻址和 SHA-256 完整性校验，只保存已脱敏内容。
 
-Day4 已具备 protected-original 后端：获准原件必须携带完整 capture
+系统已具备 protected-original 后端：获准原件必须携带完整 capture
 context/decision，由随机数据密钥执行 AES-256-GCM，再用操作系统安全存储
 封装该密钥；磁盘只保存内容寻址 ciphertext。普通读取、桌面 Renderer、
 报告和导出都不能查看原件，只能使用不含内容的 metadata-only redacted
 derivative。系统按 scan/workspace 检查配额，并在 retention 到期时先
 crypto-erase wrapped key、再清理 ciphertext，同时写入审计。
 
-这不表示当前在线扫描已保存 DOM 或截图。Day5 实际执行仍固定保存
+这不表示当前在线扫描已保存 DOM 或截图。实际执行仍固定保存
 hash-only 摘要；真实 DOM/截图采集、与 Lease 的 provenance 绑定及确认规则
-接线属于 Day18。因此当前 XSS 即使观察到 marker executed，只要缺少该证据
+尚未接入。因此当前 XSS 即使观察到 marker executed，只要缺少该证据
 链仍显示 `Inconclusive`。任何单次异常都只能形成 Signal，不能直接成为
 Confirmed。
 
@@ -170,7 +170,7 @@ Confirmed。
 
 ### XSS 已观察到 marker executed，为什么仍是 Inconclusive
 
-Day4 提供的是受保护原件的后端存储能力；Day5 在线执行仍只生成 hash-only
-Browser 摘要。真实 DOM/截图及其 Lease provenance 尚未接入当前确认链，
-该工作属于 Day18。在缺少可复核在线证据时，系统必须保持
+受保护原件后端已经可以加密保存获准材料；当前在线执行仍只生成 hash-only
+Browser 摘要。真实 DOM/截图及其 Lease provenance 尚未接入当前确认链。
+在缺少可复核在线证据时，系统必须保持
 `Inconclusive`，不能因为后端能够加密保存原件就自动升级为 Confirmed。

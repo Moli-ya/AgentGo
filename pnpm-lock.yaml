@@ -170,6 +170,9 @@ importers:
       '@agentgo/domain':
         specifier: workspace:*
         version: link:../domain
+      '@agentgo/security-policy':
+        specifier: workspace:*
+        version: link:../security-policy
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2
@@ -204,6 +207,9 @@ importers:
       '@agentgo/db':
         specifier: workspace:*
         version: link:../db
+      '@agentgo/domain':
+        specifier: workspace:*
+        version: link:../domain
       '@agentgo/http-runner':
         specifier: workspace:*
         version: link:../http-runner

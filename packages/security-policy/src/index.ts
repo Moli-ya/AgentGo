@@ -1,11 +1,20 @@
+import { createHash } from 'node:crypto'
+import { isIP } from 'node:net'
 import {
   ProbeActionSchema,
   TargetScopeSchema,
   type PolicyDecision,
   type ProbeAction,
+  type ScopeNetworkEntry,
   type TargetScope
 } from '@agentgo/contracts'
-import { isIP } from 'node:net'
+import { canonicalizeTargetUrl } from './canonicalize-url'
+
+export {
+  canonicalizeTargetUrl,
+  type CanonicalTargetUrl,
+  type CanonicalTargetUrlResult
+} from './canonicalize-url'
 
 export {
   BUILT_IN_PROBE_CAPABILITY_DESCRIPTORS,
@@ -16,6 +25,13 @@ export {
   type ProbeCapabilityDescriptor,
   type ProbeCapabilityRiskFloor
 } from './probe-capability-catalog'
+
+export const NETWORK_ENTRY_PURPOSE_EXECUTION = 'execution'
+export const NETWORK_ENTRY_PURPOSE_SSRF_TARGET = 'ssrf-target'
+
+export type NetworkAuthorizationPurpose =
+  | typeof NETWORK_ENTRY_PURPOSE_EXECUTION
+  | typeof NETWORK_ENTRY_PURPOSE_SSRF_TARGET
 
 const destructiveIndicators = [
   /\b(?:drop|truncate|alter)\s+(?:database|schema|table)\b/i,
@@ -130,22 +146,13 @@ export function evaluateProbe(
   const action: ProbeAction = actionResult.data
   const scope: TargetScope = scopeResult.data
 
-  let target: URL
-  try {
-    target = new URL(action.targetUrl)
-  } catch {
-    return deny('invalid-target', '目标 URL 无法解析。')
+  const canonical = canonicalizeTargetUrl(action.targetUrl)
+  if (!canonical.ok) {
+    return deny('url-canonicalization-failed', canonical.reason)
   }
 
-  if (target.username || target.password) {
-    return deny('invalid-target', '目标 URL 不得包含 userinfo 或凭据。')
-  }
-
-  const normalizedTarget = target.toString()
-
-  if (!['http:', 'https:'].includes(target.protocol)) {
-    return deny('invalid-target', '只允许 HTTP 或 HTTPS Web 目标。', normalizedTarget)
-  }
+  const target = canonical.value.url
+  const normalizedTarget = canonical.value.href
 
   if (scope.validFrom && Date.parse(scope.validFrom) > Date.now()) {
     return deny('scope-not-yet-valid', '授权范围尚未生效。', normalizedTarget)
@@ -396,8 +403,22 @@ export function classifyNetworkAddress(address: string): NetworkAddressClass {
   if (version !== 6) return 'invalid'
 
   const normalized = address.toLowerCase().split('%')[0] ?? address.toLowerCase()
-  if (normalized === '::1') return 'loopback'
-  if (normalized === '::') return 'unspecified'
+  const words = expandIpv6(normalized)
+  if (
+    words &&
+    words.length === 8 &&
+    words.slice(0, 7).every((word) => word === 0) &&
+    words[7] === 1
+  ) {
+    return 'loopback'
+  }
+  if (
+    words &&
+    words.length === 8 &&
+    words.every((word) => word === 0)
+  ) {
+    return 'unspecified'
+  }
   const mappedIpv4Address = extractMappedIpv4Address(normalized)
   if (mappedIpv4Address) return classifyIpv4(mappedIpv4Address)
   if (normalized.startsWith('fc') || normalized.startsWith('fd')) return 'private'
@@ -407,20 +428,140 @@ export function classifyNetworkAddress(address: string): NetworkAddressClass {
   return 'public'
 }
 
-export function evaluateResolvedAddresses(
-  addresses: string[],
-  scopeInput: unknown
+const PERMANENTLY_DENIED_ADDRESS_CLASSES = new Set<NetworkAddressClass>([
+  'metadata',
+  'invalid',
+  'unspecified',
+  'multicast'
+])
+
+const ENTRY_GATED_ADDRESS_CLASSES = new Set<NetworkAddressClass>([
+  'private',
+  'loopback',
+  'link-local',
+  'reserved'
+])
+
+export interface ResolvedAddressAuthorizationInput {
+  readonly hostname: string
+  readonly port: number
+  readonly addresses: readonly string[]
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '')
+}
+
+function ipv4ToInt(address: string): number | undefined {
+  const parts = address.split('.').map(Number)
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return undefined
+  }
+  const [a = 0, b = 0, c = 0, d = 0] = parts
+  return ((a << 24) | (b << 16) | (c << 8) | d) >>> 0
+}
+
+function ipEquals(left: string, right: string): boolean {
+  const leftVersion = isIP(left)
+  const rightVersion = isIP(right)
+  if (leftVersion === 0 || leftVersion !== rightVersion) return false
+  if (leftVersion === 4) return ipv4ToInt(left) === ipv4ToInt(right)
+  const leftWords = expandIpv6(left.toLowerCase().split('%')[0] ?? left)
+  const rightWords = expandIpv6(right.toLowerCase().split('%')[0] ?? right)
+  return Boolean(
+    leftWords &&
+      rightWords &&
+      leftWords.length === 8 &&
+      rightWords.length === 8 &&
+      leftWords.every((word, index) => word === rightWords[index])
+  )
+}
+
+function ipInCidr(address: string, cidr: string): boolean {
+  const [base, bitsRaw] = cidr.split('/')
+  const bits = Number(bitsRaw)
+  if (!base || !Number.isInteger(bits) || bits < 0) return false
+  if (isIP(base) === 4 && isIP(address) === 4) {
+    if (bits > 32) return false
+    const addressInt = ipv4ToInt(address)
+    const baseInt = ipv4ToInt(base)
+    if (addressInt === undefined || baseInt === undefined) return false
+    if (bits === 0) return true
+    const mask = bits === 32 ? 0xffffffff : (~((1 << (32 - bits)) - 1)) >>> 0
+    return (addressInt & mask) === (baseInt & mask)
+  }
+  if (isIP(base) === 6 && isIP(address) === 6) {
+    if (bits > 128) return false
+    const addressWords = expandIpv6(
+      address.toLowerCase().split('%')[0] ?? address
+    )
+    const baseWords = expandIpv6(base.toLowerCase().split('%')[0] ?? base)
+    if (!addressWords || !baseWords) return false
+    if (bits === 0) return true
+    let remaining = bits
+    for (let index = 0; index < 8; index += 1) {
+      const take = Math.min(16, remaining)
+      if (take === 0) return true
+      const mask = (0xffff << (16 - take)) & 0xffff
+      if ((addressWords[index]! & mask) !== (baseWords[index]! & mask)) {
+        return false
+      }
+      remaining -= take
+    }
+    return true
+  }
+  return false
+}
+
+function entryMatchesHop(
+  entry: ScopeNetworkEntry,
+  hostname: string,
+  port: number,
+  address: string,
+  classification: NetworkAddressClass
+): boolean {
+  if (entry.addressClass !== classification) return false
+  if (!entry.ports.includes(port)) return false
+  const normalizedHost = normalizeHostname(hostname)
+  if (entry.host && normalizeHostname(entry.host) !== normalizedHost) {
+    return false
+  }
+  if (entry.ip && !ipEquals(entry.ip, address)) {
+    return false
+  }
+  if (entry.cidr && !ipInCidr(address, entry.cidr)) {
+    return false
+  }
+  return Boolean(entry.host || entry.ip || entry.cidr)
+}
+
+function evaluateAddressesForPurpose(
+  input: ResolvedAddressAuthorizationInput,
+  scopeInput: unknown,
+  purpose: NetworkAuthorizationPurpose
 ): PolicyDecision {
   const scopeResult = TargetScopeSchema.safeParse(scopeInput)
   if (!scopeResult.success) {
     return deny('out-of-scope', '授权范围配置无效。')
   }
-  if (addresses.length === 0) {
+  if (
+    typeof input.hostname !== 'string' ||
+    input.hostname.trim() === '' ||
+    !Number.isInteger(input.port) ||
+    input.port < 1 ||
+    input.port > 65_535 ||
+    !Array.isArray(input.addresses) ||
+    input.addresses.length === 0
+  ) {
     return deny('invalid-target', '目标主机未解析到可验证地址。')
   }
 
   const scope = scopeResult.data
-  for (const address of addresses) {
+  const hostname = normalizeHostname(input.hostname)
+  for (const address of input.addresses) {
     const classification = classifyNetworkAddress(address)
     if (classification === 'metadata') {
       return deny(
@@ -428,25 +569,30 @@ export function evaluateResolvedAddresses(
         `地址 ${address} 属于云元数据端点，永久禁止访问。`
       )
     }
-    if (['invalid', 'unspecified', 'multicast'].includes(classification)) {
+    if (PERMANENTLY_DENIED_ADDRESS_CLASSES.has(classification)) {
       return deny(
         'network-address-blocked',
         `地址 ${address} 的网络类别为 ${classification}，默认永久禁止访问。`
       )
     }
-    if (classification === 'loopback' && !scope.allowLoopbackTargets) {
+    if (classification === 'public') {
+      continue
+    }
+    if (!ENTRY_GATED_ADDRESS_CLASSES.has(classification)) {
       return deny(
         'network-address-blocked',
-        `地址 ${address} 属于回环网络，当前 scope 未显式授权。`
+        `地址 ${address} 的网络类别为 ${classification}，默认永久禁止访问。`
       )
     }
-    if (
-      ['private', 'link-local', 'reserved'].includes(classification) &&
-      !scope.allowPrivateNetworkTargets
-    ) {
+    const authorized = scope.networkEntries.some(
+      (entry) =>
+        entry.purpose === purpose &&
+        entryMatchesHop(entry, hostname, input.port, address, classification)
+    )
+    if (!authorized) {
       return deny(
-        'network-address-blocked',
-        `地址 ${address} 的网络类别为 ${classification}，当前 scope 未显式授权。`
+        'network-target-not-authorized',
+        `地址 ${address} 的网络类别为 ${classification}，当前 scope 未列出精确的 host/IP/CIDR、端口与用途授权。`
       )
     }
   }
@@ -456,5 +602,159 @@ export function evaluateResolvedAddresses(
     requiresApproval: false,
     code: 'allowed',
     reasons: ['目标解析地址符合当前 scope 的网络边界。']
+  }
+}
+
+export function evaluateExecutionAddresses(
+  input: ResolvedAddressAuthorizationInput,
+  scopeInput: unknown
+): PolicyDecision {
+  return evaluateAddressesForPurpose(
+    input,
+    scopeInput,
+    NETWORK_ENTRY_PURPOSE_EXECUTION
+  )
+}
+
+export function evaluateSsrfTargetAddresses(
+  input: ResolvedAddressAuthorizationInput,
+  scopeInput: unknown
+): PolicyDecision {
+  return evaluateAddressesForPurpose(
+    input,
+    scopeInput,
+    NETWORK_ENTRY_PURPOSE_SSRF_TARGET
+  )
+}
+
+export function evaluateResolvedAddresses(
+  addresses: string[],
+  scopeInput: unknown,
+  context?: { hostname: string; port: number }
+): PolicyDecision {
+  if (!context) {
+    const scopeResult = TargetScopeSchema.safeParse(scopeInput)
+    if (!scopeResult.success) {
+      return deny('out-of-scope', '授权范围配置无效。')
+    }
+    if (addresses.length === 0) {
+      return deny('invalid-target', '目标主机未解析到可验证地址。')
+    }
+    for (const address of addresses) {
+      const classification = classifyNetworkAddress(address)
+      if (classification !== 'public') {
+        return deny(
+          classification === 'metadata' ||
+            PERMANENTLY_DENIED_ADDRESS_CLASSES.has(classification)
+            ? 'network-address-blocked'
+            : 'network-target-not-authorized',
+          `地址 ${address} 的网络类别为 ${classification}，缺少精确网络条目授权。`
+        )
+      }
+    }
+    return {
+      allowed: true,
+      requiresApproval: false,
+      code: 'allowed',
+      reasons: ['目标解析地址符合当前 scope 的网络边界。']
+    }
+  }
+  return evaluateExecutionAddresses(
+    {
+      hostname: context.hostname,
+      port: context.port,
+      addresses
+    },
+    scopeInput
+  )
+}
+
+function networkEntryId(entry: Omit<ScopeNetworkEntry, 'id'>): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        addressClass: entry.addressClass,
+        host: entry.host ?? null,
+        ip: entry.ip ?? null,
+        cidr: entry.cidr ?? null,
+        ports: [...entry.ports].sort((left, right) => left - right),
+        purpose: entry.purpose
+      })
+    )
+    .digest('hex')
+    .slice(0, 32)
+}
+
+const DERIVED_NETWORK_ENTRY_PURPOSES = [
+  NETWORK_ENTRY_PURPOSE_EXECUTION,
+  NETWORK_ENTRY_PURPOSE_SSRF_TARGET
+] as const
+
+function rememberDerivedEntry(
+  derived: Map<string, ScopeNetworkEntry>,
+  entry: Omit<ScopeNetworkEntry, 'id'>
+): void {
+  const id = networkEntryId(entry)
+  derived.set(id, { id, ...entry })
+}
+
+export function deriveScopeNetworkEntriesFromOrigins(
+  origins: readonly string[]
+): ScopeNetworkEntry[] {
+  const derived = new Map<string, ScopeNetworkEntry>()
+  for (const origin of origins) {
+    let url: URL
+    try {
+      url = new URL(origin)
+    } catch {
+      continue
+    }
+    const port = Number(
+      url.port || (url.protocol === 'https:' ? '443' : '80')
+    )
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) continue
+    const host = normalizeHostname(url.hostname)
+    if (host === 'localhost' || host.endsWith('.localhost')) {
+      for (const purpose of DERIVED_NETWORK_ENTRY_PURPOSES) {
+        rememberDerivedEntry(derived, {
+          addressClass: 'loopback',
+          host,
+          ports: [port],
+          purpose
+        })
+      }
+      continue
+    }
+    if (isIP(host) === 0) continue
+    const classification = classifyNetworkAddress(host)
+    if (
+      classification !== 'private' &&
+      classification !== 'loopback' &&
+      classification !== 'link-local' &&
+      classification !== 'reserved'
+    ) {
+      continue
+    }
+    for (const purpose of DERIVED_NETWORK_ENTRY_PURPOSES) {
+      rememberDerivedEntry(derived, {
+        addressClass: classification,
+        ip: host,
+        ports: [port],
+        purpose
+      })
+    }
+  }
+  return [...derived.values()].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+export function stabilizeScopeNetworkEntries(
+  scope: Omit<TargetScope, 'id'>
+): Omit<TargetScope, 'id'> {
+  if (scope.networkEntries.length > 0) {
+    return scope
+  }
+  return {
+    ...scope,
+    networkEntries: deriveScopeNetworkEntriesFromOrigins(scope.allowedOrigins)
   }
 }

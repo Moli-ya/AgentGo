@@ -236,7 +236,7 @@ export interface ProbeRequestCompilerInput {
   readonly sessionRef?: SessionGenerationRef
   readonly testObjectRef?: TestObjectRef
   /**
-   * Day 4 compilation may remain execution-agnostic. Day 5 issuance must
+   * Request compilation may remain execution-agnostic. Grant issuance must
    * supply this immutable binding and independently reconstruct it.
    */
   readonly executionBinding?: WireRequestExecutionBinding

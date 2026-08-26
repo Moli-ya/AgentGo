@@ -13,6 +13,7 @@ import {
   TargetSchema,
   type TargetScope
 } from '@agentgo/contracts'
+import { deriveScopeNetworkEntriesFromOrigins } from '@agentgo/security-policy'
 import {
   applyDatabaseMigrations,
   openAgentGoDatabase
@@ -56,6 +57,7 @@ function scopeInput(
     allowSensitiveProbing: false,
     allowPrivateNetworkTargets: false,
     allowLoopbackTargets: false,
+    networkEntries: [],
     maxRequestsPerMinute: 20,
     maxConcurrency: 1,
     ...overrides
@@ -205,7 +207,95 @@ function createLegacyDatabaseWithSameMillisecondScopes(filePath: string): void {
   database.close()
 }
 
-function createDay2InventoryLegacyDatabase(filePath: string): void {
+function createLegacyDatabaseWithDuplicateLoopbackScopes(filePath: string): void {
+  const database = new DatabaseSync(filePath, {
+    enableForeignKeyConstraints: true
+  })
+  database.exec(`
+    CREATE TABLE __agentgo_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at INTEGER NOT NULL
+    );
+  `)
+  const recordMigration = database.prepare(
+    'INSERT INTO __agentgo_migrations (id, applied_at) VALUES (?, ?)'
+  )
+  for (const migration of DATABASE_MIGRATIONS.slice(0, 4)) {
+    database.exec(migration.sql)
+    recordMigration.run(migration.id, 1_783_920_144_304)
+  }
+
+  database.prepare(
+    `INSERT INTO workspaces (id, name, description, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run('workspace-dup', 'Synthetic duplicate-origin workspace', '', 1, 1)
+  const insertTarget = database.prepare(
+    `INSERT INTO targets (
+       id, workspace_id, name, base_url, description,
+       authorization_reference, default_identity_id, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  const baseUrlByTarget: Record<string, string> = {
+    'target-dup-a': 'http://127.0.0.1:8080/',
+    'target-dup-b': 'http://127.0.0.1:8081/'
+  }
+  for (const targetId of ['target-dup-a', 'target-dup-b']) {
+    insertTarget.run(
+      targetId,
+      'workspace-dup',
+      'Duplicate-origin target',
+      baseUrlByTarget[targetId]!,
+      '',
+      'synthetic-test-authorization',
+      null,
+      1,
+      1
+    )
+  }
+  const insertScope = database.prepare(
+    `INSERT INTO target_scopes (
+       id, target_id, allowed_origins, allowed_path_prefixes,
+       denied_path_prefixes, allowed_ports, allowed_identity_ids,
+       allow_active_probing, allow_sensitive_probing,
+       allow_private_network_targets, allow_loopback_targets,
+       max_requests_per_minute, max_concurrency, authorization_reference,
+       valid_from, valid_until, snapshot_hash, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  const scopeValues = [
+    JSON.stringify(['http://127.0.0.1:8080']),
+    JSON.stringify(['/']),
+    JSON.stringify([]),
+    JSON.stringify([8080]),
+    JSON.stringify([]),
+    1,
+    0,
+    1,
+    1,
+    20,
+    1,
+    'synthetic-test-authorization',
+    null,
+    null
+  ] as const
+  insertScope.run(
+    'scope-dup-a',
+    'target-dup-a',
+    ...scopeValues,
+    'c'.repeat(64),
+    1_783_920_144_304
+  )
+  insertScope.run(
+    'scope-dup-b',
+    'target-dup-b',
+    ...scopeValues,
+    'd'.repeat(64),
+    1_783_920_144_304
+  )
+  database.close()
+}
+
+function createLegacyInventoryDatabase(filePath: string): void {
   const database = new DatabaseSync(filePath, {
     enableForeignKeyConstraints: true
   })
@@ -215,7 +305,7 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
   })
   database.exec(`
     INSERT INTO workspaces (id, name, description, created_at, updated_at)
-    VALUES ('workspace-day2', 'Day2 migration fixture', '', 1, 1);
+    VALUES ('workspace-legacy', 'legacy migration fixture', '', 1, 1);
 
     INSERT INTO targets (
       id, workspace_id, name, base_url, description,
@@ -223,31 +313,31 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       created_at, updated_at
     ) VALUES
       (
-        'target-day2', 'workspace-day2', 'Day2 target',
-        'https://legacy-user:sentinel-target-password@LAB.EXAMPLE.test/base/AbCdEfGhIjKlMnOpQrStUvWxYz012345?token=day3-sentinel-target-token#sentinel-target-fragment',
+        'target-legacy', 'workspace-legacy', 'legacy target',
+        'https://legacy-user:sentinel-target-password@LAB.EXAMPLE.test/base/AbCdEfGhIjKlMnOpQrStUvWxYz012345?token=inventory-sentinel-target-token#sentinel-target-fragment',
         '', 'synthetic-authorization',
         NULL, NULL, 1, 1
       ),
       (
-        'target-day2-collision', 'workspace-day2', 'Day2 target collision',
+        'target-legacy-collision', 'workspace-legacy', 'legacy target collision',
         'https://other-user:must-not-leak@lab.example.test/base/ZyXwVuTsRqPoNmLkJiHgFeDcBa987654?token=must-not-store#must-not-leak-fragment',
         '', 'synthetic-authorization',
         NULL, NULL, 2, 2
       ),
       (
-        'target-day2-benign', 'workspace-day2', 'Day2 benign query target',
+        'target-legacy-benign', 'workspace-legacy', 'legacy benign query target',
         'https://LAB.EXAMPLE.test:443/search?id=1&q=hello&url=agentgo-invalid-url',
         '', 'synthetic-authorization',
         NULL, NULL, 3, 3
       ),
       (
-        'target-day2-credential-host', 'workspace-day2', 'Day2 credential-shaped host',
+        'target-legacy-credential-host', 'workspace-legacy', 'legacy credential-shaped host',
         'https://abcdefgh.ijklmnop.qrstuvwx.example.test/',
         '', 'synthetic-authorization',
         NULL, NULL, 4, 4
       ),
       (
-        'target-day2-invalid', 'workspace-day2', 'Day2 invalid target',
+        'target-legacy-invalid', 'workspace-legacy', 'legacy invalid target',
         'not-a-target-url',
         '', 'synthetic-authorization',
         NULL, NULL, 5, 5
@@ -257,13 +347,13 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       id, workspace_id, scan_id, event, actor, detail_json, created_at
     ) VALUES
       (
-        'audit-target-day2', 'workspace-day2', NULL, 'target.created', 'user',
-        '{"targetId":"target-day2","baseUrl":"https://legacy-user:sentinel-target-password@LAB.EXAMPLE.test/base/AbCdEfGhIjKlMnOpQrStUvWxYz012345?token=day3-sentinel-target-token#sentinel-target-fragment"}',
+        'audit-target-legacy', 'workspace-legacy', NULL, 'target.created', 'user',
+        '{"targetId":"target-legacy","baseUrl":"https://legacy-user:sentinel-target-password@LAB.EXAMPLE.test/base/AbCdEfGhIjKlMnOpQrStUvWxYz012345?token=inventory-sentinel-target-token#sentinel-target-fragment"}',
         1
       ),
       (
-        'audit-target-day2-benign', 'workspace-day2', NULL, 'target.created', 'user',
-        '{"targetId":"target-day2-benign","baseUrl":"https://LAB.EXAMPLE.test:443/search?id=1&q=hello&url=agentgo-invalid-url"}',
+        'audit-target-legacy-benign', 'workspace-legacy', NULL, 'target.created', 'user',
+        '{"targetId":"target-legacy-benign","baseUrl":"https://LAB.EXAMPLE.test:443/search?id=1&q=hello&url=agentgo-invalid-url"}',
         3
       );
 
@@ -275,12 +365,12 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       max_requests_per_minute, max_concurrency, authorization_reference,
       valid_from, valid_until, snapshot_hash, created_at, revision
     ) VALUES (
-      'scope-day2', 'target-day2', '["https://lab.example.test"]', '["/"]',
+      'scope-legacy', 'target-legacy', '["https://lab.example.test"]', '["/"]',
       '[]', '[443]', '[]', 1, 0, 0, 0, 10, 1,
       'synthetic-authorization', NULL, NULL,
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1, 1
     );
-    UPDATE targets SET current_scope_id = 'scope-day2' WHERE id = 'target-day2';
+    UPDATE targets SET current_scope_id = 'scope-legacy' WHERE id = 'target-legacy';
 
     INSERT INTO scans (
       id, target_id, name, scope_snapshot_id, status, phase, progress,
@@ -290,13 +380,13 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       started_at, completed_at
     ) VALUES
       (
-        'scan-day2-a', 'target-day2', 'Legacy scan A', 'scope-day2',
+        'scan-legacy-a', 'target-legacy', 'Legacy scan A', 'scope-legacy',
         'paused', 'discovery', 50, '{}',
         '{"families":["unknown.future","xss","sqli","sqli"]}', '{}', '{}',
         0, 0, 0, 0, NULL, 10, 10, NULL, NULL
       ),
       (
-        'scan-day2-b', 'target-day2', 'Legacy scan B', 'scope-day2',
+        'scan-legacy-b', 'target-legacy', 'Legacy scan B', 'scope-legacy',
         'paused', 'discovery', 50, '{}',
         '{"families":["idor"]}', '{}', '{}',
         0, 0, 0, 0, NULL, 20, 20, NULL, NULL
@@ -307,42 +397,42 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       state_hash, status, created_at, updated_at
     ) VALUES
       (
-        'page-day2-a', 'scan-day2-a',
-        'https://legacy-user:sentinel-page-password@LAB.EXAMPLE.test/landing/AbCdEfGhIjKlMnOpQrStUvWxYz012345?q=sentinel-page-query&token=day3-sentinel-page-token#sentinel-page-fragment',
-        'Authorization: Bearer day3-sentinel-page-title',
+        'page-legacy-a', 'scan-legacy-a',
+        'https://legacy-user:sentinel-page-password@LAB.EXAMPLE.test/landing/AbCdEfGhIjKlMnOpQrStUvWxYz012345?q=sentinel-page-query&token=inventory-sentinel-page-token#sentinel-page-fragment',
+        'Authorization: Bearer inventory-sentinel-page-title',
         0, NULL, NULL, 'done', 1, 1
       ),
       (
-        'page-day2-a-collision', 'scan-day2-a',
+        'page-legacy-a-collision', 'scan-legacy-a',
         'https://other-user:must-not-leak@lab.example.test/landing/ZyXwVuTsRqPoNmLkJiHgFeDcBa987654?token=must-not-store&q=sentinel-page-other#must-not-leak-fragment',
         NULL, 0, NULL, NULL, 'done', 2, 2
       ),
-      ('page-day2-b', 'scan-day2-b', 'https://lab.example.test/other', NULL, 0, NULL, NULL, 'done', 1, 1);
+      ('page-legacy-b', 'scan-legacy-b', 'https://lab.example.test/other', NULL, 0, NULL, NULL, 'done', 1, 1);
 
     INSERT INTO endpoints (
       id, scan_id, page_id, method, url_template, normalized_url,
       content_type, source, status, created_at, updated_at
     ) VALUES
       (
-        'endpoint-day2-a', 'scan-day2-a', 'page-day2-a', 'get',
+        'endpoint-legacy-a', 'scan-legacy-a', 'page-legacy-a', 'get',
         'https://LAB.EXAMPLE.test/search/sentinel-secret-token/abcdefgh.ijklmnop.qrstuvwx/AbCdEfGhIjKlMnOpQrStUvWxYz012345?token=sentinel-query-a&q=one',
         'https://lab.example.test/search/sentinel-secret-token/abcdefgh.ijklmnop.qrstuvwx/AbCdEfGhIjKlMnOpQrStUvWxYz012345?q=one&token=sentinel-query-a',
         'application/json; boundary=sentinel-mime-secret', 'xhr', 'discovered', 10, 10
       ),
       (
-        'endpoint-day2-b', 'scan-day2-a', 'page-day2-a-collision', 'GET',
-        'https://lab.example.test/search/day3-sentinel-credential/ABCDEFGH.IJKLMNOP.QRSTUVWX/ZyXwVuTsRqPoNmLkJiHgFeDcBa987654?q=two&token=sentinel-query-b',
-        'https://lab.example.test/search/day3-sentinel-credential/ABCDEFGH.IJKLMNOP.QRSTUVWX/ZyXwVuTsRqPoNmLkJiHgFeDcBa987654?q=two&token=sentinel-query-b',
+        'endpoint-legacy-b', 'scan-legacy-a', 'page-legacy-a-collision', 'GET',
+        'https://lab.example.test/search/inventory-sentinel-credential/ABCDEFGH.IJKLMNOP.QRSTUVWX/ZyXwVuTsRqPoNmLkJiHgFeDcBa987654?q=two&token=sentinel-query-b',
+        'https://lab.example.test/search/inventory-sentinel-credential/ABCDEFGH.IJKLMNOP.QRSTUVWX/ZyXwVuTsRqPoNmLkJiHgFeDcBa987654?q=two&token=sentinel-query-b',
         'application/graphql', 'form', 'discovered', 20, 20
       ),
       (
-        'endpoint-day2-c', 'scan-day2-b', 'page-day2-b', 'GET',
+        'endpoint-legacy-c', 'scan-legacy-b', 'page-legacy-b', 'GET',
         'https://lab.example.test/same?left=one',
         'https://lab.example.test/same?left=one',
         NULL, 'link', 'discovered', 30, 30
       ),
       (
-        'endpoint-day2-d', 'scan-day2-b', 'page-day2-b', 'get',
+        'endpoint-legacy-d', 'scan-legacy-b', 'page-legacy-b', 'get',
         'https://lab.example.test/same?right=two',
         'https://lab.example.test/same?right=two',
         NULL, 'link', 'discovered', 31, 31
@@ -352,14 +442,14 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       id, endpoint_id, name, location, data_type,
       required, example_masked, created_at
     ) VALUES
-      ('parameter-query-a', 'endpoint-day2-a', 'q', 'query', 'string', 1, 'sentinel-query-a', 10),
-      ('parameter-query-b', 'endpoint-day2-b', 'q', 'query', 'string', 1, 'sentinel-query-b', 20),
-      ('parameter-json', 'endpoint-day2-a', 'profile/token', 'json', 'string', 0, 'sentinel-body', 11),
-      ('parameter-header', 'endpoint-day2-a', 'Bad Header Name', 'header', 'string', 0, 'Bearer sentinel-auth', 12),
-      ('parameter-cookie', 'endpoint-day2-a', 'session', 'cookie', 'string', 0, 'sentinel-cookie', 13),
-      ('parameter-form', 'endpoint-day2-b', 'bad-name', 'form', 'string', 1, 'sentinel-form', 21),
-      ('parameter-left', 'endpoint-day2-c', 'left', 'query', 'string', 1, 'one', 30),
-      ('parameter-right', 'endpoint-day2-d', 'right', 'query', 'string', 1, 'two', 31);
+      ('parameter-query-a', 'endpoint-legacy-a', 'q', 'query', 'string', 1, 'sentinel-query-a', 10),
+      ('parameter-query-b', 'endpoint-legacy-b', 'q', 'query', 'string', 1, 'sentinel-query-b', 20),
+      ('parameter-json', 'endpoint-legacy-a', 'profile/token', 'json', 'string', 0, 'sentinel-body', 11),
+      ('parameter-header', 'endpoint-legacy-a', 'Bad Header Name', 'header', 'string', 0, 'Bearer sentinel-auth', 12),
+      ('parameter-cookie', 'endpoint-legacy-a', 'session', 'cookie', 'string', 0, 'sentinel-cookie', 13),
+      ('parameter-form', 'endpoint-legacy-b', 'bad-name', 'form', 'string', 1, 'sentinel-form', 21),
+      ('parameter-left', 'endpoint-legacy-c', 'left', 'query', 'string', 1, 'one', 30),
+      ('parameter-right', 'endpoint-legacy-d', 'right', 'query', 'string', 1, 'two', 31);
 
     INSERT INTO interactions (
       id, scan_id, endpoint_id, identity_id, policy_decision_id,
@@ -367,7 +457,7 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       response_summary_json, status_code, duration_ms,
       state_before_hash, state_after_hash, created_at
     ) VALUES (
-      'interaction-day2', 'scan-day2-a', 'endpoint-day2-b', NULL, NULL,
+      'interaction-legacy', 'scan-legacy-a', 'endpoint-legacy-b', NULL, NULL,
       'request-ref', 'response-ref', '{}', '{}', 200, 1, NULL, NULL, 30
     );
 
@@ -376,14 +466,14 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       identity_id, hypothesis, observed_difference, confidence_hint,
       evidence_refs, status, created_at
     ) VALUES (
-      'signal-day2', 'scan-day2-a', 'interaction-day2', 'sqli',
-      'endpoint-day2-b', 'parameter-query-b', NULL,
+      'signal-legacy', 'scan-legacy-a', 'interaction-legacy', 'sqli',
+      'endpoint-legacy-b', 'parameter-query-b', NULL,
       'synthetic', 'synthetic', 1, '[]', 'new', 31
     );
 
     INSERT INTO confirmation_rules (
       id, version, family, rule_json, required_checks, source_refs, created_at
-    ) VALUES ('rule-day2', '1.0.0', 'sqli', '{}', '[]', '[]', 1);
+    ) VALUES ('rule-legacy', '1.0.0', 'sqli', '{}', '[]', '[]', 1);
 
     INSERT INTO findings (
       id, scan_id, family, title, verdict, status, severity, confidence,
@@ -391,9 +481,9 @@ function createDay2InventoryLegacyDatabase(filePath: string): void {
       confirmation_rule_id, confirmation_rule_version, reproducibility,
       remediation_json, first_seen_at, last_verified_at
     ) VALUES (
-      'finding-day2', 'scan-day2-a', 'sqli', 'Synthetic', 'inconclusive',
-      'draft', 'info', 0, 'endpoint-day2-b', 'parameter-query-b', NULL,
-      NULL, NULL, NULL, 'rule-day2', '1.0.0', 'synthetic', '[]', 31, 31
+      'finding-legacy', 'scan-legacy-a', 'sqli', 'Synthetic', 'inconclusive',
+      'draft', 'info', 0, 'endpoint-legacy-b', 'parameter-query-b', NULL,
+      NULL, NULL, NULL, 'rule-legacy', '1.0.0', 'synthetic', '[]', 31, 31
     );
   `)
   database.close()
@@ -418,7 +508,7 @@ describe('AgentGo SQLite repository', () => {
     expect(workspace?.name).toBe('默认工作区')
 
     const credentialBearingTargetUrl =
-      'https://alice:must-not-leak@lab.example.test/reset/N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa?token=day3-sentinel-target'
+      'https://alice:must-not-leak@lab.example.test/reset/N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa?token=inventory-sentinel-target'
     await expect(
       repository.createTarget({
         workspaceId: workspace!.id,
@@ -452,6 +542,7 @@ describe('AgentGo SQLite repository', () => {
         allowSensitiveProbing: false,
         allowPrivateNetworkTargets: true,
         allowLoopbackTargets: true,
+        networkEntries: [],
         maxRequestsPerMinute: 30,
         maxConcurrency: 2,
         authorizationReference: 'lab-owner-approval-001'
@@ -462,14 +553,14 @@ describe('AgentGo SQLite repository', () => {
     await expect(
       repository.updateTarget({
         id: targetBundle.target.id,
-        baseUrl: 'https://lab.example.test/?password=day3-sentinel-update'
+        baseUrl: 'https://lab.example.test/?password=inventory-sentinel-update'
       })
     ).rejects.toBeDefined()
     expect((await repository.getTarget(targetBundle.target.id))?.baseUrl).toBe(
       'http://127.0.0.1:3000/'
     )
     expect(JSON.stringify(database.native.prepare('SELECT * FROM audit_logs').all())).not.toContain(
-      'day3-sentinel-update'
+      'inventory-sentinel-update'
     )
 
     const identity = await repository.saveIdentity(
@@ -518,7 +609,7 @@ describe('AgentGo SQLite repository', () => {
 
     const page = await repository.upsertPage({
       scanId: scan.id,
-      url: 'http://legacy-user:must-not-leak@127.0.0.1:3000/reset/N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa?token=day3-sentinel-page-token#sentinel-fragment',
+      url: 'http://legacy-user:must-not-leak@127.0.0.1:3000/reset/N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa?token=inventory-sentinel-page-token#sentinel-fragment',
       depth: 0
     })
     expect(page.url).toBe(
@@ -969,11 +1060,61 @@ describe('AgentGo SQLite repository', () => {
     }
   })
 
-  it('migrates and merges Day2 inventory without retaining query or preview secrets', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day3-inventory-'))
+  it('backfills scope-qualified network entries for duplicate legacy origins', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-budget-backfill-'))
     temporaryDirectories.push(directory)
     const filePath = join(directory, 'agentgo.sqlite')
-    createDay2InventoryLegacyDatabase(filePath)
+    createLegacyDatabaseWithDuplicateLoopbackScopes(filePath)
+
+    const database = openAgentGoDatabase(filePath)
+    try {
+      const repository = new AgentGoRepository(database)
+      const derived = deriveScopeNetworkEntriesFromOrigins([
+        'http://127.0.0.1:8080'
+      ])
+      const derivedIdByPurpose = new Map(
+        derived.map((entry) => [entry.purpose, entry.id])
+      )
+      expect(derivedIdByPurpose.size).toBe(2)
+
+      const rows = database.native
+        .prepare(
+          `SELECT id, scope_id, purpose
+           FROM target_scope_network_entries
+           ORDER BY scope_id, purpose`
+        )
+        .all() as Array<{ id: string; scope_id: string; purpose: string }>
+      expect(rows).toHaveLength(4)
+      for (const scopeId of ['scope-dup-a', 'scope-dup-b']) {
+        const scoped = rows.filter((row) => row.scope_id === scopeId)
+        expect(scoped.map((row) => row.purpose)).toEqual([
+          'execution',
+          'ssrf-target'
+        ])
+        for (const row of scoped) {
+          const derivedId = derivedIdByPurpose.get(
+            row.purpose as 'execution' | 'ssrf-target'
+          )
+          expect(row.id).toBe(
+            createHash('sha256').update(`${scopeId}:${derivedId}`).digest('hex')
+          )
+        }
+      }
+
+      const scopeA = await repository.getScope('scope-dup-a')
+      const scopeB = await repository.getScope('scope-dup-b')
+      expect(scopeA?.networkEntries).toHaveLength(2)
+      expect(scopeB?.networkEntries).toHaveLength(2)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('migrates and merges legacy inventory without retaining query or preview secrets', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-inventory-migrate-'))
+    temporaryDirectories.push(directory)
+    const filePath = join(directory, 'agentgo.sqlite')
+    createLegacyInventoryDatabase(filePath)
 
     const database = openAgentGoDatabase(filePath)
     try {
@@ -983,12 +1124,12 @@ describe('AgentGo SQLite repository', () => {
             `SELECT id, method, url_template, normalized_url,
                     canonical_route, content_type, lifecycle_status
              FROM endpoints
-             WHERE scan_id = 'scan-day2-a'`
+             WHERE scan_id = 'scan-legacy-a'`
           )
           .all()
       ).toEqual([
         {
-          id: 'endpoint-day2-a',
+          id: 'endpoint-legacy-a',
           method: 'GET',
           url_template: 'https://lab.example.test/search/:redacted/:redacted/:redacted',
           normalized_url: 'https://lab.example.test/search/:redacted/:redacted/:redacted',
@@ -1002,13 +1143,13 @@ describe('AgentGo SQLite repository', () => {
         .prepare(
           `SELECT id, url, title
            FROM pages
-           WHERE scan_id = 'scan-day2-a'
+           WHERE scan_id = 'scan-legacy-a'
            ORDER BY id ASC`
         )
         .all() as unknown as Array<{ id: string; url: string; title: string | null }>
       expect(migratedPages.map(({ id }) => id)).toEqual([
-        'page-day2-a',
-        'page-day2-a-collision'
+        'page-legacy-a',
+        'page-legacy-a-collision'
       ])
       expect(new Set(migratedPages.map(({ url }) => url)).size).toBe(2)
       for (const { url } of migratedPages) {
@@ -1026,40 +1167,40 @@ describe('AgentGo SQLite repository', () => {
       expect(JSON.stringify(migratedPages)).not.toMatch(
         /sentinel|must-not|AbCdEfGhIjKlMnOpQrStUvWxYz012345|ZyXwVuTsRqPoNmLkJiHgFeDcBa987654/iu
       )
-      expect(migratedPages.find(({ id }) => id === 'page-day2-a')?.title).toContain(
+      expect(migratedPages.find(({ id }) => id === 'page-legacy-a')?.title).toContain(
         '[REDACTED]'
       )
       const migratedTargets = database.native
         .prepare(
           `SELECT id, base_url
            FROM targets
-           WHERE workspace_id = 'workspace-day2'
+           WHERE workspace_id = 'workspace-legacy'
            ORDER BY id ASC`
         )
         .all()
       expect(migratedTargets).toEqual([
         {
-          id: 'target-day2',
+          id: 'target-legacy',
           base_url:
             'https://legacy-target-review.invalid/reconfigure/required/instance-1'
         },
         {
-          id: 'target-day2-benign',
+          id: 'target-legacy-benign',
           base_url:
             'https://lab.example.test/search?id=1&q=hello&url=agentgo-invalid-url'
         },
         {
-          id: 'target-day2-collision',
+          id: 'target-legacy-collision',
           base_url:
             'https://legacy-target-review.invalid/reconfigure/required/instance-2'
         },
         {
-          id: 'target-day2-credential-host',
+          id: 'target-legacy-credential-host',
           base_url:
             'https://legacy-target-review.invalid/reconfigure/required/instance-3'
         },
         {
-          id: 'target-day2-invalid',
+          id: 'target-legacy-invalid',
           base_url:
             'https://legacy-target-review.invalid/reconfigure/required/instance-4'
         }
@@ -1068,14 +1209,14 @@ describe('AgentGo SQLite repository', () => {
         migratedTargets.length
       )
       const benignTarget = migratedTargets.find(
-        (row) => (row as { id: string }).id === 'target-day2-benign'
+        (row) => (row as { id: string }).id === 'target-legacy-benign'
       ) as { id: string; base_url: string } | undefined
       expect(benignTarget?.base_url).toBe(
         'https://lab.example.test/search?id=1&q=hello&url=agentgo-invalid-url'
       )
       expect(
         migratedTargets
-          .filter((row) => (row as { id: string }).id !== 'target-day2-benign')
+          .filter((row) => (row as { id: string }).id !== 'target-legacy-benign')
           .every((row) => {
             const url = new URL((row as { base_url: string }).base_url)
             return (
@@ -1092,11 +1233,11 @@ describe('AgentGo SQLite repository', () => {
           (
             database.native
               .prepare('SELECT detail_json FROM audit_logs WHERE id = ?')
-              .get('audit-target-day2') as { detail_json: string }
+              .get('audit-target-legacy') as { detail_json: string }
           ).detail_json
         )
       ).toMatchObject({
-        targetId: 'target-day2',
+        targetId: 'target-legacy',
         baseUrl:
           'https://legacy-target-review.invalid/reconfigure/required/instance-1'
       })
@@ -1105,11 +1246,11 @@ describe('AgentGo SQLite repository', () => {
           (
             database.native
               .prepare('SELECT detail_json FROM audit_logs WHERE id = ?')
-              .get('audit-target-day2-benign') as { detail_json: string }
+              .get('audit-target-legacy-benign') as { detail_json: string }
           ).detail_json
         )
       ).toMatchObject({
-        targetId: 'target-day2-benign',
+        targetId: 'target-legacy-benign',
         baseUrl: 'https://lab.example.test/search?id=1&q=hello&url=agentgo-invalid-url'
       })
 
@@ -1120,7 +1261,7 @@ describe('AgentGo SQLite repository', () => {
                    template_version, required_capability_ids_json, review_status,
                   execution_class, lifecycle_status
            FROM request_variants
-           WHERE scan_id = 'scan-day2-a'
+           WHERE scan_id = 'scan-legacy-a'
            ORDER BY codec ASC`
         )
         .all() as unknown as Array<Record<string, string>>
@@ -1159,7 +1300,7 @@ describe('AgentGo SQLite repository', () => {
         .prepare(
           `SELECT kind, selector_json
            FROM request_variant_selectors
-           WHERE scan_id = 'scan-day2-a'
+           WHERE scan_id = 'scan-legacy-a'
            ORDER BY kind ASC, selector_json ASC`
         )
         .all() as unknown as Array<{ kind: string; selector_json: string }>
@@ -1189,7 +1330,7 @@ describe('AgentGo SQLite repository', () => {
                   allowed_headers_json, template_version,
                   required_capability_ids_json, structure_hash
            FROM request_variants
-           WHERE scan_id = 'scan-day2-b'
+           WHERE scan_id = 'scan-legacy-b'
            ORDER BY id ASC`
         )
         .all() as unknown as Array<Record<string, string | null>>
@@ -1233,7 +1374,7 @@ describe('AgentGo SQLite repository', () => {
           .prepare(
           `SELECT source_type, confidence_ppm, initiator, review_status
              FROM inventory_sources
-             WHERE scan_id = 'scan-day2-a'
+             WHERE scan_id = 'scan-legacy-a'
              ORDER BY source_type ASC`
           )
           .all()
@@ -1254,24 +1395,24 @@ describe('AgentGo SQLite repository', () => {
       expect(
         database.native
           .prepare('SELECT endpoint_id, parameter_id FROM signals WHERE id = ?')
-          .get('signal-day2')
+          .get('signal-legacy')
       ).toEqual({
-        endpoint_id: 'endpoint-day2-a',
+        endpoint_id: 'endpoint-legacy-a',
         parameter_id: 'parameter-query-a'
       })
       expect(
         database.native
           .prepare('SELECT endpoint_id, parameter_id FROM findings WHERE id = ?')
-          .get('finding-day2')
+          .get('finding-legacy')
       ).toEqual({
-        endpoint_id: 'endpoint-day2-a',
+        endpoint_id: 'endpoint-legacy-a',
         parameter_id: 'parameter-query-a'
       })
       expect(
         database.native
           .prepare('SELECT endpoint_id FROM interactions WHERE id = ?')
-          .get('interaction-day2')
-      ).toEqual({ endpoint_id: 'endpoint-day2-a' })
+          .get('interaction-legacy')
+      ).toEqual({ endpoint_id: 'endpoint-legacy-a' })
       expect(
         database.native
           .prepare('SELECT COUNT(*) AS count FROM parameters WHERE example_masked IS NOT NULL')
@@ -1305,7 +1446,7 @@ describe('AgentGo SQLite repository', () => {
                     selected_definitions_hash, registry_snapshot_hash,
                     environment, authorization, snapshot_hash
              FROM scan_module_snapshots
-             WHERE scan_id = 'scan-day2-a'
+             WHERE scan_id = 'scan-legacy-a'
              ORDER BY family_id ASC`
           )
           .all()
@@ -1321,7 +1462,7 @@ describe('AgentGo SQLite repository', () => {
                   selected_capabilities_hash, selected_definitions_hash,
                   registry_snapshot_hash, environment, authorization, snapshot_hash
            FROM scan_module_snapshots
-           WHERE scan_id = 'scan-day2-a' AND family_id = 'sqli'`
+           WHERE scan_id = 'scan-legacy-a' AND family_id = 'sqli'`
         )
         .get() as Record<string, string>
       const snapshotDraft = {
@@ -1364,25 +1505,25 @@ describe('AgentGo SQLite repository', () => {
       )
       expect(snapshot.snapshot_hash).toBe(canonicalTestHash(snapshotDraft))
       const migratedRepository = new AgentGoRepository(database)
-      for (const target of await migratedRepository.listTargets('workspace-day2')) {
+      for (const target of await migratedRepository.listTargets('workspace-legacy')) {
         TargetSchema.parse(target)
       }
       InventoryEndpointRecordSchema.parse(
         await migratedRepository.getInventoryEndpointRecord(
-          'endpoint-day2-a',
-          'scan-day2-a'
+          'endpoint-legacy-a',
+          'scan-legacy-a'
         )
       )
       for (const variant of await migratedRepository.listInventoryRequestVariants(
-        'scan-day2-a'
+        'scan-legacy-a'
       )) {
         RequestVariantRecordSchema.parse(variant)
       }
-      for (const source of await migratedRepository.listInventorySources('scan-day2-a')) {
+      for (const source of await migratedRepository.listInventorySources('scan-legacy-a')) {
         InventorySourceRecordSchema.parse(source)
       }
       for (const moduleSnapshot of await migratedRepository.listScanModuleSnapshots(
-        'scan-day2-a'
+        'scan-legacy-a'
       )) {
         ScanModuleSnapshotRecordSchema.parse(moduleSnapshot)
       }
@@ -1396,12 +1537,12 @@ describe('AgentGo SQLite repository', () => {
       expect(
         reopened.native
           .prepare('SELECT COUNT(*) AS count FROM endpoints WHERE scan_id = ?')
-          .get('scan-day2-a')
+          .get('scan-legacy-a')
       ).toEqual({ count: 1 })
       expect(
         reopened.native
           .prepare('SELECT COUNT(*) AS count FROM inventory_sources WHERE scan_id = ?')
-          .get('scan-day2-a')
+          .get('scan-legacy-a')
       ).toEqual({ count: 2 })
       expect(
         reopened.native
@@ -1414,10 +1555,10 @@ describe('AgentGo SQLite repository', () => {
   })
 
   it('rejects cross-scan inventory links and keeps module snapshots immutable', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day3-guards-'))
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-inventory-guards-'))
     temporaryDirectories.push(directory)
     const filePath = join(directory, 'agentgo.sqlite')
-    createDay2InventoryLegacyDatabase(filePath)
+    createLegacyInventoryDatabase(filePath)
     const database = openAgentGoDatabase(filePath)
     const hash = 'b'.repeat(64)
 
@@ -1433,8 +1574,8 @@ describe('AgentGo SQLite repository', () => {
           )
           .run(
             'endpoint-cross-scan',
-            'scan-day2-b',
-            'page-day2-a',
+            'scan-legacy-b',
+            'page-legacy-a',
             'GET',
             'https://lab.example.test/cross',
             'https://lab.example.test/cross',
@@ -1461,8 +1602,8 @@ describe('AgentGo SQLite repository', () => {
           )
           .run(
             'variant-cross-scan',
-            'scan-day2-b',
-            'endpoint-day2-a',
+            'scan-legacy-b',
+            'endpoint-legacy-a',
             null,
             '{"fields":[],"rootType":"none"}',
             'none',
@@ -1486,7 +1627,7 @@ describe('AgentGo SQLite repository', () => {
       const variantId = (
         database.native
           .prepare('SELECT id FROM request_variants WHERE scan_id = ? LIMIT 1')
-          .get('scan-day2-a') as { id: string }
+          .get('scan-legacy-a') as { id: string }
       ).id
       expect(() =>
         database.native
@@ -1498,7 +1639,7 @@ describe('AgentGo SQLite repository', () => {
           )
           .run(
             'selector-cross-scan',
-            'scan-day2-b',
+            'scan-legacy-b',
             variantId,
             'query',
             '{"kind":"query","name":"q","required":false,"valueType":"string"}',
@@ -1519,8 +1660,8 @@ describe('AgentGo SQLite repository', () => {
           )
           .run(
             'source-cross-scan',
-            'scan-day2-b',
-            'endpoint-day2-a',
+            'scan-legacy-b',
+            'endpoint-legacy-a',
             variantId,
             'test',
             hash,
@@ -1538,7 +1679,7 @@ describe('AgentGo SQLite repository', () => {
       const snapshotId = (
         database.native
           .prepare('SELECT id FROM scan_module_snapshots WHERE scan_id = ?')
-          .get('scan-day2-b') as { id: string }
+          .get('scan-legacy-b') as { id: string }
       ).id
       expect(() =>
         database.native
@@ -1555,7 +1696,7 @@ describe('AgentGo SQLite repository', () => {
           .prepare(
             `SELECT module_snapshots_sealed AS sealed
              FROM scans
-             WHERE id = 'scan-day2-b'`
+             WHERE id = 'scan-legacy-b'`
           )
           .get()
       ).toEqual({ sealed: 1 })
@@ -1564,7 +1705,7 @@ describe('AgentGo SQLite repository', () => {
           .prepare(
             `UPDATE scans
              SET module_snapshots_sealed = 0
-             WHERE id = 'scan-day2-b'`
+             WHERE id = 'scan-legacy-b'`
           )
           .run()
       ).toThrow(/seal is immutable/)
@@ -1596,11 +1737,11 @@ describe('AgentGo SQLite repository', () => {
           .run(snapshotId)
       ).toThrow(/snapshot set is sealed/)
 
-      database.native.prepare('DELETE FROM scans WHERE id = ?').run('scan-day2-b')
+      database.native.prepare('DELETE FROM scans WHERE id = ?').run('scan-legacy-b')
       expect(
         database.native
           .prepare('SELECT COUNT(*) AS count FROM scan_module_snapshots WHERE scan_id = ?')
-          .get('scan-day2-b')
+          .get('scan-legacy-b')
       ).toEqual({ count: 0 })
       expect(database.native.prepare('PRAGMA foreign_key_check').all()).toHaveLength(0)
     } finally {
@@ -1609,10 +1750,10 @@ describe('AgentGo SQLite repository', () => {
   })
 
   it('rolls back all 0006 SQL and data-hook changes when finalization fails', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day3-atomic-'))
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-inventory-atomic-'))
     temporaryDirectories.push(directory)
     const filePath = join(directory, 'agentgo.sqlite')
-    createDay2InventoryLegacyDatabase(filePath)
+    createLegacyInventoryDatabase(filePath)
     const native = new DatabaseSync(filePath, {
       enableForeignKeyConstraints: true
     })
@@ -1658,9 +1799,9 @@ describe('AgentGo SQLite repository', () => {
       expect(
         native
           .prepare('SELECT endpoint_id, parameter_id FROM signals WHERE id = ?')
-          .get('signal-day2')
+          .get('signal-legacy')
       ).toEqual({
-        endpoint_id: 'endpoint-day2-b',
+        endpoint_id: 'endpoint-legacy-b',
         parameter_id: 'parameter-query-b'
       })
     } finally {
@@ -1672,7 +1813,7 @@ describe('AgentGo SQLite repository', () => {
       expect(
         migrated.native
           .prepare('SELECT COUNT(*) AS count FROM endpoints WHERE scan_id = ?')
-          .get('scan-day2-a')
+          .get('scan-legacy-a')
       ).toEqual({ count: 1 })
       expect(
         migrated.native
@@ -1753,6 +1894,7 @@ describe('AgentGo SQLite repository', () => {
         allowSensitiveProbing: false,
         allowPrivateNetworkTargets: false,
         allowLoopbackTargets: false,
+        networkEntries: [],
         maxRequestsPerMinute: 20,
         maxConcurrency: 1
       }
@@ -1842,6 +1984,7 @@ describe('AgentGo SQLite repository', () => {
         allowSensitiveProbing: false,
         allowPrivateNetworkTargets: false,
         allowLoopbackTargets: false,
+        networkEntries: [],
         maxRequestsPerMinute: 10,
         maxConcurrency: 1
       }
@@ -1946,15 +2089,21 @@ describe('AgentGo SQLite repository', () => {
     database.close()
   })
 
-  it('upgrades a Day 5 database to the additive protected Evidence schema exactly once', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'agentgo-day4-migration-'))
+  it('upgrades an execution database to the additive protected Evidence schema exactly once', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentgo-protected-evidence-migration-'))
     temporaryDirectories.push(directory)
     const filePath = join(directory, 'agentgo.sqlite')
     const database = new DatabaseSync(filePath, {
       enableForeignKeyConstraints: true
     })
     try {
-      const previousMigrations = DATABASE_MIGRATIONS.slice(0, -1)
+      const protectedEvidenceIndex = DATABASE_MIGRATIONS.findIndex(
+        (migration) => migration.id === '0010_protected_evidence_envelopes'
+      )
+      const previousMigrations = DATABASE_MIGRATIONS.slice(
+        0,
+        protectedEvidenceIndex
+      )
       applyDatabaseMigrations(database, {
         migrations: previousMigrations,
         appliedAt: () => 1_785_340_800_000

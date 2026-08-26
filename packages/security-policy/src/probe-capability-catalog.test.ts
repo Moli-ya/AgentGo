@@ -9,7 +9,7 @@ import {
 } from './probe-capability-catalog'
 
 describe('ProbeCapabilityCatalog', () => {
-  it('provides the closed Day 2 capability set without implying activation', () => {
+  it('provides the closed built-in capability set without implying activation', () => {
     const expected = [
       'browser.mediated-read',
       'browser.offline-replay',
@@ -147,7 +147,7 @@ describe('ProbeCapabilityCatalog', () => {
     expect(DEFAULT_PROBE_CAPABILITY_CATALOG.get('http.not-registered')).toBeUndefined()
   })
 
-  it('pins the built-in Day 2 catalog snapshot hash', () => {
+  it('pins the built-in catalog snapshot hash', () => {
     expect(DEFAULT_PROBE_CAPABILITY_CATALOG.snapshot().snapshotHash).toBe(
       'd7f3aa70efd0b55c981e7d5a105e097b32c95d558eeb5e7b7645f17e490a2792'
     )

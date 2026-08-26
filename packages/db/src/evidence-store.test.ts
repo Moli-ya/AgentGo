@@ -47,6 +47,7 @@ async function createScanFixture(directory: string): Promise<{
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
+      networkEntries: [],
       maxRequestsPerMinute: 10,
       maxConcurrency: 1
     }
@@ -65,7 +66,9 @@ async function createScanFixture(directory: string): Promise<{
         maxPlanRevisions: 1,
         maxDurationMinutes: 10,
         maxModelTokens: 1_000,
-        maxEstimatedCost: 1
+        maxEstimatedCost: 1,
+        maxRequestBytes: 10 * 1_146_880,
+        maxResponseBytes: 10 * 16_777_216
       }
     },
     {},

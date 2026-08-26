@@ -23,7 +23,7 @@ import {
   AgentGoApplicationService,
   EvidenceCapturePolicy,
   ProtectedEvidenceCaptureService,
-  createDay2VulnerabilityPlatform
+  createVulnerabilityPlatform
 } from './index'
 
 const directories: string[] = []
@@ -74,6 +74,7 @@ async function createFixture() {
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
+      networkEntries: [],
       maxRequestsPerMinute: 10,
       maxConcurrency: 1
     }
@@ -93,7 +94,9 @@ async function createFixture() {
           maxPlanRevisions: 1,
           maxDurationMinutes: 10,
           maxModelTokens: 1_000,
-          maxEstimatedCost: 1
+          maxEstimatedCost: 1,
+          maxRequestBytes: 10 * 1_146_880,
+          maxResponseBytes: 10 * 16_777_216
         }
       },
       {},
@@ -112,7 +115,7 @@ async function createFixture() {
       protector()
     ),
     evidenceStore,
-    vulnerabilityPlatform: createDay2VulnerabilityPlatform(),
+    vulnerabilityPlatform: createVulnerabilityPlatform(),
     vulnerabilityExecutionEnvironment: 'authorized-test-environment'
   })
   return {

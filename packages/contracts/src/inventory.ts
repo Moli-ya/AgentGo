@@ -276,7 +276,7 @@ export const ComponentSubjectRefSchema = z.strictObject({
   version: ModuleVersionSchema.optional()
 })
 
-/** Structured subjects reuse the Day 2 subject-kind and transport vocabulary. */
+/** Structured subjects reuse the module subject-kind and transport vocabulary. */
 export const SubjectRefSchema = z.discriminatedUnion('kind', [
   EndpointSubjectRefSchema,
   SelectorSubjectRefSchema,

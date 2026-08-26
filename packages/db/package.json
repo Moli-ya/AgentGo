@@ -12,6 +12,7 @@
   "dependencies": {
     "@agentgo/contracts": "workspace:*",
     "@agentgo/domain": "workspace:*",
+    "@agentgo/security-policy": "workspace:*",
     "drizzle-orm": "0.45.2"
   },
   "devDependencies": {

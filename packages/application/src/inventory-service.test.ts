@@ -12,9 +12,9 @@ import {
   buildScanModuleSnapshotDrafts,
   computeScanModuleSnapshotHash
 } from './scan-module-snapshot'
-import { createDay2VulnerabilityPlatform } from './vulnerability-platform'
+import { createVulnerabilityPlatform } from './vulnerability-platform'
 
-const sentinel = 'DAY3_SENTINEL_SECRET_must-not-leak'
+const sentinel = 'INVENTORY_SENTINEL_SECRET_must-not-leak'
 const highEntropy = 'N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa'
 const jwt =
   'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkYXkzLXVzZXIifQ.QWx3YXlzUmVkYWN0VGhpc1NpZ25hdHVyZQ'
@@ -48,13 +48,14 @@ async function createScan(
       allowSensitiveProbing: false,
       allowPrivateNetworkTargets: false,
       allowLoopbackTargets: false,
+      networkEntries: [],
       maxRequestsPerMinute: 10,
       maxConcurrency: 1,
       authorizationReference: `inventory-test-${suffix}`
     }
   })
   const plan = createDefaultScanPlan(['sqli'])
-  const platform = createDay2VulnerabilityPlatform()
+  const platform = createVulnerabilityPlatform()
   const snapshots = environment
     ? buildScanModuleSnapshotDrafts(['sqli'], environment, platform).map(
         (draft) => ({
@@ -166,7 +167,7 @@ describe('InventoryService unified write port', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const service = new InventoryService(repository, platform.capabilityCatalog)
     try {
       const firstScan = await createScan(repository, 'first')
@@ -288,7 +289,7 @@ describe('InventoryService unified write port', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const service = new InventoryService(repository, platform.capabilityCatalog)
     try {
       const scan = await createScan(repository, 'secret')
@@ -359,7 +360,7 @@ describe('InventoryService unified write port', () => {
     const repository = new AgentGoRepository(database)
     const service = new InventoryService(
       repository,
-      createDay2VulnerabilityPlatform().capabilityCatalog
+      createVulnerabilityPlatform().capabilityCatalog
     )
     try {
       const scan = await createScan(repository, 'unicode-route')
@@ -389,7 +390,7 @@ describe('InventoryService unified write port', () => {
     const repository = new AgentGoRepository(database)
     const service = new InventoryService(
       repository,
-      createDay2VulnerabilityPlatform().capabilityCatalog
+      createVulnerabilityPlatform().capabilityCatalog
     )
     try {
       const firstScan = await createScan(repository, 'evidence-first')
@@ -422,7 +423,7 @@ describe('InventoryService unified write port', () => {
   it('keeps deterministic execution class separate from review and retirement', async () => {
     const database = openAgentGoDatabase(':memory:')
     const repository = new AgentGoRepository(database)
-    const platform = createDay2VulnerabilityPlatform()
+    const platform = createVulnerabilityPlatform()
     const service = new InventoryService(repository, platform.capabilityCatalog)
     try {
       const scan = await createScan(
@@ -547,7 +548,7 @@ describe('InventoryService unified write port', () => {
     const repository = new AgentGoRepository(database)
     const service = new InventoryService(
       repository,
-      createDay2VulnerabilityPlatform().capabilityCatalog
+      createVulnerabilityPlatform().capabilityCatalog
     )
     try {
       const scan = await createScan(repository, 'variant-execution-url')
@@ -771,7 +772,7 @@ describe('InventoryService unified write port', () => {
       ).toEqual({ title: page.title })
       expect(
         JSON.stringify(database.native.prepare('SELECT title FROM pages').all())
-      ).not.toMatch(/DAY3_SENTINEL_SECRET|must-not-leak|N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa/u)
+      ).not.toMatch(/INVENTORY_SENTINEL_SECRET|must-not-leak|N7vQ2mL9xR4pT8kW3sF6cH1jB5zD0yUa/u)
     } finally {
       database.close()
     }

@@ -28,7 +28,7 @@ const excludedRunnerRoots = runnerBoundaries.map(
 const allowedRunnerImporters = new Set([
   'apps/desktop/src/main/index.ts',
   'packages/application/src/execution-policy.ts',
-  'packages/application/src/execution-service-v2.ts',
+  'packages/application/src/execution-service.ts',
   'packages/evaluation/src/run-local-benchmark.ts'
 ])
 const allowedRunnerDependencyManifests = new Set([

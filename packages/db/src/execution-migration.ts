@@ -1,8 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type { DatabaseMigration } from './migrations'
 
-/** Day 5 capability grants, single-use leases, and immutable audit bindings. */
-export const DAY5_EXECUTION_MIGRATION: DatabaseMigration = {
+/** Capability grants, single-use leases, and immutable audit bindings. */
+export const EXECUTION_GRANTS_AND_LEASES_MIGRATION: DatabaseMigration = {
   id: '0007_execution_grants_and_leases',
   sql: `
 ALTER TABLE policy_decisions
@@ -1641,20 +1641,20 @@ function interruptionFinalizationTriggerSql(
     'CREATE TRIGGER execution_leases_finalization_proof_guard'
   const endMarker =
     'CREATE TRIGGER execution_leases_terminal_delivery_guard'
-  const start = DAY5_EXECUTION_MIGRATION.sql.indexOf(startMarker)
-  const end = DAY5_EXECUTION_MIGRATION.sql.indexOf(endMarker, start)
+  const start = EXECUTION_GRANTS_AND_LEASES_MIGRATION.sql.indexOf(startMarker)
+  const end = EXECUTION_GRANTS_AND_LEASES_MIGRATION.sql.indexOf(endMarker, start)
   if (start < 0 || end <= start) {
     throw new Error(
-      'Day 5 recovery migration could not locate the canonical finalization trigger.'
+      'Execution recovery migration could not locate the canonical finalization trigger.'
     )
   }
-  const required = DAY5_EXECUTION_MIGRATION.sql.slice(start, end).trim()
+  const required = EXECUTION_GRANTS_AND_LEASES_MIGRATION.sql.slice(start, end).trim()
   if (
     !required.includes(REQUIRED_INTERRUPTION_EVIDENCE_CLAUSE) ||
     required.includes(OPTIONAL_INTERRUPTION_EVIDENCE_CLAUSE)
   ) {
     throw new Error(
-      'Day 5 recovery migration canonical finalization trigger is incomplete.'
+      'Execution recovery migration canonical finalization trigger is incomplete.'
     )
   }
   const trigger = required.replace(
@@ -1666,18 +1666,18 @@ function interruptionFinalizationTriggerSql(
     trigger.includes(REQUIRED_INTERRUPTION_EVIDENCE_CLAUSE)
   ) {
     throw new Error(
-      'Day 5 recovery migration did not produce an exact trigger replacement.'
+      'Execution recovery migration did not produce an exact trigger replacement.'
     )
   }
   return trigger
 }
 
 /**
- * Existing Day 5 databases already have the finalization trigger installed,
+ * Existing execution databases already have the finalization trigger installed,
  * so recovery hardening must be a forward migration rather than an edit to
  * migration 0007. The replacement is deliberately exact-match guarded.
  */
-export const DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION: DatabaseMigration = {
+export const EXECUTION_RECOVERY_HARDENING_MIGRATION: DatabaseMigration = {
   id: '0008_execution_recovery_without_artifact',
   sql: 'SELECT 1;',
   dataHook: (database: DatabaseSync): void => {
@@ -1699,7 +1699,7 @@ export const DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION: DatabaseMigration = {
     )
     if (typeof currentSql !== 'string') {
       throw new Error(
-        'Day 5 recovery migration could not verify the finalization trigger.'
+        'Execution recovery migration could not verify the finalization trigger.'
       )
     }
     if (
@@ -1711,7 +1711,7 @@ export const DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION: DatabaseMigration = {
       normalizeTriggerSql(currentSql) !== normalizeTriggerSql(required)
     ) {
       throw new Error(
-        'Day 5 recovery migration could not verify the finalization trigger.'
+        'Execution recovery migration could not verify the finalization trigger.'
       )
     }
     database.exec('DROP TRIGGER execution_leases_finalization_proof_guard')
@@ -1730,7 +1730,7 @@ export const DAY5_EXECUTION_RECOVERY_HARDENING_MIGRATION: DatabaseMigration = {
       normalizeTriggerSql(installed.sql) !== normalizeTriggerSql(optional)
     ) {
       throw new Error(
-        'Day 5 recovery migration did not install the canonical finalization trigger.'
+        'Execution recovery migration did not install the canonical finalization trigger.'
       )
     }
   }
@@ -1753,14 +1753,14 @@ function hardenedExecutionDeliveryTriggerSql(): string {
     `CREATE TRIGGER ${EXECUTION_DELIVERY_TRIGGER_NAME}`
   const endMarker =
     'CREATE TRIGGER execution_leases_finalization_proof_guard'
-  const start = DAY5_EXECUTION_MIGRATION.sql.indexOf(startMarker)
-  const end = DAY5_EXECUTION_MIGRATION.sql.indexOf(endMarker, start)
+  const start = EXECUTION_GRANTS_AND_LEASES_MIGRATION.sql.indexOf(startMarker)
+  const end = EXECUTION_GRANTS_AND_LEASES_MIGRATION.sql.indexOf(endMarker, start)
   if (start < 0 || end <= start) {
     throw new Error(
-      'Day 5 dispatch migration could not locate the canonical delivery trigger.'
+      'Execution dispatch migration could not locate the canonical delivery trigger.'
     )
   }
-  const trigger = DAY5_EXECUTION_MIGRATION.sql.slice(start, end).trim()
+  const trigger = EXECUTION_GRANTS_AND_LEASES_MIGRATION.sql.slice(start, end).trim()
   const requiredClauses = [
     "scan_row.status = 'running'",
     'scan_row.module_snapshots_sealed = 1',
@@ -1774,7 +1774,7 @@ function hardenedExecutionDeliveryTriggerSql(): string {
   ]
   if (requiredClauses.some((clause) => !trigger.includes(clause))) {
     throw new Error(
-      'Day 5 dispatch migration canonical trigger is incomplete.'
+      'Execution dispatch migration canonical trigger is incomplete.'
     )
   }
   return trigger
@@ -1783,10 +1783,10 @@ function hardenedExecutionDeliveryTriggerSql(): string {
 /**
  * Databases that applied an earlier 0007 already recorded that migration and
  * will not observe later trigger hardening in its source text. Replace the
- * known Day 5 delivery guard in a forward migration so dispatch-time
+ * known delivery guard in a forward migration so dispatch-time
  * identity/scope/capability/budget revalidation also protects upgraded DBs.
  */
-export const DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION: DatabaseMigration = {
+export const EXECUTION_DISPATCH_HARDENING_MIGRATION: DatabaseMigration = {
   id: '0009_execution_dispatch_revalidation',
   sql: 'SELECT 1;',
   dataHook: (database: DatabaseSync): void => {
@@ -1825,7 +1825,7 @@ export const DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION: DatabaseMigration = {
       )
     ) {
       throw new Error(
-        'Day 5 dispatch migration could not verify the existing delivery trigger.'
+        'Execution dispatch migration could not verify the existing delivery trigger.'
       )
     }
 
@@ -1856,7 +1856,7 @@ export const DAY5_EXECUTION_DISPATCH_HARDENING_MIGRATION: DatabaseMigration = {
         normalizeTriggerSql(hardened)
     ) {
       throw new Error(
-        'Day 5 dispatch migration did not install the canonical delivery trigger.'
+        'Execution dispatch migration did not install the canonical delivery trigger.'
       )
     }
   }

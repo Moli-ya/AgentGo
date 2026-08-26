@@ -415,7 +415,8 @@ function createRedirectFixture(
   const repository = {
     getExecutionDecision,
     recordToolCall,
-    listLegacyV1ExecutionEndpoints
+    listLegacyV1ExecutionEndpoints,
+    incrementScanSecurityCounter: vi.fn(async () => undefined)
   } as unknown as AgentGoRepository
 
   let evidenceIndex = 0
@@ -707,7 +708,7 @@ function createRedirectFixture(
   }
 }
 
-describe('ExecutionService V2 HTTP redirect boundary', () => {
+describe('ExecutionService HTTP redirect boundary', () => {
   it('revokes an issued lease when malformed output carries a forged claim token', async () => {
     const fixture = createRedirectFixture()
     const forgedClaimToken = Object.freeze(Object.create(null))

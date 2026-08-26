@@ -16,7 +16,7 @@ import {
   PolicyExecutionGuard,
   ProtectedEvidenceRetentionScheduler,
   ReportService,
-  createDay2VulnerabilityPlatform
+  createVulnerabilityPlatform
 } from '@agentgo/application'
 import { createDefaultScanPlan } from '@agentgo/agent-runtime'
 import { PlaywrightBrowserRunner } from '@agentgo/browser-runner'
@@ -65,7 +65,7 @@ import { UndiciHttpRunner } from '@agentgo/http-runner'
 import { DefaultModelGateway } from '@agentgo/model-gateway'
 import { evaluateProbe } from '@agentgo/security-policy'
 
-const vulnerabilityPlatform = createDay2VulnerabilityPlatform()
+const vulnerabilityPlatform = createVulnerabilityPlatform()
 const plan = createDefaultScanPlan(vulnerabilityPlatform.defaultScanFamilies)
 const isSmokeTest = process.env.AGENTGO_SMOKE_TEST === '1'
 const mainDirectory = dirname(fileURLToPath(import.meta.url))
@@ -117,6 +117,7 @@ function runPolicySelfCheck(): PolicySelfCheckResult {
     allowSensitiveProbing: false,
     allowPrivateNetworkTargets: false,
     allowLoopbackTargets: false,
+    networkEntries: [],
     maxRequestsPerMinute: 30,
     maxConcurrency: 2
   }

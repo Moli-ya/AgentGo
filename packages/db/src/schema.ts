@@ -37,6 +37,10 @@ import type {
   KnowledgeImportStatus,
   KnowledgeReviewIssue,
   KnowledgeSourceType,
+  L2ActionBundle,
+  L2BundleState,
+  L2ExecutionFreeze,
+  CleanupReceipt,
   McpAuthType,
   McpPromptSummary,
   McpResourceSummary,
@@ -54,6 +58,7 @@ import type {
   SessionGenerationRef,
   TemplateIntentHash,
   TestObjectRef,
+  TestObject,
   TransportKind,
   VersionedDefinitionRef,
   VulnerabilityFamily,
@@ -206,6 +211,15 @@ export const scans = sqliteTable(
     requestCount: integer('request_count').notNull(),
     modelTokens: integer('model_tokens').notNull(),
     estimatedCostMicros: integer('estimated_cost_micros').notNull(),
+    reservedRequestBytes: integer('reserved_request_bytes').notNull().default(0),
+    reservedResponseBytes: integer('reserved_response_bytes').notNull().default(0),
+    activeConcurrency: integer('active_concurrency').notNull().default(0),
+    securityCountersJson: text('security_counters_json', { mode: 'json' })
+      .$type<Record<string, number>>()
+      .notNull()
+      .default({}),
+    oobPollCount: integer('oob_poll_count').notNull().default(0),
+    browserActionCount: integer('browser_action_count').notNull().default(0),
     checkpointCount: integer('checkpoint_count').notNull(),
     lastError: text('last_error'),
     moduleSnapshotsSealed: integer('module_snapshots_sealed', {
@@ -230,6 +244,50 @@ export const scanIdentities = sqliteTable(
     identityId: text('identity_id').notNull()
   },
   (table) => [primaryKey({ columns: [table.scanId, table.identityId] })]
+)
+
+export const targetScopeNetworkEntries = sqliteTable(
+  'target_scope_network_entries',
+  {
+    id: text('id').primaryKey(),
+    scopeId: text('scope_id').notNull(),
+    addressClass: text('address_class')
+      .$type<'private' | 'loopback' | 'link-local' | 'reserved'>()
+      .notNull(),
+    host: text('host'),
+    ip: text('ip'),
+    cidr: text('cidr'),
+    portsJson: text('ports_json', { mode: 'json' }).$type<number[]>().notNull(),
+    purpose: text('purpose').$type<'execution' | 'ssrf-target'>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('target_scope_network_entries_scope_idx').on(table.scopeId, table.addressClass)]
+)
+
+export const scanBudgetLedger = sqliteTable(
+  'scan_budget_ledger',
+  {
+    id: text('id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    executionLeaseId: text('execution_lease_id').notNull(),
+    identityId: text('identity_id'),
+    techniqueId: text('technique_id'),
+    kind: text('kind').$type<'reserve' | 'settle' | 'release'>().notNull(),
+    requestUnits: integer('request_units').notNull(),
+    requestBytes: integer('request_bytes').notNull(),
+    responseBytes: integer('response_bytes').notNull(),
+    concurrencyUnits: integer('concurrency_units').notNull(),
+    reason: text('reason'),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    index('scan_budget_ledger_scan_created_idx').on(table.scanId, table.createdAt),
+    index('scan_budget_ledger_lease_idx').on(table.executionLeaseId),
+    uniqueIndex('scan_budget_ledger_lease_kind_uq').on(
+      table.executionLeaseId,
+      table.kind
+    )
+  ]
 )
 
 export const scanCheckpoints = sqliteTable(
@@ -1252,4 +1310,140 @@ export const auditLogs = sqliteTable(
     createdAt: integer('created_at').notNull()
   },
   (table) => [index('audit_logs_workspace_idx').on(table.workspaceId, table.createdAt)]
+)
+
+export const testObjects = sqliteTable(
+  'test_objects',
+  {
+    testObjectId: text('test_object_id').notNull(),
+    objectVersion: integer('object_version').notNull(),
+    objectHash: text('object_hash').notNull(),
+    scanId: text('scan_id').notNull(),
+    targetId: text('target_id').notNull(),
+    identityId: text('identity_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    tenantRef: text('tenant_ref'),
+    disposable: integer('disposable', { mode: 'boolean' }).notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<TestObject>().notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.testObjectId, table.objectVersion] }),
+    uniqueIndex('test_objects_hash_uq').on(table.objectHash),
+    index('test_objects_scan_idx').on(table.scanId, table.createdAt),
+    index('test_objects_target_idx').on(table.targetId, table.testObjectId)
+  ]
+)
+
+export const l2ActionBundles = sqliteTable(
+  'l2_action_bundles',
+  {
+    bundleId: text('bundle_id').notNull(),
+    bundleVersion: integer('bundle_version').notNull(),
+    bundleHash: text('bundle_hash').notNull(),
+    scanId: text('scan_id').notNull(),
+    targetId: text('target_id').notNull(),
+    testObjectId: text('test_object_id').notNull(),
+    testObjectVersion: integer('test_object_version').notNull(),
+    identityId: text('identity_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<L2ActionBundle>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.bundleId, table.bundleVersion] }),
+    uniqueIndex('l2_action_bundles_hash_uq').on(table.bundleHash),
+    index('l2_action_bundles_object_idx').on(
+      table.testObjectId,
+      table.testObjectVersion,
+      table.createdAt
+    )
+  ]
+)
+
+export const l2BundleRuntime = sqliteTable(
+  'l2_bundle_runtime',
+  {
+    bundleId: text('bundle_id').notNull(),
+    bundleVersion: integer('bundle_version').notNull(),
+    bundleHash: text('bundle_hash').notNull(),
+    state: text('state').$type<L2BundleState>().notNull(),
+    rowVersion: integer('row_version').notNull(),
+    primaryStarted: integer('primary_started', { mode: 'boolean' }).notNull(),
+    primarySentProof: text('primary_sent_proof')
+      .$type<'not-sent' | 'sent' | 'unknown'>()
+      .notNull(),
+    freezeId: text('freeze_id'),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.bundleId, table.bundleVersion] }),
+    index('l2_bundle_runtime_state_idx').on(table.state, table.updatedAt),
+    index('l2_bundle_runtime_hash_idx').on(table.bundleHash)
+  ]
+)
+
+export const l2BundleEvents = sqliteTable(
+  'l2_bundle_events',
+  {
+    eventId: text('event_id').primaryKey(),
+    bundleId: text('bundle_id').notNull(),
+    bundleVersion: integer('bundle_version').notNull(),
+    bundleHash: text('bundle_hash').notNull(),
+    fromState: text('from_state').$type<L2BundleState>().notNull(),
+    toState: text('to_state').$type<L2BundleState>().notNull(),
+    eventType: text('event_type').notNull(),
+    reasonCode: text('reason_code').notNull(),
+    rowVersionBefore: integer('row_version_before').notNull(),
+    rowVersionAfter: integer('row_version_after').notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    index('l2_bundle_events_bundle_idx').on(
+      table.bundleId,
+      table.bundleVersion,
+      table.createdAt
+    )
+  ]
+)
+
+export const cleanupReceipts = sqliteTable(
+  'cleanup_receipts',
+  {
+    receiptId: text('receipt_id').primaryKey(),
+    receiptHash: text('receipt_hash').notNull(),
+    bundleId: text('bundle_id').notNull(),
+    bundleVersion: integer('bundle_version').notNull(),
+    bundleHash: text('bundle_hash').notNull(),
+    testObjectId: text('test_object_id').notNull(),
+    testObjectVersion: integer('test_object_version').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<CleanupReceipt>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('cleanup_receipts_hash_uq').on(table.receiptHash),
+    uniqueIndex('cleanup_receipts_bundle_uq').on(table.bundleId, table.bundleVersion)
+  ]
+)
+
+export const l2ExecutionFreezes = sqliteTable(
+  'l2_execution_freezes',
+  {
+    freezeId: text('freeze_id').primaryKey(),
+    targetId: text('target_id').notNull(),
+    testObjectId: text('test_object_id').notNull(),
+    bundleId: text('bundle_id').notNull(),
+    bundleHash: text('bundle_hash').notNull(),
+    reasonCode: text('reason_code').$type<L2ExecutionFreeze['reasonCode']>().notNull(),
+    allows: text('allows').$type<L2ExecutionFreeze['allows']>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('l2_execution_freezes_target_object_uq').on(
+      table.targetId,
+      table.testObjectId
+    ),
+    index('l2_execution_freezes_object_idx').on(table.testObjectId, table.targetId)
+  ]
 )

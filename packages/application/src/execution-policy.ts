@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises'
 import { randomUUID } from 'node:crypto'
 import { isIP } from 'node:net'
 import type {
@@ -28,8 +29,10 @@ import {
   type StoredPolicyDecision
 } from '@agentgo/db'
 import {
+  canonicalizeTargetUrl,
+  evaluateExecutionAddresses,
   evaluateProbe,
-  evaluateResolvedAddresses
+  evaluateSsrfTargetAddresses
 } from '@agentgo/security-policy'
 import {
   createWireRequestAuthorizationContext,
@@ -42,9 +45,38 @@ import {
   zeroizeSecureBytes
 } from './secure-byte-snapshot'
 
+export interface PolicyDecidedExecutionLimits {
+  readonly timeoutMs: number
+  readonly maxRequestBytes: number
+  readonly maxResponseBytes: number
+  readonly maxRedirects: number
+  readonly maxRepeats: number
+}
+
 export interface PolicyBrokerResult {
   proposal: ProbeProposalRecord
   decision: StoredPolicyDecision
+  executionLimits: PolicyDecidedExecutionLimits
+}
+
+const DEFAULT_PER_REQUEST_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+const DEFAULT_PER_REQUEST_MAX_REDIRECTS = 5
+const SSRF_CALLBACK_STEP_ID = 'ssrf.callback-read'
+
+function denyDecision(
+  decision: PolicyDecision,
+  code: PolicyDecision['code'],
+  reason: string
+): PolicyDecision {
+  return {
+    allowed: false,
+    requiresApproval: false,
+    code,
+    reasons: [reason],
+    ...(decision.normalizedTarget
+      ? { normalizedTarget: decision.normalizedTarget }
+      : {})
+  }
 }
 
 export class PolicyBroker {
@@ -58,6 +90,7 @@ export class PolicyBroker {
     approvedBy?: string
     /** Exact compiled-wire proof. Omission preserves legacy read compatibility only. */
     authorizedWireRequestHmac?: WireRequestHmac
+    ssrfTargetUrl?: string
   }): Promise<PolicyBrokerResult> {
     const scan = await this.repository.getScanRow(input.scanId)
     if (!scan) throw new Error('Cannot evaluate a proposal for a missing scan.')
@@ -78,7 +111,20 @@ export class PolicyBroker {
       action: persistedAction,
       stopConditions: input.stopConditions
     })
-    const evaluated: PolicyDecision = evaluateProbe(action, scope)
+    const capped = this.#applyScanBudgetCaps(
+      evaluateProbe(action, scope),
+      action,
+      scope,
+      scan
+    )
+    let evaluated: PolicyDecision = capped.decision
+    if (evaluated.allowed && input.ssrfTargetUrl) {
+      evaluated = await this.#authorizeSsrfTarget(
+        evaluated,
+        input.ssrfTargetUrl,
+        scope
+      )
+    }
     const persistedDecision: PolicyDecision = {
       ...evaluated,
       ...(evaluated.normalizedTarget
@@ -112,7 +158,156 @@ export class PolicyBroker {
         targetUrl: decision.normalizedTarget ?? persistedAction.targetUrl
       }
     })
-    return { proposal, decision }
+    if (!decision.allowed) {
+      await this.repository.incrementScanSecurityCounter(
+        input.scanId,
+        decision.code
+      )
+    }
+    return { proposal, decision, executionLimits: capped.limits }
+  }
+
+  async #authorizeSsrfTarget(
+    decision: PolicyDecision,
+    ssrfTargetUrl: string,
+    scope: Parameters<typeof evaluateSsrfTargetAddresses>[1]
+  ): Promise<PolicyDecision> {
+    const canonical = canonicalizeTargetUrl(ssrfTargetUrl)
+    if (!canonical.ok) {
+      return denyDecision(
+        decision,
+        'url-canonicalization-failed',
+        canonical.reason
+      )
+    }
+    // WHATWG URL keeps IPv6 literals bracketed; isIP/lookup need the bare form.
+    const hostname = canonical.value.hostname.replace(/^\[|\]$/g, '')
+    const port = canonical.value.port
+    let addresses: string[]
+    if (isIP(hostname) !== 0) {
+      addresses = [hostname]
+    } else {
+      try {
+        const resolved = await lookup(hostname, { all: true, verbatim: true })
+        addresses = resolved.map((item) => item.address)
+      } catch {
+        return denyDecision(
+          decision,
+          'invalid-target',
+          'SSRF 目标主机未解析到可验证地址。'
+        )
+      }
+    }
+    const ssrfDecision = evaluateSsrfTargetAddresses(
+      { hostname, port, addresses },
+      scope
+    )
+    if (ssrfDecision.allowed) return decision
+    return {
+      ...ssrfDecision,
+      ...(decision.normalizedTarget
+        ? { normalizedTarget: decision.normalizedTarget }
+        : {})
+    }
+  }
+
+  #applyScanBudgetCaps(
+    decision: PolicyDecision,
+    action: ProbeAction,
+    scope: { maxRequestsPerMinute: number; maxConcurrency: number },
+    scan: {
+      budgetJson: {
+        maxRequestsPerMinute: number
+        maxConcurrency: number
+        maxDurationMinutes: number
+        maxRequestBytes: number
+        maxResponseBytes: number
+      }
+      startedAt: number | null
+    }
+  ): { decision: PolicyDecision; limits: PolicyDecidedExecutionLimits } {
+    const limits: PolicyDecidedExecutionLimits = {
+      timeoutMs: action.timeoutMs,
+      maxRequestBytes: action.maxRequestBytes ?? 1_146_880,
+      maxResponseBytes:
+        action.maxResponseBytes ??
+        Math.min(
+          scan.budgetJson.maxResponseBytes,
+          DEFAULT_PER_REQUEST_MAX_RESPONSE_BYTES
+        ),
+      maxRedirects: action.maxRedirects ?? DEFAULT_PER_REQUEST_MAX_REDIRECTS,
+      maxRepeats: action.maxRepeats ?? 0
+    }
+    if (!decision.allowed) return { decision, limits }
+    const rpmCap = Math.min(
+      scope.maxRequestsPerMinute,
+      scan.budgetJson.maxRequestsPerMinute
+    )
+    const concurrencyCap = Math.min(
+      scope.maxConcurrency,
+      scan.budgetJson.maxConcurrency
+    )
+    if (
+      action.requestedRequestsPerMinute &&
+      action.requestedRequestsPerMinute > rpmCap
+    ) {
+      return {
+        decision: denyDecision(
+          decision,
+          'budget-exhausted-rpm',
+          '请求速率超过 Scope 与 Scan 的较小 RPM 上限。'
+        ),
+        limits
+      }
+    }
+    if (
+      action.requestedConcurrency &&
+      action.requestedConcurrency > concurrencyCap
+    ) {
+      return {
+        decision: denyDecision(
+          decision,
+          'budget-exhausted-concurrency',
+          '请求并发超过 Scope 与 Scan 的较小并发上限。'
+        ),
+        limits
+      }
+    }
+    if (limits.maxRequestBytes > scan.budgetJson.maxRequestBytes) {
+      return {
+        decision: denyDecision(
+          decision,
+          'budget-exhausted-bytes',
+          '请求字节上限超过 Scan 发送字节预算。'
+        ),
+        limits
+      }
+    }
+    if (limits.maxResponseBytes > scan.budgetJson.maxResponseBytes) {
+      return {
+        decision: denyDecision(
+          decision,
+          'budget-exhausted-bytes',
+          '响应字节上限超过 Scan 接收字节预算。'
+        ),
+        limits
+      }
+    }
+    if (
+      scan.startedAt !== null &&
+      Date.now() - scan.startedAt >=
+        scan.budgetJson.maxDurationMinutes * 60 * 1000
+    ) {
+      return {
+        decision: denyDecision(
+          decision,
+          'budget-exhausted-duration',
+          '扫描已超过计划时长预算。'
+        ),
+        limits
+      }
+    }
+    return { decision, limits }
   }
 }
 
@@ -160,6 +355,11 @@ export type ExecutionFailureCode =
   | 'response-start-mark-failed'
   | 'timeout'
   | 'response-too-large'
+  | 'response-header-too-large'
+  | 'response-decompressed-too-large'
+  | 'response-compression-bomb'
+  | 'response-decompression-failed'
+  | 'response-slow-read'
   | 'network-error'
   | 'cancelled'
   | 'audit-persistence-failed'
@@ -187,6 +387,7 @@ interface ActiveClaim {
   readonly requestBytes: number
   readonly maxResponseBytes: number
   readonly adapterKind: 'http' | 'browser-offline'
+  readonly targetUrl: string
   resolvedAddressesAuthorized: boolean
   rawClaimToken: string
   deliveryState: Extract<
@@ -201,6 +402,25 @@ interface PreparedClaimInput {
   readonly limits: HttpExecutionLimits
   readonly adapterKind: 'http' | 'browser-offline'
   readonly actionKind: 'http-request' | 'browser-action'
+}
+
+function parseExecutionTarget(value: string): { hostname: string; port: number } {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    throw new Error('Execution target URL is invalid.')
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Execution target URL is invalid.')
+  }
+  const port = Number(
+    parsed.port || (parsed.protocol === 'https:' ? '443' : '80')
+  )
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error('Execution target URL is invalid.')
+  }
+  return { hostname: parsed.hostname, port }
 }
 
 function exactObjectKeys(
@@ -385,13 +605,15 @@ function failureMapping(input: ExecutionFailureCode): {
       }
     case 'response-start-mark-failed':
     case 'response-too-large':
+    case 'response-header-too-large':
+    case 'response-decompressed-too-large':
+    case 'response-compression-bomb':
+    case 'response-decompression-failed':
+    case 'response-slow-read':
       return {
         terminalReason: 'response-read-failed',
         executionState: 'failed',
-        errorCode:
-          input === 'response-too-large'
-            ? 'execution.response-too-large'
-            : 'execution.response-start-mark-failed'
+        errorCode: `execution.${input}`
       }
     case 'timeout':
       return {
@@ -554,12 +776,29 @@ export class PolicyExecutionGuard
     ) {
       throw new Error('Execution address authorization context is invalid.')
     }
-    const networkDecision = evaluateResolvedAddresses(
-      snapshot.map((address) => address.address),
-      context.scope
-    )
+    const parsedTarget = parseExecutionTarget(claim.targetUrl)
+    const hop = {
+      hostname: parsedTarget.hostname,
+      port: parsedTarget.port,
+      addresses: snapshot.map((address) => address.address)
+    }
+    const networkDecision = evaluateExecutionAddresses(hop, context.scope)
     if (!networkDecision.allowed) {
+      await this.#repository.incrementScanSecurityCounter(
+        claim.grant.scanId,
+        networkDecision.code
+      )
       throw new Error('Resolved execution addresses are outside scope.')
+    }
+    if (claim.grant.stepId === SSRF_CALLBACK_STEP_ID) {
+      const ssrfDecision = evaluateSsrfTargetAddresses(hop, context.scope)
+      if (!ssrfDecision.allowed) {
+        await this.#repository.incrementScanSecurityCounter(
+          claim.grant.scanId,
+          ssrfDecision.code
+        )
+        throw new Error('Resolved SSRF target addresses are outside scope.')
+      }
     }
     const current = this.#requireClaim(claimToken)
     if (
@@ -697,8 +936,8 @@ export class PolicyExecutionGuard
   }
 
   /**
-   * @deprecated Day 4 diagnostic read compatibility only. It never mints an
-   * execution capability and has no production caller. Remove in Day 6 after
+   * @deprecated Legacy diagnostic read compatibility only. It never mints an
+   * execution capability and has no production caller. Remove after
    * the unified ExecutionPort/Runner boundary regression remains green.
    */
   async authorize(input: LegacyAuthorizationInput): Promise<void> {
@@ -743,8 +982,13 @@ export class PolicyExecutionGuard
       )
     }
     if (input.addresses) {
-      const networkDecision = evaluateResolvedAddresses(
-        input.addresses.map((address) => address.address),
+      const parsedTarget = parseExecutionTarget(url)
+      const networkDecision = evaluateExecutionAddresses(
+        {
+          hostname: parsedTarget.hostname,
+          port: parsedTarget.port,
+          addresses: input.addresses.map((address) => address.address)
+        },
         context.scope
       )
       if (!networkDecision.allowed) {
@@ -983,6 +1227,7 @@ export class PolicyExecutionGuard
         requestBytes,
         maxResponseBytes: input.limits.maxResponseBytes,
         adapterKind: input.adapterKind,
+        targetUrl: wire.url,
         resolvedAddressesAuthorized: input.adapterKind === 'browser-offline',
         rawClaimToken: claimed.claimToken,
         deliveryState: 'not-dispatched'

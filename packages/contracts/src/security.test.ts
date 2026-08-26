@@ -16,7 +16,7 @@ const digest = 'a'.repeat(64)
 const keyRef = '7f3b82e1-bc3d-45a8-9a71-c4aa47c12f80'
 const secretRef = 'b7b76e72-16dc-499a-b16a-4a43e14a0d36'
 
-describe('Day 4 phased request proof contracts', () => {
+describe('Phased request proof contracts', () => {
   it('domain-separates strict immutable template, resolved, and wire proofs', () => {
     const template = TemplateIntentHashSchema.parse({
       domain: 'agentgo.template-intent.v1',
@@ -90,7 +90,7 @@ describe('Day 4 phased request proof contracts', () => {
   })
 })
 
-describe('Day 4 executable mutation targets', () => {
+describe('Executable mutation targets', () => {
   it('requires an exact repeated occurrence or all plus missing behavior', () => {
     for (const kind of ['query', 'form', 'cookie'] as const) {
       expect(
@@ -191,7 +191,7 @@ describe('Day 4 executable mutation targets', () => {
   })
 })
 
-describe('Day 4 resolver and body-template contracts', () => {
+describe('Resolver and body-template contracts', () => {
   const dynamicResolver = {
     kind: 'dynamic-value-resolver' as const,
     resolverId: 'request.csrf-resolver',
@@ -268,7 +268,7 @@ describe('Day 4 resolver and body-template contracts', () => {
               secretRef,
               generation: 4,
               resolver: secretResolver,
-              rawSecret: 'DAY4_SENTINEL_SECRET'
+              rawSecret: 'PROTECTED_SENTINEL_SECRET'
             }
           }
         ]
@@ -341,7 +341,7 @@ describe('Day 4 resolver and body-template contracts', () => {
         value: {
           kind: 'literal',
           sensitivity: 'sensitive',
-          value: 'DAY4_SENTINEL_SECRET'
+          value: 'PROTECTED_SENTINEL_SECRET'
         }
       }).success
     ).toBe(false)
@@ -366,18 +366,18 @@ describe('Day 4 resolver and body-template contracts', () => {
         kind: 'object',
         entries: [
           {
-            key: 'DAY4_SENTINEL_SECRET',
+            key: 'PROTECTED_SENTINEL_SECRET',
             value: { kind: 'literal', sensitivity: 'public', value: 1 }
           },
           {
-            key: 'DAY4_SENTINEL_SECRET',
+            key: 'PROTECTED_SENTINEL_SECRET',
             value: { kind: 'literal', sensitivity: 'public', value: 2 }
           }
         ]
       }
     })
     expect(duplicateResult.success).toBe(false)
-    expect(JSON.stringify(duplicateResult)).not.toContain('DAY4_SENTINEL_SECRET')
+    expect(JSON.stringify(duplicateResult)).not.toContain('PROTECTED_SENTINEL_SECRET')
 
     expect(
       FormRequestBodyTemplateSchema.safeParse({
@@ -415,7 +415,7 @@ describe('Day 4 resolver and body-template contracts', () => {
   })
 })
 
-describe('Day 4 mutation generator metadata', () => {
+describe('Mutation generator metadata', () => {
   const metadata = {
     generatorId: 'sqli.boolean-marker',
     version: '1.0.0',
@@ -485,10 +485,10 @@ describe('Day 4 mutation generator metadata', () => {
     ).toBe(false)
     const overlapResult = MutationGeneratorMetadataSchema.safeParse({
       ...metadata,
-      requiredCapabilityIds: ['day4-sentinel-secret'],
-      forbiddenCapabilityIds: ['day4-sentinel-secret']
+      requiredCapabilityIds: ['protected-sentinel-secret'],
+      forbiddenCapabilityIds: ['protected-sentinel-secret']
     })
     expect(overlapResult.success).toBe(false)
-    expect(JSON.stringify(overlapResult)).not.toContain('day4-sentinel-secret')
+    expect(JSON.stringify(overlapResult)).not.toContain('protected-sentinel-secret')
   })
 })

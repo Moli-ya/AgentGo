@@ -2,15 +2,24 @@ import { createServer, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
   LEGACY_V1_FAMILY_IDS,
+  LOCAL_FIXTURE_ID,
+  LOCAL_FIXTURE_VERSION,
   isLegacyV1VulnerabilityFamily,
   type LegacyV1VulnerabilityFamily
 } from '@agentgo/contracts'
+import { canonicalJson, sha256Text } from '@agentgo/domain'
 
-export const LOCAL_FIXTURE_VERSION = 'agentgo-local-fixture/1.0.0'
+export { LOCAL_FIXTURE_ID, LOCAL_FIXTURE_VERSION }
 
 export interface LocalBenchmarkFixture {
   version: typeof LOCAL_FIXTURE_VERSION
   baseUrl: string
+  bindAddress: '127.0.0.1'
+  port: number
+  attestationHash: string
+  namespaceHash: string
+  outboundAttempts: readonly string[]
+  reset(): FixtureResetResult
   close(): Promise<void>
 }
 
@@ -19,6 +28,63 @@ export interface FixtureIdentityPlan {
   memberToken: string
   ownerResourceId: string
   memberResourceId: string
+}
+
+export interface FixtureResetResult {
+  generation: number
+  namespaceHash: string
+}
+
+export interface FixtureNamespaceState {
+  generation: number
+  notes: Record<string, never>
+}
+
+const FIXTURE_ROUTE_TABLE = Object.freeze(
+  LEGACY_V1_FAMILY_IDS.flatMap((family) =>
+    (['positive', 'negative'] as const).flatMap((polarity) =>
+      Array.from({ length: 5 }, (_, index) =>
+        `/cases/${family}/${polarity}/${index + 1}`
+      )
+    )
+  )
+)
+
+export function localFixtureAttestationProfile() {
+  return Object.freeze({
+    fixtureId: LOCAL_FIXTURE_ID,
+    fixtureVersion: LOCAL_FIXTURE_VERSION,
+    bindAddress: '127.0.0.1' as const,
+    portPolicy: 'ephemeral' as const,
+    outboundPolicy: 'loopback-same-origin-callback-only' as const,
+    resetPolicy: 'fixture-namespace-only' as const,
+    methods: Object.freeze(['GET'] as const),
+    selector: 'query' as const,
+    families: [...LEGACY_V1_FAMILY_IDS],
+    routes: [...FIXTURE_ROUTE_TABLE]
+  })
+}
+
+export function localFixtureAttestationHash(): string {
+  return sha256Text(canonicalJson(localFixtureAttestationProfile()))
+}
+
+function emptyNamespace(generation: number): FixtureNamespaceState {
+  return {
+    generation,
+    notes: {}
+  }
+}
+
+export function fixtureNamespaceHash(state: FixtureNamespaceState): string {
+  return sha256Text(canonicalJson({ notes: state.notes }))
+}
+
+export function isFixtureLoopbackUrl(value: URL, fixtureOrigin: string): boolean {
+  return (
+    (value.hostname === '127.0.0.1' || value.hostname === 'localhost') &&
+    value.origin === fixtureOrigin
+  )
 }
 
 function send(
@@ -30,7 +96,8 @@ function send(
   response.writeHead(status, {
     'content-type': contentType,
     'cache-control': 'no-store',
-    'x-agentgo-fixture-version': LOCAL_FIXTURE_VERSION
+    'x-agentgo-fixture-version': LOCAL_FIXTURE_VERSION,
+    'x-agentgo-fixture-id': LOCAL_FIXTURE_ID
   })
   response.end(body)
 }
@@ -96,6 +163,8 @@ function fixtureIndex(baseUrl: string): string {
 
 export async function startLocalBenchmarkFixture(): Promise<LocalBenchmarkFixture> {
   let baseUrl = ''
+  let namespace = emptyNamespace(0)
+  const outboundAttempts: string[] = []
   const server = createServer(async (request, response) => {
     if (request.method !== 'GET') {
       send(response, 405, 'application/json; charset=utf-8', '{"error":"method-not-allowed"}')
@@ -112,7 +181,26 @@ export async function startLocalBenchmarkFixture(): Promise<LocalBenchmarkFixtur
         response,
         200,
         'application/json; charset=utf-8',
-        JSON.stringify({ ok: true, version: LOCAL_FIXTURE_VERSION })
+        JSON.stringify({
+          ok: true,
+          version: LOCAL_FIXTURE_VERSION,
+          attestationHash: localFixtureAttestationHash(),
+          namespaceHash: fixtureNamespaceHash(namespace)
+        })
+      )
+      return
+    }
+    if (url.pathname === '/reset') {
+      namespace = emptyNamespace(namespace.generation + 1)
+      send(
+        response,
+        200,
+        'application/json; charset=utf-8',
+        JSON.stringify({
+          ok: true,
+          generation: namespace.generation,
+          namespaceHash: fixtureNamespaceHash(namespace)
+        })
       )
       return
     }
@@ -164,7 +252,8 @@ export async function startLocalBenchmarkFixture(): Promise<LocalBenchmarkFixtur
       }
       try {
         const target = new URL(targetValue)
-        if (target.origin !== new URL(baseUrl).origin || target.pathname !== '/callback') {
+        outboundAttempts.push(target.href)
+        if (!isFixtureLoopbackUrl(target, new URL(baseUrl).origin) || target.pathname !== '/callback') {
           send(response, 200, 'text/plain; charset=utf-8', 'target rejected')
           return
         }
@@ -214,6 +303,23 @@ export async function startLocalBenchmarkFixture(): Promise<LocalBenchmarkFixtur
   return {
     version: LOCAL_FIXTURE_VERSION,
     baseUrl,
+    bindAddress: '127.0.0.1',
+    port: address.port,
+    attestationHash: localFixtureAttestationHash(),
+    get namespaceHash() {
+      return fixtureNamespaceHash(namespace)
+    },
+    get outboundAttempts() {
+      return Object.freeze([...outboundAttempts])
+    },
+    reset: () => {
+      namespace = emptyNamespace(namespace.generation + 1)
+      outboundAttempts.length = 0
+      return {
+        generation: namespace.generation,
+        namespaceHash: fixtureNamespaceHash(namespace)
+      }
+    },
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()))
     })
