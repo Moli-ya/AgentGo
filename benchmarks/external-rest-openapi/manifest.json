@@ -1,0 +1,17 @@
+{
+  "packId": "swagger-petstore-v3-rest-openapi",
+  "packVersion": "swagger-petstore-v3/1.0.16",
+  "resultClass": "external-local-holdout",
+  "sourceRepository": "https://github.com/swagger-api/swagger-petstore",
+  "sourceRelease": "swagger-petstore-v3-1.0.16",
+  "license": "Apache-2.0",
+  "containerImage": "swaggerapi/petstore3@sha256:221da3038bf91fad98e249d5f123cbca21d5bfc8e10a786c8c060ec8058cc522",
+  "bindAddress": "127.0.0.1",
+  "containerPort": 8080,
+  "recommendedHostPort": 18080,
+  "openApiPath": "/api/v3/openapi.json",
+  "expectedOpenApiPrefix": "3.",
+  "expectedInfoVersion": "1.0.16",
+  "state": "completed-compatible-replay-2026-09-07",
+  "qualificationScope": "REST/OpenAPI import plus two reviewed read-only GET replays through Policy/Grant/Lease; compatibility artifact only, no vulnerability accuracy claim."
+}

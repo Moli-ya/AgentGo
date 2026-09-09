@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import {
   CleanupReceiptSchema,
   L2ActionBundleSchema,
@@ -472,6 +472,47 @@ export class L2Repository {
       .where(eq(l2ActionBundles.bundleHash, bundleHash))
       .limit(1)
     return row ? assertBundleIntegrity(row.payloadJson) : undefined
+  }
+
+  /**
+   * Lists every bundle whose runtime is not in a terminal state. Used by the
+   * binding service to propagate session/identity/matrix invalidation.
+   */
+  async listOpenBundles(): Promise<
+    { readonly bundle: L2ActionBundle; readonly runtime: L2BundleRuntimeRecord }[]
+  > {
+    const rows = await this.database.orm
+      .select()
+      .from(l2BundleRuntime)
+      .where(
+        inArray(l2BundleRuntime.state, [
+          'draft',
+          'ineligible',
+          'pending-approval',
+          'approved',
+          'primary-unknown'
+        ])
+      )
+    const result: { bundle: L2ActionBundle; runtime: L2BundleRuntimeRecord }[] = []
+    for (const row of rows) {
+      const bundle = await this.getBundle(row.bundleId, row.bundleVersion)
+      if (!bundle) continue
+      result.push({
+        bundle,
+        runtime: {
+          bundleId: row.bundleId,
+          bundleVersion: row.bundleVersion,
+          bundleHash: row.bundleHash,
+          state: row.state,
+          rowVersion: row.rowVersion,
+          primaryStarted: row.primaryStarted,
+          primarySentProof: row.primarySentProof,
+          freezeId: row.freezeId,
+          updatedAt: row.updatedAt
+        }
+      })
+    }
+    return result
   }
 
   async listEvents(

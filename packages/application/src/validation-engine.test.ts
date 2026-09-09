@@ -43,6 +43,18 @@ describe('V1 deterministic confirmation rules', () => {
     expect(result.failedChecks).toEqual([])
   })
 
+  it('normalizes volatile response fields before boolean comparison', () => {
+    const result = assessSqli({
+      baseline: observation('product id=1234567 at 2026-09-07T10:00:00Z'),
+      trueFirst: observation('product id=7654321 at 2026-09-07T10:01:00Z'),
+      falseControl: observation('no rows'),
+      trueRepeat: observation('product id=9999999 at 2026-09-07T10:02:00Z')
+    })
+
+    expect(result.verdict).toBe('confirmed')
+    expect(result.signalSummary).toContain('sqli.normalize@1.1.0')
+  })
+
   it('does not treat XSS reflection as execution', () => {
     const marker = 'agx_0011223344556677'
     const http = observation(`<p>${marker}</p>`)
@@ -109,5 +121,89 @@ describe('V1 deterministic confirmation rules', () => {
     })
 
     expect(result.verdict).toBe('confirmed')
+  })
+
+  it('does not confirm shared-object IDOR and treats session/dynamic evidence as inconclusive', () => {
+    const shared = assessIdor({
+      ownerResourceId: 'owner-resource-1',
+      secondIdentityResourceId: 'member-resource-1',
+      ownerRead: observation(
+        '{"id":"owner-resource-1","ownerId":"owner","visibility":"shared","value":"team-doc"}'
+      ),
+      secondIdentityOwnRead: observation(
+        '{"id":"member-resource-1","ownerId":"member","visibility":"shared","value":"own"}'
+      ),
+      secondIdentityOwnerRead: observation(
+        '{"id":"owner-resource-1","ownerId":"owner","visibility":"shared","value":"team-doc"}'
+      ),
+      identitiesAuthorized: true
+    })
+    expect(shared.verdict).toBe('not-confirmed')
+    expect(shared.failedChecks).toContain('not-public-or-shared-visibility')
+
+    const session = assessIdor({
+      ownerResourceId: 'owner-resource-1',
+      secondIdentityResourceId: 'member-resource-1',
+      ownerRead: observation('{"error":"unauthorized"}', 401),
+      secondIdentityOwnRead: observation('{"error":"unauthorized"}', 401),
+      secondIdentityOwnerRead: observation('{"error":"unauthorized"}', 401),
+      identitiesAuthorized: true
+    })
+    expect(session.verdict).toBe('inconclusive')
+
+    const dynamic = assessIdor({
+      ownerResourceId: 'owner-resource-1',
+      secondIdentityResourceId: 'member-resource-1',
+      ownerRead: observation(
+        '{"id":"owner-resource-1","ownerId":"owner","value":"aaaaaaaa"}'
+      ),
+      secondIdentityOwnRead: observation(
+        '{"id":"member-resource-1","ownerId":"member","value":"own"}'
+      ),
+      secondIdentityOwnerRead: observation(
+        '{"id":"owner-resource-1","ownerId":"owner","value":"bbbbbbbb"}'
+      ),
+      identitiesAuthorized: true
+    })
+    expect(dynamic.verdict).toBe('inconclusive')
+  })
+
+  it('treats CSP and dynamic-nonce XSS blocks as inconclusive, not not-confirmed', () => {
+    const marker = 'agx_0011223344556677'
+    const browser: BrowserObservation = {
+      result: {
+        requestId: 'browser-csp',
+        status: 'succeeded',
+        finalUrl: 'https://lab.test/',
+        links: [],
+        forms: [],
+        markerExecuted: false,
+        networkRequestsBlocked: 0,
+        resultBytes: 0,
+        durationMs: 20
+      },
+      evidenceRefs: ['browser-summary', 'dom-snapshot'],
+      toolCallId: 'tool-browser-csp',
+      proposalId: 'proposal-browser-csp',
+      policyDecisionId: 'decision-browser-csp'
+    }
+    const cspHttp: HttpObservation = {
+      ...observation(`<p>${marker}</p>`),
+      result: {
+        ...observation(`<p>${marker}</p>`).result,
+        responseHeaders: {
+          'content-type': 'text/html',
+          'content-security-policy': "default-src 'none'"
+        }
+      }
+    }
+    expect(assessXss({ marker, http: cspHttp, browser }).verdict).toBe('inconclusive')
+
+    const nonceHttp = observation(
+      `<body data-nonce="n-1">Search: ${marker}</body>`
+    )
+    expect(assessXss({ marker, http: nonceHttp, browser }).verdict).toBe(
+      'inconclusive'
+    )
   })
 })

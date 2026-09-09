@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import {
   L2_CLEANUP_CAPABILITY_ID,
   ScanModuleSnapshotDraftSchema,
@@ -258,6 +258,7 @@ function bundlePayload(object: TestObjectPayload): L2ActionBundlePayload {
     identityContextVersion: { status: 'unresolved' },
     sessionGeneration: { status: 'unresolved' },
     csrfBindingVersion: { status: 'unresolved' },
+    authorizationMatrixVersion: { status: 'unresolved' },
     steps: [
       { kind: 'pre-read', binding: binding(object, 'read') },
       { kind: 'primary', binding: binding(object, 'primary') },
@@ -281,6 +282,10 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+afterAll(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('L2 repository', () => {

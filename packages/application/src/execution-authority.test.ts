@@ -55,6 +55,14 @@ const ids = {
 
 const digest = (character: string): string => character.repeat(64)
 
+const sessionAuthority = {
+  async assertActiveGeneration(sessionId: string, generation: number): Promise<void> {
+    if (sessionId !== ids.session || generation !== 1) {
+      throw new Error('The session generation is no longer current.')
+    }
+  }
+}
+
 function makeWire(path = '/root'): MaterializedWireRequest {
   return Object.freeze({
     method: 'GET',
@@ -464,7 +472,12 @@ function createFixture(
     })
   }
   const repository = methods as unknown as AgentGoRepository
-  const authority = new ExecutionAuthority(repository, provider, () => NOW_MS)
+  const authority = new ExecutionAuthority(
+    repository,
+    provider,
+    () => NOW_MS,
+    sessionAuthority
+  )
   const identityRef = {
     id: ids.identity,
     version: NOW_MS,
@@ -554,7 +567,8 @@ describe('ExecutionAuthority issuance boundary', () => {
     const authority = new ExecutionAuthority(
       fixture.methods as unknown as AgentGoRepository,
       maliciousProvider,
-      () => NOW_MS
+      () => NOW_MS,
+      sessionAuthority
     )
 
     await expect(authority.issue(fixture.rootInput)).rejects.toThrow(
@@ -742,11 +756,24 @@ describe('ExecutionAuthority issuance boundary', () => {
     expect(Object.keys(issued.evidenceCaptureDecisions).sort()).toEqual([
       'browser-request-summary',
       'browser-result-summary',
+      'browser-screenshot',
+      'dom-snapshot',
       'execution-interruption-summary'
     ])
     for (const decision of captureDecisionValues(
       issued.evidenceCaptureDecisions
     )) {
+      if (
+        decision.source === 'dom-snapshot' ||
+        decision.source === 'browser-screenshot'
+      ) {
+        expect(decision.action).toBe('protected-original')
+        expect(decision.protectedOriginalPlan).toBeDefined()
+        expect(decision.role).toBe(
+          decision.source === 'dom-snapshot' ? 'dom-snapshot' : 'screenshot'
+        )
+        continue
+      }
       expect(decision.role).toBe(
         decision.source === 'browser-request-summary'
           ? 'request-summary'

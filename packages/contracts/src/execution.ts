@@ -187,9 +187,12 @@ function captureDecisionCanonicalKey(
 /**
  * The complete, immutable capture authority for one execution grant.
  *
- * Execution pre-authorizes two runtime summary sources for four normal
- * terminal states plus one crash-interruption summary. Canonical ordering
- * makes the signed set hash stable and
+ * Execution pre-authorizes runtime summary sources for four normal
+ * terminal states plus one crash-interruption summary. HTTP grants keep
+ * nine hash-only summary decisions. Offline browser grants add
+ * pre-authorized protected-original decisions for `dom-snapshot` and
+ * `browser-screenshot` so XSS reviewable evidence stays grant-bound.
+ * Canonical ordering makes the signed set hash stable and
  * prevents semantically equivalent arrays from producing different proofs.
  */
 export const ExecutionCaptureDecisionSetSchema = z
@@ -197,7 +200,8 @@ export const ExecutionCaptureDecisionSetSchema = z
     schemaVersion: z.literal('execution-capture-decision-set.v1'),
     decisions: z
       .array(EvidenceCaptureDecisionSchema)
-      .length(9)
+      .min(9)
+      .max(17)
       .superRefine((decisions, context) => {
         const ids = new Set<string>()
         const bindings = new Set<string>()

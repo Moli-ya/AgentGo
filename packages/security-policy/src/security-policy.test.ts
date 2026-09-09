@@ -7,7 +7,8 @@ import {
   evaluateExecutionAddresses,
   evaluateProbe,
   evaluateResolvedAddresses,
-  evaluateSsrfTargetAddresses
+  evaluateSsrfTargetAddresses,
+  evaluateUrlScope
 } from './index'
 
 const scope: TargetScope = {
@@ -112,6 +113,31 @@ describe('evaluateProbe', () => {
     })
   })
 
+  it('blocks UNION extraction and stacked SQL even on otherwise safe GET probes', () => {
+    expect(
+      evaluateProbe(
+        action({
+          payloadSummary: '1 UNION SELECT password FROM users'
+        }),
+        scope
+      )
+    ).toMatchObject({
+      allowed: false,
+      code: 'destructive-action'
+    })
+    expect(
+      evaluateProbe(
+        action({
+          payloadSummary: '1; DROP TABLE users'
+        }),
+        scope
+      )
+    ).toMatchObject({
+      allowed: false,
+      code: 'destructive-action'
+    })
+  })
+
   it('requires per-action approval for reversible L2 probes', () => {
     expect(
       evaluateProbe(
@@ -128,6 +154,25 @@ describe('evaluateProbe', () => {
       requiresApproval: true,
       code: 'approval-required'
     })
+  })
+
+  it('ignores userApproved and still requires a backend trusted approval', () => {
+    const decision = evaluateProbe(
+      action({
+        method: 'POST',
+        probeLevel: 'active-sensitive',
+        sideEffect: 'reversible',
+        cleanupPlan: '删除临时测试对象',
+        userApproved: true
+      }),
+      scope
+    )
+    expect(decision).toMatchObject({
+      allowed: false,
+      requiresApproval: true,
+      code: 'approval-required'
+    })
+    expect(decision.reasons.join(' ')).toMatch(/userApproved|忽略/)
   })
 
   it.each(['POST', 'PUT', 'PATCH'])(
@@ -179,7 +224,7 @@ describe('evaluateProbe', () => {
     })
   })
 
-  it('allows an explicitly approved reversible L2 probe with cleanup', () => {
+  it('allows an L2 probe only when backend trusted approval is present', () => {
     expect(
       evaluateProbe(
         action({
@@ -189,7 +234,8 @@ describe('evaluateProbe', () => {
           cleanupPlan: '删除专用测试账号创建的临时对象',
           userApproved: true
         }),
-        scope
+        scope,
+        { backendTrustedApproval: true }
       )
     ).toMatchObject({
       allowed: true,
@@ -506,7 +552,9 @@ describe('URL canonicalization', () => {
     ['http://2130706433/search', 'integer IPv4'],
     ['http://[::1%eth0]/search', 'IPv6 zone'],
     ['https://lab.example.test/%252e%252e/secret', 'double-encoded path'],
-    ['javascript:alert(1)', 'scheme confusion']
+    ['javascript:alert(1)', 'scheme confusion'],
+    ['file:///etc/passwd', 'non-HTTP file scheme'],
+    ['gopher://127.0.0.1:70/', 'non-HTTP gopher scheme']
   ])('fails closed for %s', (url) => {
     expect(canonicalizeTargetUrl(url).ok).toBe(false)
   })
@@ -589,5 +637,20 @@ describe('derived network entries', () => {
       ])
     )
     expect(entries).toHaveLength(2)
+  })
+})
+
+describe('evaluateUrlScope', () => {
+  it('classifies in-scope, out-of-scope and unresolved URLs without DNS', () => {
+    expect(evaluateUrlScope('https://lab.example.test/search', scope).ok).toBe(true)
+    expect(evaluateUrlScope('https://outside.example.test/search', scope)).toMatchObject({
+      ok: false,
+      reason: 'out-of-scope'
+    })
+    expect(evaluateUrlScope('/relative', scope)).toMatchObject({
+      ok: false,
+      reason: 'unresolved'
+    })
+    expect(evaluateUrlScope('/relative', scope, 'https://lab.example.test').ok).toBe(true)
   })
 })

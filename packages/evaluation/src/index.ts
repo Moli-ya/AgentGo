@@ -1,6 +1,8 @@
 import { VerdictSchema, type GroundTruthCase } from '@agentgo/contracts'
 import { z } from 'zod'
 
+export * from './external-openapi-holdout'
+
 export {
   BenchmarkCaseCategorySchema,
   BenchmarkResultClassSchema,
@@ -9,6 +11,10 @@ export {
   GroundTruthCaseSchema,
   EvaluationGroundTruthCaseSchema,
   GroundTruthManifestSchema,
+  COMPLEX_SUITE_ID,
+  HOLDOUT_SUITE_ID,
+  HOLDOUT_FIXTURE_ID,
+  HOLDOUT_FIXTURE_VERSION,
   LEGACY_V1_HTTP_GET_QUERY_PROTOCOL,
   LEGACY_V1_SUITE_ID,
   LOCAL_FIXTURE_ID,

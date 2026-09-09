@@ -29,7 +29,9 @@ const allowedRunnerImporters = new Set([
   'apps/desktop/src/main/index.ts',
   'packages/application/src/execution-policy.ts',
   'packages/application/src/execution-service.ts',
-  'packages/evaluation/src/run-local-benchmark.ts'
+  'packages/evaluation/src/benchmark-runtime.ts',
+  'packages/evaluation/src/run-local-benchmark.ts',
+  'packages/evaluation/src/run-external-openapi-holdout.ts'
 ])
 const allowedRunnerDependencyManifests = new Set([
   'apps/desktop/package.json',
@@ -482,5 +484,28 @@ describe('execution boundary architecture', () => {
         ].join('\n')
       )
     }
+  })
+
+  it('does not register FixtureApprovalAdapter in the product composition root', async () => {
+    const desktopMain = await readFile(
+      join(workspaceRoot, 'apps/desktop/src/main/index.ts'),
+      'utf8'
+    )
+    expect(desktopMain).not.toMatch(/FixtureApprovalAdapter/)
+    const orchestrator = await readFile(
+      join(workspaceRoot, 'packages/application/src/l2-probe-orchestrator.ts'),
+      'utf8'
+    )
+    const approval = await readFile(
+      join(workspaceRoot, 'packages/application/src/approval-service.ts'),
+      'utf8'
+    )
+    const compiler = await readFile(
+      join(workspaceRoot, 'packages/application/src/l2-http-compiler.ts'),
+      'utf8'
+    )
+    expect(findForbiddenRunnerImports(orchestrator)).toEqual([])
+    expect(findForbiddenRunnerImports(approval)).toEqual([])
+    expect(findForbiddenRunnerImports(compiler)).toEqual([])
   })
 })

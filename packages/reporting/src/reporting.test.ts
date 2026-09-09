@@ -127,4 +127,12 @@ describe('report rendering', () => {
       '<dt>漏洞族</dt><dd>security.headers</dd>'
     )
   })
+
+  it('uses registry display names when provided instead of a closed family table', () => {
+    const labeled = {
+      ...context,
+      familyDisplayNames: { xss: '跨站脚本' }
+    }
+    expect(renderReport(labeled, 'markdown').content).toContain('漏洞族：跨站脚本')
+  })
 })

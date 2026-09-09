@@ -85,16 +85,26 @@ export function applyDatabaseMigrations(
       continue
     }
 
-    database.exec('BEGIN IMMEDIATE')
+    const disableForeignKeys = migration.foreignKeys === 'off'
+    if (disableForeignKeys) {
+      database.exec('PRAGMA foreign_keys = OFF')
+    }
     try {
-      database.exec(migration.sql)
-      migration.dataHook?.(database)
-      if (migration.finalizeSql) database.exec(migration.finalizeSql)
-      recordMigration.run(migration.id, appliedAt())
-      database.exec('COMMIT')
-    } catch (error) {
-      database.exec('ROLLBACK')
-      throw error
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        database.exec(migration.sql)
+        migration.dataHook?.(database)
+        if (migration.finalizeSql) database.exec(migration.finalizeSql)
+        recordMigration.run(migration.id, appliedAt())
+        database.exec('COMMIT')
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    } finally {
+      if (disableForeignKeys) {
+        database.exec('PRAGMA foreign_keys = ON')
+      }
     }
   }
 }

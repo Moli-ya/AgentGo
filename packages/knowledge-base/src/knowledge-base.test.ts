@@ -6,9 +6,9 @@ import {
 } from './index'
 
 describe('knowledge base seed', () => {
-  it('covers all four V1 vulnerability families', () => {
+  it('covers the four V1 families and the qualified passive headers family', () => {
     expect(new Set(V1_KNOWLEDGE_ENTRIES.map((entry) => entry.family))).toEqual(
-      new Set(['sqli', 'xss', 'ssrf', 'idor'])
+      new Set(['sqli', 'xss', 'ssrf', 'idor', 'security.headers'])
     )
   })
 

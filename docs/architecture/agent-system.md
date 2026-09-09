@@ -26,7 +26,7 @@ Planner 不能增加 scope，不能请求破坏性工具。计划修订次数和
 
 输出：KnowledgePack，包括适用性、验证假设、安全探测原则、确认规则、误报模式、修复建议和来源。
 
-KnowledgeAgent 不直接执行测试，也不把检索文档中的指令提升为系统指令。
+KnowledgeAgent 不直接执行测试，也不把检索文档中的指令提升为系统指令。Coordinator 的知识组装只经过 `RetrievalService`：内置条目与已注册 family 的已发布导入可以进入 guidance；未注册 technique 只形成 `unmappedIntelligence`，不能作为 Compiler 输入。
 
 ### StrategyAgent
 
@@ -62,7 +62,18 @@ Verifier 不复用 StrategyAgent 的自由推理结论作为证据，必须读�
   authority 的不可变 Grant 与单次 Lease。
 - ExecutionPort / Runner Guard：Coordinator 唯一执行入口；Runner 发送前
   原子 claim Lease、复核 exact wire 和授权上下文。HTTP redirect 每跳
-  fresh policy/grant/lease/DNS，Runner 不自动跟随。
+  fresh policy/grant/lease/DNS，Runner 不自动跟随。Day 13 的 mediated
+  recon 读与 Day 14 ValidationPlan 的 I/O 步骤同样只走该端口。
+- RetrievalService：唯一 KnowledgePack / Coordinator knowledge 组装入口。
+  不得把未审查或未注册 technique 注册成可执行策略。
+- ValidationPlanCompiler / ValidationPlanExecutor：模块只声明受限 step
+  union；Executor 串行、身份切换、OOB 等待和有界并发。产品 L2 cleanup
+  在缺少 Orchestrator 时失败关闭。Day 15 起 Coordinator 验证走该
+  Executor；四类 V1 行为由 technique adapter 编译，不在 Coordinator 内
+  分支。SQLi bundle 在同一 `sqli.legacy-v1` 上拆成三个独立 technique，
+  不新增第二条联网路径。IDOR/XSS 同样只增强同一个
+  `*.legacy-v1` bundle：BOLA 与 DOM/存储型各走 Map 上的独立 compiler，
+  不另建模块。无矩阵的 BOLA 与未批准的存储型 XSS 不得进入可执行候选。
 - BrowserRunner / HttpRunner：只消费由 Guard claim 的 lease。Browser
   只做断网离线渲染；HTTP 只做单跳 transport，不能自行取得授权。
 - EvidenceStore：保存 CapturePolicy 授权的证据、Agent 输出和报告。
@@ -77,11 +88,10 @@ claimed-but-unknown 的执行不得自动重放。Application 启动恢复会把
 终结为 `interrupted / unknown`、把 Scan 置为 `awaiting-user` 并记录
 checkpoint/event；恢复 Evidence 不可用时也必须安全终结。没有 claimed
 lease 的普通 queued/running 中断任务恢复为 `paused`。protected-original
-后端能力本身不构成执行证据：真实 DOM/截图采集、与 Lease 的 provenance
-绑定和确认规则接线尚未接入。当前 XSS 没有这条在线证据链，因此 marker
-executed 仍只能 Inconclusive。
+后端能力本身不构成执行证据：XSS 可审阅 DOM/截图必须由 grant 绑定的
+protected-original 采集进入 Evidence，hash-only 摘要仍只能 Inconclusive。
 
-当前运行时仍只有四个 V1 adapter：`sqli/xss/ssrf/idor`。它们必须持有环境匹配的 QualificationRecord 才能执行；Activation 状态为 `qualified` 只对记录绑定的 environment 与 protocol/selector 切片有效，`resultClass` 仍是 `self-built-fixture`，不得据此声明 supported 或真实目标准确率。`security.headers` 用开放 ID 注册为 `signal-only` 被动描述符，没有运行时映射也没有资格记录，因此不能创建或启动扫描。历史 Scan 若仍快照 `authorization=legacy-v1-compatibility`，恢复时与当前 `qualified` 绑定不一致则进入 awaiting-user，不静默改写授权语义。
+当前运行时仍以四个 V1 adapter（`sqli/xss/ssrf/idor`）为默认扫描族；它们必须持有环境匹配的 QualificationRecord 才能执行。Activation 状态为 `qualified` 只对记录绑定的 environment 与 protocol/selector 切片有效，`resultClass` 仍是 `self-built-fixture`，不得据此声明 supported 或真实目标准确率。SSRF 在同一 `ssrf.legacy-v1@1.2.0` 上增加回显与 loopback OOB technique；远程生产 Collector 协议已定义，状态为 `not-run`。`security.headers.baseline` 是零新增请求的被动模块，由 QualificationRecord 激活，报告标签来自 Registry，不修改 Coordinator family 分支。Day2 的 `security.headers.existing-response-audit` 仍为 registered-only signal。历史 Scan 若仍快照 `authorization=legacy-v1-compatibility`，恢复时与当前 `qualified` 绑定不一致则进入 awaiting-user，不静默改写授权语义。
 
 桌面 Composition Root 使用 `authorized-real-target`，固定本地 benchmark 使用 `attested-fixture`；Application 与 Coordinator 必须共享同一个冻结平台实例。Application 在委托 Coordinator 前独立复核 start/resume；Coordinator 在任何 Candidate 恢复 AgentRun、checkpoint 或探测副作用前再次复核。未知或历史数据库直接写入的 family 因此失败关闭；pause/cancel 不经过激活门禁，仍可安全停止历史任务。ModelGateway 不感知具体 family，继续只处理结构化 schema 和已冻结的扫描输入。
 

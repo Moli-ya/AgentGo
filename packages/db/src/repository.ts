@@ -82,6 +82,7 @@ import {
 } from '@agentgo/domain'
 import { stabilizeScopeNetworkEntries } from '@agentgo/security-policy'
 import type { AgentGoDatabase } from './database'
+import { CandidateAttemptRepository } from './candidate-attempt-repository'
 import {
   ExecutionLeaseRepository,
   type ClaimedExecutionLease,
@@ -97,6 +98,7 @@ import {
   type RecoverInterruptedExecutionLeaseWithCleanupInput,
   type RecoverInterruptedExecutionLeaseWithEvidenceInput
 } from './execution-repository'
+import { ValidationPlanRepository } from './validation-plan-repository'
 import {
   agentRuns,
   auditLogs,
@@ -1110,6 +1112,14 @@ export class AgentGoRepository {
   constructor(private readonly database: AgentGoDatabase) {
     this.scopeLockKey = scopeSnapshotLockKey(database.filePath)
     this.executionRepository = new ExecutionLeaseRepository(database)
+  }
+
+  createValidationPlanRepository(): ValidationPlanRepository {
+    return new ValidationPlanRepository(this.database)
+  }
+
+  createCandidateAttemptRepository(): CandidateAttemptRepository {
+    return new CandidateAttemptRepository(this.database)
   }
 
   private async withScopeSnapshotLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -3505,7 +3515,7 @@ export class AgentGoRepository {
    * Narrow compatibility projection for the fixed legacy-v1 coordinator.
    * Only reviewed L1 variants are eligible. Producer-controlled source labels
    * and fixture environment labels never grant review. Rejected, retired,
-   * non-HTTP, non-query, unsupported custom-header, and non-L1 variants never
+   * non-HTTP, non-query/path, unsupported custom-header, and non-L1 variants never
    * enter the active path.
    */
   private async listLegacyV1ExecutionSelections(
@@ -3540,6 +3550,7 @@ export class AgentGoRepository {
         )
       )
     type ReviewedQuerySelector = Extract<SelectorRef, { kind: 'query' }>
+    type ReviewedPathSelector = Extract<SelectorRef, { kind: 'path' }>
     const querySelectorsByVariant = new Map<
       string,
       Map<string, ReviewedQuerySelector>
@@ -3549,23 +3560,49 @@ export class AgentGoRepository {
         new Map<string, ReviewedQuerySelector>()
       ])
     )
+    const pathSelectorsByVariant = new Map<
+      string,
+      Map<string, ReviewedPathSelector>
+    >(
+      candidateVariantIds.map((variantId) => [
+        variantId,
+        new Map<string, ReviewedPathSelector>()
+      ])
+    )
     const ineligibleSelectorVariantIds = new Set<string>()
     for (const row of selectorRows) {
       const parsedSelector = SelectorRefSchema.safeParse(row.selectorJson)
-      if (!parsedSelector.success || parsedSelector.data.kind !== 'query') {
+      if (!parsedSelector.success) {
         ineligibleSelectorVariantIds.add(row.requestVariantId)
         continue
       }
-      const selector = parsedSelector.data
-      const selectors =
-        querySelectorsByVariant.get(row.requestVariantId) ??
-        new Map<string, ReviewedQuerySelector>()
-      if (selectors.has(selector.name)) {
-        ineligibleSelectorVariantIds.add(row.requestVariantId)
+      if (parsedSelector.data.kind === 'query') {
+        const selector = parsedSelector.data
+        const selectors =
+          querySelectorsByVariant.get(row.requestVariantId) ??
+          new Map<string, ReviewedQuerySelector>()
+        if (selectors.has(selector.name)) {
+          ineligibleSelectorVariantIds.add(row.requestVariantId)
+          continue
+        }
+        selectors.set(selector.name, selector)
+        querySelectorsByVariant.set(row.requestVariantId, selectors)
         continue
       }
-      selectors.set(selector.name, selector)
-      querySelectorsByVariant.set(row.requestVariantId, selectors)
+      if (parsedSelector.data.kind === 'path') {
+        const selector = parsedSelector.data
+        const selectors =
+          pathSelectorsByVariant.get(row.requestVariantId) ??
+          new Map<string, ReviewedPathSelector>()
+        if (selectors.has(selector.name)) {
+          ineligibleSelectorVariantIds.add(row.requestVariantId)
+          continue
+        }
+        selectors.set(selector.name, selector)
+        pathSelectorsByVariant.set(row.requestVariantId, selectors)
+        continue
+      }
+      ineligibleSelectorVariantIds.add(row.requestVariantId)
     }
     const sourceRows = await this.database.orm
       .select({
@@ -3634,6 +3671,14 @@ export class AgentGoRepository {
         )
       ] as const)
     )
+    const pathSelectorsByEndpoint = new Map(
+      selectedVariants.map(({ id, endpointId }) => [
+        endpointId,
+        [...pathSelectorsByVariant.get(id)!.values()].sort((left, right) =>
+          compareBinary(left.name, right.name)
+        )
+      ] as const)
+    )
 
     const eligibleEndpointIds = [
       ...selectedVariantByEndpoint.keys()
@@ -3654,7 +3699,10 @@ export class AgentGoRepository {
     return Promise.all(
       endpointRows.map(async (endpoint) => {
         const selectedVariant = selectedVariantByEndpoint.get(endpoint.id)
-        const reviewedSelectors = querySelectorsByEndpoint.get(endpoint.id) ?? []
+        const reviewedSelectors = [
+          ...(querySelectorsByEndpoint.get(endpoint.id) ?? []),
+          ...(pathSelectorsByEndpoint.get(endpoint.id) ?? [])
+        ]
         const executableUrl = executableUrlByEndpoint.get(endpoint.id)
         const reviewedSourceType = selectedVariant
           ? reviewedSourceTypeByVariant.get(selectedVariant.id)
@@ -3678,7 +3726,8 @@ export class AgentGoRepository {
           parameters: reviewedSelectors.map((selector) => {
             const compatibilityReference = parameterRows.find(
               (parameter) =>
-                parameter.location === 'query' && parameter.name === selector.name
+                parameter.location === selector.kind &&
+                parameter.name === selector.name
             )
             if (!compatibilityReference) {
               throw new Error(
@@ -3688,7 +3737,7 @@ export class AgentGoRepository {
             return {
               id: compatibilityReference.id,
               name: selector.name,
-              location: 'query' as const,
+              location: selector.kind,
               dataType: selector.valueType,
               required: selector.required
             }

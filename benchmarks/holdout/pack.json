@@ -1,0 +1,15 @@
+{
+  "packId": "agentgo-local-holdout",
+  "packVersion": "agentgo-local-holdout/1.0.0",
+  "source": "project-authored-sealed-local-holdout",
+  "license": "project-internal-test-data",
+  "coverageClass": "self-built-fixture",
+  "bindAddress": "127.0.0.1",
+  "portPolicy": "ephemeral",
+  "resetPolicy": "fixture-namespace-only",
+  "outboundPolicy": "loopback-same-origin-callback-only",
+  "files": ["SOURCE.md", "LICENSE", "pack.json"],
+  "packHash": "af5d491ffe4964d71b41f005538ab712b5966819b0eb66f19e0bdc10baa25955",
+  "attestationHash": "6e681b48690a0993ec78d3c4d37c98c05ef38c77c9c4bc355eb7dc294990373b",
+  "note": "Sealed local holdout pack. Not a third-party product. Runtime pack hash is computed from holdoutPackManifest() in packages/evaluation/src/holdout-fixture.ts."
+}

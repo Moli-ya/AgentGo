@@ -11,6 +11,7 @@ import {
 import {
   canonicalizeAllowedHeaderDescriptors,
   canonicalizeInventoryBodyShape,
+  canonicalizeInventoryUrl,
   canonicalizeSelectorRefs,
   stableInventoryHash
 } from '@agentgo/domain'
@@ -113,6 +114,77 @@ function createBinding(
     requestVariant,
     ...overrides
   }
+}
+
+function createPathBinding(): LegacyV1ExecutionBinding {
+  const pathUrl = `${ROUTE}/1`
+  const endpointRecord = InventoryEndpointRecordSchema.parse({
+    id: ENDPOINT_ID,
+    scanId: SCAN_ID,
+    method: 'GET',
+    canonicalRoute: canonicalizeInventoryUrl(pathUrl),
+    lifecycleStatus: 'active',
+    createdAt: NOW,
+    updatedAt: NOW
+  })
+  const selectors = canonicalizeSelectorRefs([
+    { kind: 'path', name: 'id', valueType: 'string', required: true }
+  ])
+  const allowedHeaders = canonicalizeAllowedHeaderDescriptors([
+    { name: 'accept', valueType: 'string', required: true },
+    { name: 'user-agent', valueType: 'string', required: true }
+  ])
+  const bodyShape = canonicalizeInventoryBodyShape({
+    rootType: 'none',
+    fields: []
+  })
+  const structuralValue = {
+    contentType: null,
+    bodyShape,
+    codec: 'none' as const,
+    transport: 'standard-http' as const,
+    allowedHeaders,
+    templateVersion: '1.0.0',
+    requiredCapabilityIds: [CAPABILITY_ID],
+    selectors
+  }
+  const requestVariant = RequestVariantRecordSchema.parse({
+    id: VARIANT_ID,
+    scanId: SCAN_ID,
+    endpointId: ENDPOINT_ID,
+    bodyShape,
+    codec: 'none',
+    transport: 'standard-http',
+    allowedHeaders,
+    templateVersion: '1.0.0',
+    requiredCapabilityIds: [CAPABILITY_ID],
+    selectors,
+    redactedPreview: { url: pathUrl },
+    reviewStatus: 'reviewed',
+    reviewedBy: 'reviewer',
+    reviewedAt: NOW,
+    executionClass: 'active-l1',
+    lifecycleStatus: 'active',
+    structureHash: stableInventoryHash(structuralValue),
+    createdAt: NOW,
+    updatedAt: NOW
+  })
+  const endpoint: InventoryEndpoint = {
+    id: ENDPOINT_ID,
+    method: 'GET',
+    url: pathUrl,
+    source: 'target-base',
+    parameters: [
+      {
+        id: '10000000-0000-4000-8000-000000000009',
+        name: 'id',
+        location: 'path',
+        dataType: 'string',
+        required: true
+      }
+    ]
+  }
+  return { endpoint, endpointRecord, requestVariant }
 }
 
 function createNoQueryBinding(): LegacyV1ExecutionBinding {
@@ -781,6 +853,23 @@ describe('LegacyV1RequestCompilerAdapter', () => {
         desiredTargetUrl: `${ROUTE}?id=value`
       }),
       'binding-rejected'
+    )
+  })
+
+  it('compiles a reviewed path selector through the same RequestCompiler', async () => {
+    const { adapter } = createHarness({ binding: createPathBinding() })
+    const compiled = await adapter.compile({
+      scanId: SCAN_ID,
+      endpointId: ENDPOINT_ID,
+      desiredTargetUrl: `${ROUTE}/1%20AND%201%3D1`,
+      pathMutation: {
+        selectorName: 'id',
+        segmentIndex: 1,
+        value: '1 AND 1=1'
+      }
+    })
+    expect(compiled.compiledRequest.request.materialize().url).toBe(
+      `${ROUTE}/1%20AND%201%3D1`
     )
   })
 })

@@ -451,9 +451,13 @@ export type QualificationRecord = z.infer<typeof QualificationRecordSchema>
 
 export const LEGACY_V1_SUITE_ID = 'legacy-v1' as const
 export const EVALUATION_CORE_META_SUITE_ID = 'evaluation-core-meta' as const
+export const COMPLEX_SUITE_ID = 'complex-v1' as const
+export const HOLDOUT_SUITE_ID = 'external-local-holdout' as const
 
 export const LOCAL_FIXTURE_ID = 'agentgo-local-fixture' as const
 export const LOCAL_FIXTURE_VERSION = 'agentgo-local-fixture/1.0.0' as const
+export const HOLDOUT_FIXTURE_ID = 'agentgo-local-holdout' as const
+export const HOLDOUT_FIXTURE_VERSION = 'agentgo-local-holdout/1.0.0' as const
 
 export const QUALIFICATION_RECORD_ISSUED_AT = '2026-08-20T00:00:00.000Z' as const
 

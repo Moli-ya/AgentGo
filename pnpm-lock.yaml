@@ -132,13 +132,13 @@ importers:
       '@agentgo/security-policy':
         specifier: workspace:*
         version: link:../security-policy
+      '@babel/parser':
+        specifier: 7.29.7
+        version: 7.29.7
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@babel/parser':
-        specifier: 7.29.7
-        version: 7.29.7
       '@types/node':
         specifier: 26.1.1
         version: 26.1.1
@@ -189,6 +189,9 @@ importers:
       '@agentgo/contracts':
         specifier: workspace:*
         version: link:../contracts
+      tldts:
+        specifier: 7.4.11
+        version: 7.4.11
 
   packages/evaluation:
     dependencies:
@@ -2651,6 +2654,13 @@ packages:
   tinyrainbow@3.1.0:
     resolution: {integrity: sha512-Bf+ILmBgretUrdJxzXM0SgXLZ3XfiaUuOj/IKQHuTXip+05Xn+uyEYdVg0kYDipTBcLrCVyUzAPz7QmArb0mmw==}
     engines: {node: '>=14.0.0'}
+
+  tldts-core@7.4.11:
+    resolution: {integrity: sha512-CW3WN2rIIE/Of21mulhgnGOwoDyEFNygyIBOONSdyAuSATgMMUCpLeUlB+E8sAwA5xRV9hYPl+kyZ9citHCaKg==}
+
+  tldts@7.4.11:
+    resolution: {integrity: sha512-aBiNayCfTQxuIJBm06M+xR14cYaYlDlSXZbgsnKzKNxDKUVq7KFwTjwBSsb7m9Y5xO8WfPnBc63WaYFMTGlvqw==}
+    hasBin: true
 
   tmp-promise@3.0.3:
     resolution: {integrity: sha512-RwM7MoPojPxsOBYnyd2hy0bxtIlVrihNs9pj5SUvY8Zz1sQcQG2tG1hSr8PDxfgEB8RNKDhqbIlroIarSNDNsQ==}
@@ -5158,6 +5168,12 @@ snapshots:
       picomatch: 4.0.5
 
   tinyrainbow@3.1.0: {}
+
+  tldts-core@7.4.11: {}
+
+  tldts@7.4.11:
+    dependencies:
+      tldts-core: 7.4.11
 
   tmp-promise@3.0.3:
     dependencies:

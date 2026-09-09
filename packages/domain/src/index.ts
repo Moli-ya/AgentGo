@@ -1,5 +1,6 @@
 import type { Verdict, VulnerabilityFamily } from '@agentgo/contracts'
 
+export * from './identity-session'
 export * from './inventory'
 export * from './l2'
 export * from './safe-probe-payloads'

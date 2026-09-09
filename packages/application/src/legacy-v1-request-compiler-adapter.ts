@@ -40,8 +40,10 @@ import {
 } from './request-compiler'
 
 const QUERY_VALUE_RESOLVER_ID = 'legacy.v1.query-value'
+const PATH_VALUE_RESOLVER_ID = 'legacy.v1.path-value'
 const CREDENTIAL_RESOLVER_ID = 'legacy.v1.identity-credential'
 const QUERY_MUTATION_GENERATOR_ID = 'legacy.v1.fixed-query-mutation'
+const PATH_MUTATION_GENERATOR_ID = 'legacy.v1.fixed-path-mutation'
 const ADAPTER_COMPONENT_VERSION = '1.0.0'
 const REVIEWED_LEGACY_HEADER_VALUES = Object.freeze({
   accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
@@ -87,6 +89,12 @@ export interface LegacyV1QueryMutation {
   readonly value: string
 }
 
+export interface LegacyV1PathMutation {
+  readonly selectorName: string
+  readonly segmentIndex: number
+  readonly value: string
+}
+
 export interface LegacyV1RequestCompilerAdapterInput {
   readonly scanId: string
   readonly endpointId: string
@@ -95,6 +103,7 @@ export interface LegacyV1RequestCompilerAdapterInput {
   readonly identityId?: string
   readonly credentialMode?: 'include' | 'omit'
   readonly queryMutation?: LegacyV1QueryMutation
+  readonly pathMutation?: LegacyV1PathMutation
   readonly executionBinding?: WireRequestExecutionBinding
 }
 
@@ -182,6 +191,7 @@ function snapshotInput(
     'executionBinding',
     'familyId',
     'identityId',
+    'pathMutation',
     'queryMutation',
     'scanId'
   ])
@@ -254,6 +264,34 @@ function snapshotInput(
     })
   }
 
+  let pathMutation: LegacyV1PathMutation | undefined
+  if (input.pathMutation !== undefined) {
+    if (queryMutation) fail('invalid-input')
+    const value = input.pathMutation as unknown
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      fail('invalid-input')
+    }
+    const record = value as Record<string, unknown>
+    const mutationKeys = new Set(['selectorName', 'segmentIndex', 'value'])
+    if (Object.keys(record).some((key) => !mutationKeys.has(key))) {
+      fail('invalid-input')
+    }
+    if (
+      typeof record.selectorName !== 'string' ||
+      record.selectorName.length === 0 ||
+      !Number.isInteger(record.segmentIndex) ||
+      (record.segmentIndex as number) < 0 ||
+      typeof record.value !== 'string'
+    ) {
+      fail('invalid-input')
+    }
+    pathMutation = Object.freeze({
+      selectorName: record.selectorName,
+      segmentIndex: record.segmentIndex as number,
+      value: record.value
+    })
+  }
+
   let executionBinding: WireRequestExecutionBinding | undefined
   if (input.executionBinding !== undefined) {
     const value = input.executionBinding as unknown
@@ -291,6 +329,7 @@ function snapshotInput(
     ...(identityId ? { identityId } : {}),
     credentialMode: input.credentialMode ?? 'include',
     ...(queryMutation ? { queryMutation } : {}),
+    ...(pathMutation ? { pathMutation } : {}),
     ...(executionBinding
       ? { executionBinding }
       : {})
@@ -349,8 +388,12 @@ function validateBinding(
     requestVariant.executionClass !== 'active-l1' ||
     requestVariant.transport !== 'standard-http' ||
     requestVariant.codec !== 'none' ||
-    requestVariant.selectors.some((selector) => selector.kind !== 'query') ||
-    endpoint.parameters.some((parameter) => parameter.location !== 'query') ||
+    requestVariant.selectors.some(
+      (selector) => selector.kind !== 'query' && selector.kind !== 'path'
+    ) ||
+    endpoint.parameters.some(
+      (parameter) => parameter.location !== 'query' && parameter.location !== 'path'
+    ) ||
     requestVariant.allowedHeaders.some(
       ({ name }) =>
         !Object.prototype.hasOwnProperty.call(
@@ -363,7 +406,9 @@ function validateBinding(
   }
   const selectorNames = [...requestVariant.selectors]
     .map((selector) => {
-      if (selector.kind !== 'query') fail('binding-rejected')
+      if (selector.kind !== 'query' && selector.kind !== 'path') {
+        fail('binding-rejected')
+      }
       return selector.name
     })
     .sort(compareText)
@@ -384,7 +429,9 @@ function validateDesiredQueryShape(
   endpoint: LegacyV1ExecutionBinding['endpoint']
 ): void {
   const desiredNames = [...url.searchParams.keys()]
-  const reviewedNames = endpoint.parameters.map(({ name }) => name)
+  const reviewedNames = endpoint.parameters
+    .filter((parameter) => parameter.location === 'query')
+    .map(({ name }) => name)
   if (
     desiredNames.length !== reviewedNames.length ||
     desiredNames.some((name, index) => name !== reviewedNames[index])
@@ -415,16 +462,17 @@ function reviewedHeaderTemplates(
 }
 
 function buildTemplate(
-  url: URL,
-  requestVariant: RequestVariantRecord
+  desiredUrl: URL,
+  requestVariant: RequestVariantRecord,
+  pathMutation?: LegacyV1PathMutation & { originalPathUrl: URL }
 ): Readonly<{
   template: ProbeRequestTemplate
-  resolver: DynamicValueResolver
+  resolvers: readonly DynamicValueResolver[]
 }> {
-  const values = new Map<string, string>()
-  const query = [...url.searchParams.entries()].map(([name, value], index) => {
+  const queryValues = new Map<string, string>()
+  const query = [...desiredUrl.searchParams.entries()].map(([name, value], index) => {
     const slotId = `legacy.query.${index}`
-    values.set(slotId, value)
+    queryValues.set(slotId, value)
     return Object.freeze({
       name,
       value: Object.freeze({
@@ -438,39 +486,69 @@ function buildTemplate(
       })
     })
   })
-  const resolver: DynamicValueResolver = Object.freeze({
+  const queryResolver: DynamicValueResolver = Object.freeze({
     resolverId: QUERY_VALUE_RESOLVER_ID,
     version: ADAPTER_COMPONENT_VERSION,
     resolve: ({ slotId }: DynamicValueResolverInput) => {
-      if (!values.has(slotId)) throw new Error('Unknown legacy query slot.')
-      return values.get(slotId)
+      if (!queryValues.has(slotId)) throw new Error('Unknown legacy query slot.')
+      return queryValues.get(slotId)
     }
   })
+  const pathSource = pathMutation?.originalPathUrl ?? desiredUrl
+  const pathValues = new Map<string, string>()
+  const pathSegmentTemplates = pathSegments(pathSource).map((value, index) => {
+    if (pathMutation && index === pathMutation.segmentIndex) {
+      const slotId = `legacy.path.${index}`
+      pathValues.set(slotId, value)
+      return Object.freeze({
+        selectorName: pathMutation.selectorName,
+        value: Object.freeze({
+          kind: 'dynamic' as const,
+          slotId,
+          resolver: Object.freeze({
+            kind: 'dynamic-value-resolver' as const,
+            resolverId: PATH_VALUE_RESOLVER_ID,
+            version: ADAPTER_COMPONENT_VERSION
+          })
+        })
+      })
+    }
+    return Object.freeze({
+      value: Object.freeze({
+        kind: 'literal' as const,
+        sensitivity: 'public' as const,
+        value
+      })
+    })
+  })
+  const resolvers: DynamicValueResolver[] = [queryResolver]
+  if (pathMutation) {
+    resolvers.push(
+      Object.freeze({
+        resolverId: PATH_VALUE_RESOLVER_ID,
+        version: ADAPTER_COMPONENT_VERSION,
+        resolve: ({ slotId }: DynamicValueResolverInput) => {
+          if (!pathValues.has(slotId)) throw new Error('Unknown legacy path slot.')
+          return pathValues.get(slotId)
+        }
+      })
+    )
+  }
   const template: ProbeRequestTemplate = Object.freeze({
     url: Object.freeze({
       origin: Object.freeze({
         kind: 'literal' as const,
         sensitivity: 'public' as const,
-        value: url.origin
+        value: desiredUrl.origin
       }),
-      pathSegments: Object.freeze(
-        pathSegments(url).map((value) =>
-          Object.freeze({
-            value: Object.freeze({
-              kind: 'literal' as const,
-              sensitivity: 'public' as const,
-              value
-            })
-          })
-        )
-      )
+      pathSegments: Object.freeze(pathSegmentTemplates)
     }),
     query: Object.freeze(query),
     headers: reviewedHeaderTemplates(requestVariant),
     cookies: Object.freeze([]),
     body: Object.freeze({ encoding: 'none' as const })
   })
-  return Object.freeze({ template, resolver })
+  return Object.freeze({ template, resolvers: Object.freeze(resolvers) })
 }
 
 function queryMutationMetadata(
@@ -495,6 +573,42 @@ function queryMutationMetadata(
     maxOutputBytes: 262_144,
     supportedSelectorKinds: ['query'],
     supportedBodyEncodings: ['none']
+  })
+}
+
+function pathMutationMetadata() {
+  return MutationGeneratorMetadataSchema.parse({
+    generatorId: PATH_MUTATION_GENERATOR_ID,
+    version: ADAPTER_COMPONENT_VERSION,
+    deterministic: true,
+    unicodeNormalization: 'NFC',
+    safety: {
+      sideEffect: 'none',
+      dataAccess: 'input-only',
+      networkTarget: 'request-target',
+      mayExecuteInTargetContext: false
+    },
+    requiredCapabilityIds: [],
+    forbiddenCapabilityIds: [],
+    maxOutputBytes: 262_144,
+    supportedSelectorKinds: ['path'],
+    supportedBodyEncodings: ['none']
+  })
+}
+
+function pathMutationGenerator(mutation: LegacyV1PathMutation): MutationGenerator {
+  return Object.freeze({
+    metadata: pathMutationMetadata(),
+    generate: ({ target }: MutationGeneratorInput) => {
+      if (
+        target.kind !== 'path' ||
+        target.selectorName !== mutation.selectorName ||
+        target.segmentIndex !== mutation.segmentIndex
+      ) {
+        throw new Error('Legacy path mutation binding changed.')
+      }
+      return mutation.value
+    }
   })
 }
 
@@ -576,6 +690,7 @@ export class LegacyV1RequestCompilerAdapter {
 
     const desiredUrl = parseDesiredTarget(input.desiredTargetUrl)
     validateDesiredQueryShape(desiredUrl, binding.endpoint)
+    const originalPathUrl = parseDesiredTarget(binding.endpoint.url)
     let identity: IdentityRecord | undefined
     if (input.identityId) {
       let storedIdentity: IdentityRecord | undefined
@@ -601,9 +716,12 @@ export class LegacyV1RequestCompilerAdapter {
       scanRow.configJson.identityIds,
       scope
     )
-    const { template, resolver } = buildTemplate(
+    const { template, resolvers } = buildTemplate(
       desiredUrl,
-      binding.requestVariant
+      binding.requestVariant,
+      input.pathMutation
+        ? { ...input.pathMutation, originalPathUrl }
+        : undefined
     )
     const capabilityIds = Object.freeze(
       [
@@ -619,10 +737,12 @@ export class LegacyV1RequestCompilerAdapter {
     )
     const generator = input.queryMutation
       ? mutationGenerator(input.queryMutation, input.familyId)
-      : undefined
+      : input.pathMutation
+        ? pathMutationGenerator(input.pathMutation)
+        : undefined
     const compiler = new ProbeRequestCompiler({
       mutationGenerators: generator ? [generator] : [],
-      dynamicValueResolvers: [resolver],
+      dynamicValueResolvers: [...resolvers],
       secretRefResolvers: preparedIdentity.secretResolver
         ? [preparedIdentity.secretResolver]
         : [],
@@ -647,7 +767,19 @@ export class LegacyV1RequestCompilerAdapter {
               version: ADAPTER_COMPONENT_VERSION
             }
           }
-        : {}),
+        : input.pathMutation
+          ? {
+              mutationTarget: {
+                kind: 'path' as const,
+                selectorName: input.pathMutation.selectorName,
+                segmentIndex: input.pathMutation.segmentIndex
+              },
+              mutationGenerator: {
+                generatorId: PATH_MUTATION_GENERATOR_ID,
+                version: ADAPTER_COMPONENT_VERSION
+              }
+            }
+          : {}),
       authorizedIdentityHeaders:
         preparedIdentity.authorizedIdentityHeaders,
       enabledCapabilityIds: capabilityIds,

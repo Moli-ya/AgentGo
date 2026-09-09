@@ -91,6 +91,11 @@ export class PolicyBroker {
     /** Exact compiled-wire proof. Omission preserves legacy read compatibility only. */
     authorizedWireRequestHmac?: WireRequestHmac
     ssrfTargetUrl?: string
+    /**
+     * Backend-only. Set only after ApprovalService verified a live approval
+     * record. Renderer/Agent `userApproved` must never populate this.
+     */
+    backendTrustedApproval?: boolean
   }): Promise<PolicyBrokerResult> {
     const scan = await this.repository.getScanRow(input.scanId)
     if (!scan) throw new Error('Cannot evaluate a proposal for a missing scan.')
@@ -112,7 +117,13 @@ export class PolicyBroker {
       stopConditions: input.stopConditions
     })
     const capped = this.#applyScanBudgetCaps(
-      evaluateProbe(action, scope),
+      evaluateProbe(
+        action,
+        scope,
+        input.backendTrustedApproval === true
+          ? { backendTrustedApproval: true }
+          : undefined
+      ),
       action,
       scope,
       scan
@@ -705,6 +716,15 @@ export interface CredentialMetadataAuthority {
   list(): readonly CredentialMetadata[]
 }
 
+/**
+ * Authoritative session-generation checker consulted at the dispatch edge.
+ * A grant carrying a sessionRef can only dispatch while the vault confirms
+ * the pinned generation.
+ */
+export interface SessionGenerationAuthority {
+  assertActiveGeneration(sessionId: string, generation: number): Promise<void>
+}
+
 export class PolicyExecutionGuard
   implements HttpExecutionGuard<ExecutionClaimToken>
 {
@@ -712,17 +732,20 @@ export class PolicyExecutionGuard
   readonly #repository: AgentGoRepository
   readonly #hashKeyProvider: RequestHashKeyProvider | undefined
   readonly #credentialMetadataAuthority: CredentialMetadataAuthority | undefined
+  readonly #sessionAuthority: SessionGenerationAuthority | undefined
   readonly #runnerInstanceId: string
 
   constructor(
     repository: AgentGoRepository,
     hashKeyProvider?: RequestHashKeyProvider,
     credentialMetadataAuthority?: CredentialMetadataAuthority,
+    sessionAuthority?: SessionGenerationAuthority,
     runnerInstanceId: string = randomUUID()
   ) {
     this.#repository = repository
     this.#hashKeyProvider = hashKeyProvider
     this.#credentialMetadataAuthority = credentialMetadataAuthority
+    this.#sessionAuthority = sessionAuthority
     this.#runnerInstanceId = runnerInstanceId
   }
 
@@ -817,8 +840,23 @@ export class PolicyExecutionGuard
       throw new Error('HTTP dispatch requires authorized resolved addresses.')
     }
     this.#assertCredentialAvailable(claim.grant.credentialRef)
+    await this.#assertSessionGenerationCurrent(claim.grant.sessionRef)
     await this.#markDelivery(claimToken, 'possibly-sent')
     this.#assertCredentialAvailable(claim.grant.credentialRef)
+    await this.#assertSessionGenerationCurrent(claim.grant.sessionRef)
+  }
+
+  async #assertSessionGenerationCurrent(
+    sessionRef: ExecutionGrant['sessionRef']
+  ): Promise<void> {
+    if (!sessionRef) return
+    if (!this.#sessionAuthority) {
+      throw new Error('Execution session references require an authoritative session service.')
+    }
+    await this.#sessionAuthority.assertActiveGeneration(
+      sessionRef.id,
+      sessionRef.generation
+    )
   }
 
   markResponseStarted(claimToken: ExecutionClaimToken): Promise<void> {
@@ -1145,7 +1183,8 @@ export class PolicyExecutionGuard
             : context.proposal.action.method,
         scopeSnapshotId: context.scope.id
       },
-      context.scope
+      context.scope,
+      grant.approvalBundleRef ? { backendTrustedApproval: true } : undefined
     )
     if (!revalidation.allowed) {
       throw new Error(

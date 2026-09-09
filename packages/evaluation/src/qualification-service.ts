@@ -137,7 +137,14 @@ export function scoreTechniqueSuite(input: {
 }
 
 export function createQualificationRecordForBinding(input: {
-  binding: LegacyV1RuntimeBinding
+  binding: Pick<
+    LegacyV1RuntimeBinding,
+    | 'moduleId'
+    | 'moduleVersion'
+    | 'definitionHash'
+    | 'techniqueId'
+    | 'techniqueVersion'
+  > & { readonly familyId: string }
   suite: BenchmarkSuiteManifest
   definitionSnapshotHash: string
   policyCatalogHash: string

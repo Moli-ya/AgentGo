@@ -72,6 +72,7 @@ export function classifyInventoryExecution(
   capabilityCatalog: ProbeCapabilityCatalog
 ): InventoryExecutionClass {
   if (FORBIDDEN_HTTP_METHODS.has(input.method)) return 'forbidden'
+  if (input.requiredCapabilityIds.length === 0) return 'inventory-only'
   if (input.transport !== 'standard-http' || input.codec !== 'none') {
     return 'unsupported'
   }

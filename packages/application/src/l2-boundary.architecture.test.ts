@@ -22,6 +22,10 @@ function isL2Source(fileName: string, relativePath: string): boolean {
   return (
     relativePath.includes('/l2/') ||
     /l2-protocol-service\.ts$/u.test(relativePath) ||
+    /l2-probe-orchestrator\.ts$/u.test(relativePath) ||
+    /l2-http-compiler\.ts$/u.test(relativePath) ||
+    /l2-binding-service\.ts$/u.test(relativePath) ||
+    /approval-service\.ts$/u.test(relativePath) ||
     /l2-repository\.ts$/u.test(relativePath) ||
     /l2-migration\.ts$/u.test(relativePath) ||
     /l2\.ts$/u.test(relativePath)

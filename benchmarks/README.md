@@ -40,6 +40,10 @@ pnpm benchmark:run --output .\benchmark-results\my-run
 
 ## 当前回归基线
 
-当前固定靶场使用本地确定性 Profile 运行 40 个 legacy-v1 Case。XSS 正例在缺少 DOM/截图审阅时保持 `Inconclusive`，不能按“全部正例 Confirmed”解读。生产资格记录的 `resultClass` 是 `self-built-fixture`。
+当前固定靶场使用本地确定性 Profile 运行 40 个 legacy-v1 Case。在 `0018` 使离线 browser 17 决策可落库之后，XSS 正例可以 Confirmed。生产资格记录的 `resultClass` 仍是 `self-built-fixture`。
 
-该结果是同一项目自建靶场上的确定性回归基线，不能代表真实公网或复杂业务系统上的泛化能力。Ground Truth 的双人人工复核、第三方固定靶场、真实外部模型和消融实验仍是后续研究任务。
+另有 `pnpm benchmark:complex`（`/research/**`）和 `pnpm benchmark:holdout`（密封本地 pack `agentgo-local-holdout/1.0.0`）。holdout 与开发 fixture 分离，但**不是**第三方产品，不能当成真实环境准确率。
+
+第三方兼容门禁使用 `benchmarks/external-rest-openapi/` 中固定 digest 的 Swagger Petstore V3：启动 loopback 容器后运行 `pnpm benchmark:external --base-url http://127.0.0.1:18080`。该命令导入 OpenAPI、审查两个只读 GET 变体并经 Policy/Grant/Lease 回放，结果只证明兼容链路，不生成漏洞准确率。
+
+该结果是同一项目自建靶场上的确定性回归基线，不能代表真实公网或复杂业务系统上的泛化能力。书面授权试点、真正的第三方固定产品靶场、真实外部模型和消融实验仍是后续研究任务。

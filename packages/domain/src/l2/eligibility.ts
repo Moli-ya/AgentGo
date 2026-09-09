@@ -15,7 +15,8 @@ export function sessionBindingsResolved(bundle: L2ActionBundlePayload): boolean 
   return (
     bindingSlotResolved(bundle.identityContextVersion) &&
     bindingSlotResolved(bundle.sessionGeneration) &&
-    bindingSlotResolved(bundle.csrfBindingVersion)
+    bindingSlotResolved(bundle.csrfBindingVersion) &&
+    bindingSlotResolved(bundle.authorizationMatrixVersion)
   )
 }
 

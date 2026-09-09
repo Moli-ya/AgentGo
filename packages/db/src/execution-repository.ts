@@ -41,6 +41,7 @@ import {
 import { canonicalJson } from '@agentgo/domain'
 import type { AgentGoDatabase } from './database'
 import { isEvidenceItemReferenced } from './evidence-reference-guard'
+import { executionOpaqueRefSql } from './identity-session-migration'
 import {
   evidenceItems,
   executionCaptureDecisions,
@@ -49,13 +50,17 @@ import {
   executionLeases,
   identities,
   interactions,
+  l2ExecutionFreezes,
   policyDecisions,
   probeProposals,
   scanModuleSnapshots,
   scanIdentities,
   scans,
+  sessionVaultSessions,
   targetScopes,
   targets,
+  testObjects,
+  approvalRecords,
   toolCalls
 } from './schema'
 
@@ -224,7 +229,7 @@ function assertCaptureDecisionSetBinding(
   grant: ExecutionGrantDraft | ExecutionGrant
 ): ExecutionCaptureDecisionSet {
   const decisionSet = ExecutionCaptureDecisionSetSchema.parse(input)
-  const sourceRoles =
+  const summaryRoles =
     grant.adapterKind === 'http'
       ? new Map([
           ['http-request-summary', 'request-summary'],
@@ -238,32 +243,58 @@ function assertCaptureDecisionSetBinding(
             ['execution-interruption-summary', 'interruption-summary']
           ])
         : undefined
-  if (!sourceRoles) {
+  const reviewableRoles =
+    grant.adapterKind === 'browser-offline'
+      ? new Map([
+          ['dom-snapshot', 'dom-snapshot'],
+          ['browser-screenshot', 'screenshot']
+        ])
+      : new Map<string, string>()
+  if (!summaryRoles) {
     throw new Error('Execution capture decisions require a supported adapter.')
+  }
+  if (
+    (grant.adapterKind === 'http' && decisionSet.decisions.length !== 9) ||
+    (grant.adapterKind === 'browser-offline' &&
+      decisionSet.decisions.length !== 17)
+  ) {
+    throw new Error(
+      'Execution capture decision set does not match its immutable grant.'
+    )
   }
   const seen = new Set<string>()
   for (const decision of decisionSet.decisions) {
-    const expectedRole = sourceRoles.get(decision.source)
+    const summaryRole = summaryRoles.get(decision.source)
+    const reviewableRole = reviewableRoles.get(decision.source)
     const bindingKey = `${decision.source}\u0000${decision.executionState}`
-    if (
-      expectedRole === undefined ||
-      decision.role !== expectedRole ||
-      decision.action !== 'hash-only' ||
-      decision.scanId !== grant.scanId ||
-      decision.policyDecisionId !== grant.policyDecisionId ||
-      decision.techniqueId !== grant.techniqueId ||
-      decision.techniqueVersion !== grant.techniqueVersion ||
-      decision.stepId !== grant.stepId ||
-      decision.validFrom !== grant.validFrom ||
-      decision.validUntil !== grant.validUntil ||
-      decision.jsonPointers.length !== 0 ||
-      decision.oobMetadataFields.length !== 0 ||
-      decision.oobCommitmentKeyRef !== undefined ||
-      decision.oobCommitmentKeyVersion !== undefined ||
+    const boundToGrant =
+      decision.scanId === grant.scanId &&
+      decision.policyDecisionId === grant.policyDecisionId &&
+      decision.techniqueId === grant.techniqueId &&
+      decision.techniqueVersion === grant.techniqueVersion &&
+      decision.stepId === grant.stepId &&
+      decision.validFrom === grant.validFrom &&
+      decision.validUntil === grant.validUntil &&
+      decision.jsonPointers.length === 0 &&
+      decision.oobMetadataFields.length === 0 &&
+      decision.oobCommitmentKeyRef === undefined &&
+      decision.oobCommitmentKeyVersion === undefined
+    const summaryMatch =
+      summaryRole !== undefined &&
+      decision.role === summaryRole &&
+      decision.action === 'hash-only' &&
+      boundToGrant &&
       (decision.source === 'execution-interruption-summary'
-        ? decision.executionState !== 'interrupted'
-        : decision.executionState === 'interrupted')
-    ) {
+        ? decision.executionState === 'interrupted'
+        : decision.executionState !== 'interrupted')
+    const reviewableMatch =
+      reviewableRole !== undefined &&
+      decision.role === reviewableRole &&
+      decision.action === 'protected-original' &&
+      decision.protectedOriginalPlan !== undefined &&
+      boundToGrant &&
+      decision.executionState !== 'interrupted'
+    if (!summaryMatch && !reviewableMatch) {
       throw new Error(
         'Execution capture decision set does not match its immutable grant.'
       )
@@ -272,10 +303,19 @@ function assertCaptureDecisionSetBinding(
   }
   const states = ['cancelled', 'failed', 'succeeded', 'timed-out'] as const
   for (
-    const source of [...sourceRoles.keys()].filter(
+    const source of [...summaryRoles.keys()].filter(
       (value) => value !== 'execution-interruption-summary'
     )
   ) {
+    for (const state of states) {
+      if (!seen.has(`${source}\u0000${state}`)) {
+        throw new Error(
+          'Execution capture decision set is incomplete for its adapter.'
+        )
+      }
+    }
+  }
+  for (const source of reviewableRoles.keys()) {
     for (const state of states) {
       if (!seen.has(`${source}\u0000${state}`)) {
         throw new Error(
@@ -751,13 +791,90 @@ export class ExecutionLeaseRepository {
             'Execution grant scope or module snapshot binding is invalid.'
           )
         }
-        if (
-          grant.sessionRef !== undefined ||
-          grant.testObjectRef !== undefined
-        ) {
-          throw new Error(
-            'Execution session and test-object refs require authoritative services.'
-          )
+        if (grant.sessionRef) {
+          const [session] = await transaction
+            .select()
+            .from(sessionVaultSessions)
+            .where(eq(sessionVaultSessions.sessionId, grant.sessionRef.id))
+            .limit(1)
+          if (
+            !session ||
+            session.status !== 'active' ||
+            session.generation !== grant.sessionRef.generation ||
+            session.targetId !== context.targetId ||
+            grant.sessionRef.ownerRef !== context.targetId ||
+            session.scopeSnapshotId !== grant.scopeSnapshotId ||
+            grant.sessionRef.scopeSnapshotId !== grant.scopeSnapshotId ||
+            grant.sessionRef.statusSummary !== 'active' ||
+            (grant.identityRef !== undefined &&
+              session.identityId !== grant.identityRef.id)
+          ) {
+            throw new Error(
+              'Execution session reference is not an active bound session.'
+            )
+          }
+        }
+        if (grant.testObjectRef) {
+          const [object] = await transaction
+            .select()
+            .from(testObjects)
+            .where(
+              and(
+                eq(testObjects.testObjectId, grant.testObjectRef.id),
+                eq(testObjects.objectVersion, grant.testObjectRef.version)
+              )
+            )
+            .limit(1)
+          if (
+            !object ||
+            object.targetId !== context.targetId ||
+            grant.testObjectRef.ownerRef !== context.targetId ||
+            object.scanId !== grant.scanId ||
+            object.scopeSnapshotId !== grant.scopeSnapshotId ||
+            grant.testObjectRef.scopeSnapshotId !== grant.scopeSnapshotId ||
+            object.disposable !== true ||
+            object.expiresAt <= now ||
+            (grant.testObjectRef.statusSummary !== 'ready' &&
+              grant.testObjectRef.statusSummary !== 'in-use') ||
+            (grant.identityRef !== undefined &&
+              object.identityId !== grant.identityRef.id)
+          ) {
+            throw new Error(
+              'Execution test-object reference is not an authorized disposable TestObject.'
+            )
+          }
+          const [freeze] = await transaction
+            .select({ freezeId: l2ExecutionFreezes.freezeId })
+            .from(l2ExecutionFreezes)
+            .where(
+              and(
+                eq(l2ExecutionFreezes.targetId, object.targetId),
+                eq(l2ExecutionFreezes.testObjectId, object.testObjectId)
+              )
+            )
+            .limit(1)
+          if (freeze && grant.purpose !== 'cleanup') {
+            throw new Error(
+              'Ordinary execution is frozen for this TestObject after cleanup failure.'
+            )
+          }
+        }
+        if (grant.approvalBundleRef) {
+          const [approval] = await transaction
+            .select()
+            .from(approvalRecords)
+            .where(eq(approvalRecords.approvalId, grant.approvalBundleRef))
+            .limit(1)
+          if (
+            !approval ||
+            approval.decision !== 'approved' ||
+            (approval.status !== 'active' && approval.status !== 'consumed') ||
+            (approval.status === 'active' && approval.expiresAt <= now)
+          ) {
+            throw new Error(
+              'Execution approval record is missing, expired, or not live.'
+            )
+          }
         }
         if (
           (context.proposal.identityId ?? null) !==
@@ -1092,8 +1209,7 @@ export class ExecutionLeaseRepository {
                  ) = ?
                  AND grant_row.purpose = ?
                  AND grant_row.adapter_kind = ?
-                 AND grant_row.session_ref_json IS NULL
-                 AND grant_row.test_object_ref_json IS NULL
+                 ${executionOpaqueRefSql('grant_row')}
                  AND (
                    (
                      grant_row.identity_ref_json IS NULL
@@ -1362,8 +1478,7 @@ export class ExecutionLeaseRepository {
                    = execution_leases.id
                    AND tool_call_row.status = 'running'
                )
-               AND grant_row.session_ref_json IS NULL
-               AND grant_row.test_object_ref_json IS NULL
+               ${executionOpaqueRefSql('grant_row')}
                AND (
                  (
                    grant_row.identity_ref_json IS NULL

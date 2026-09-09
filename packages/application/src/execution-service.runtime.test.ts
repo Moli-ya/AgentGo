@@ -6,6 +6,11 @@ import type {
 } from '@agentgo/browser-runner'
 import {
   EvidenceCaptureDecisionSchema,
+  MAX_PROTECTED_EVIDENCE_RETENTION_SECONDS,
+  PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+  PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+  PROTECTED_EVIDENCE_POLICY_VERSION,
+  PROTECTED_EVIDENCE_PROTECTION_SCHEME,
   type EvidenceCaptureDecision,
   type EvidenceCaptureExecutionState
 } from '@agentgo/contracts'
@@ -52,7 +57,9 @@ const ids = {
   lease: '20000000-0000-4000-8000-000000000009',
   toolCall: '20000000-0000-4000-8000-00000000000a',
   requestEvidence: '20000000-0000-4000-8000-00000000000b',
-  resultEvidence: '20000000-0000-4000-8000-00000000000c'
+  resultEvidence: '20000000-0000-4000-8000-00000000000c',
+  domEvidence: '20000000-0000-4000-8000-00000000000e',
+  screenshotEvidence: '20000000-0000-4000-8000-00000000000f'
 } as const
 
 const providers: EphemeralRequestHashKeyProvider[] = []
@@ -71,6 +78,7 @@ interface FixtureOptions {
   readonly abortController?: AbortController
   readonly abortOnIssue?: boolean
   readonly resultFactory?: BrowserResultFactory
+  readonly persistReviewable?: boolean
   readonly evidenceSaveFailureAt?: number
   readonly interactionAuditFailure?: boolean
   readonly interactionAuditIdentityChange?: boolean
@@ -148,6 +156,86 @@ function normalCaptureDecisions(
   })
 }
 
+function reviewableCaptureDecision(
+  index: number,
+  validUntil: string,
+  source: 'dom-snapshot' | 'browser-screenshot',
+  role: 'dom-snapshot' | 'screenshot',
+  executionState: EvidenceCaptureExecutionState
+): EvidenceCaptureDecision {
+  return EvidenceCaptureDecisionSchema.parse({
+    id: captureDecisionId(index),
+    scanId: ids.scan,
+    policyDecisionId: ids.decision,
+    capturePolicyId: 'evidence-summary-v1',
+    capturePolicyVersion: '1.0.0',
+    techniqueId: 'xss.reflected',
+    techniqueVersion: '1.0.0',
+    stepId: 'xss.reflected.offline',
+    executionState,
+    source,
+    role,
+    action: 'protected-original',
+    validFrom: NOW,
+    validUntil,
+    maxSourceBytes: 16_777_216,
+    maxExcerptBytes: 32,
+    jsonPointers: [],
+    oobMetadataFields: [],
+    protectedOriginalPlan: {
+      protectionScheme: PROTECTED_EVIDENCE_PROTECTION_SCHEME,
+      accessPolicyId: PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+      accessPolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+      derivativePolicyId: PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+      derivativePolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+      retentionSeconds: Math.min(
+        7 * 24 * 60 * 60,
+        MAX_PROTECTED_EVIDENCE_RETENTION_SECONDS
+      ),
+      maxScanPlaintextBytes: 16_777_216,
+      maxWorkspacePlaintextBytes: 16_777_216
+    }
+  })
+}
+
+function reviewableCaptureDecisions(
+  startIndex: number,
+  validUntil: string,
+  source: 'dom-snapshot' | 'browser-screenshot',
+  role: 'dom-snapshot' | 'screenshot'
+) {
+  return Object.freeze({
+    succeeded: reviewableCaptureDecision(
+      startIndex,
+      validUntil,
+      source,
+      role,
+      'succeeded'
+    ),
+    failed: reviewableCaptureDecision(
+      startIndex + 1,
+      validUntil,
+      source,
+      role,
+      'failed'
+    ),
+    cancelled: reviewableCaptureDecision(
+      startIndex + 2,
+      validUntil,
+      source,
+      role,
+      'cancelled'
+    ),
+    'timed-out': reviewableCaptureDecision(
+      startIndex + 3,
+      validUntil,
+      source,
+      role,
+      'timed-out'
+    )
+  })
+}
+
 function captureDecisions(
   validUntil: string
 ): ExecutionEvidenceCaptureDecisionSet {
@@ -172,6 +260,18 @@ function captureDecisions(
       validUntil,
       'browser-result-summary',
       'result-summary'
+    ),
+    'dom-snapshot': reviewableCaptureDecisions(
+      10,
+      validUntil,
+      'dom-snapshot',
+      'dom-snapshot'
+    ),
+    'browser-screenshot': reviewableCaptureDecisions(
+      14,
+      validUntil,
+      'browser-screenshot',
+      'screenshot'
     )
   })
 }
@@ -278,9 +378,24 @@ function createFixture(options: FixtureOptions = {}) {
   const discardUnboundEvidence = vi.fn(async (_evidence: unknown) =>
     options.discardUnboundResult ?? true
   )
+  const saveProtectedOriginal = vi.fn(async (input: { artifact?: { source?: string } }) => {
+    const source = input.artifact?.source
+    const id =
+      source === 'browser-screenshot' ? ids.screenshotEvidence : ids.domEvidence
+    return {
+      original: {
+        id,
+        filePath: `fixture/${id}.bin`,
+        sha256: id.replaceAll('-', '').padEnd(64, '0').slice(0, 64)
+      }
+    }
+  })
   const evidenceStore = {
     save: evidenceSave,
-    discardUnboundEvidence
+    discardUnboundEvidence,
+    ...(options.persistReviewable
+      ? { saveProtectedOriginalWithDerivative: saveProtectedOriginal }
+      : {})
   } as unknown as EvidenceStore
 
   const policyEvaluate = vi.fn(async () => ({
@@ -426,7 +541,8 @@ function createFixture(options: FixtureOptions = {}) {
     finalizeFailed,
     revoke,
     browserExecute,
-    browserCancel
+    browserCancel,
+    saveProtectedOriginal
   }
 }
 
@@ -699,6 +815,32 @@ describe('ExecutionService offline audit boundary', () => {
       {
         code: 'network-error',
         responseBytes: 0,
+        evidenceRefs: [
+          ids.requestEvidence,
+          ids.resultEvidence
+        ]
+      }
+    )
+  })
+
+  it('persists grant-bound DOM originals when the protector path is available', async () => {
+    const fixture = createFixture({
+      persistReviewable: true
+    })
+
+    const stored = await fixture.service.execute(fixture.input)
+
+    expect(stored.reviewableDomOrScreenshotEvidence).toBe(true)
+    expect(stored.evidenceRefs).toEqual([
+      ids.requestEvidence,
+      ids.resultEvidence,
+      ids.domEvidence
+    ])
+    expect(fixture.saveProtectedOriginal).toHaveBeenCalledTimes(1)
+    expect(fixture.finalizeSucceeded).toHaveBeenCalledWith(
+      fixture.claimToken,
+      {
+        responseBytes: stored.result.resultBytes,
         evidenceRefs: [
           ids.requestEvidence,
           ids.resultEvidence

@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto'
 import {
   DefinitionIdSchema,
   EvidenceCaptureDecisionSchema,
+  MAX_PROTECTED_EVIDENCE_RETENTION_SECONDS,
+  PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+  PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+  PROTECTED_EVIDENCE_POLICY_VERSION,
+  PROTECTED_EVIDENCE_PROTECTION_SCHEME,
   ExecutionAdapterKindSchema,
   ExecutionCapabilityIdsSchema,
   ExecutionCaptureDecisionSetSchema,
@@ -47,6 +52,7 @@ import {
   type IssueExecutionGrantInput
 } from '@agentgo/db'
 import { evaluateProbe } from '@agentgo/security-policy'
+import type { SessionGenerationAuthority } from './execution-policy'
 import type { EphemeralRequestHashKeyProvider } from './request-hash-key-provider'
 import {
   CompiledWireRequest,
@@ -92,6 +98,7 @@ export interface IssueRootExecutionInput {
   readonly credentialRef: ExecutionCredentialRef | null
   readonly sessionRef?: SessionGenerationRef
   readonly testObjectRef?: TestObjectRef
+  readonly approvalBundleRef?: string
   readonly purpose: ExecutionPurpose
   readonly adapterKind: SupportedExecutionAdapter
   readonly retryClass: ExecutionRetryClass
@@ -133,6 +140,8 @@ export type ExecutionEvidenceCaptureDecisionSet =
       'execution-interruption-summary': InterruptionCaptureDecision
       'browser-request-summary': EvidenceCaptureDecisionsByState
       'browser-result-summary': EvidenceCaptureDecisionsByState
+      'dom-snapshot': EvidenceCaptureDecisionsByState
+      'browser-screenshot': EvidenceCaptureDecisionsByState
     }>
 
 export interface IssuedExecutionAuthority {
@@ -485,6 +494,21 @@ const EXECUTION_SUMMARY_CAPTURE_POLICY_ID =
 const EXECUTION_SUMMARY_CAPTURE_POLICY_VERSION = '1.0.0' as const
 const EXECUTION_SUMMARY_MAX_SOURCE_BYTES = 65_536
 const EXECUTION_SUMMARY_MAX_EXCERPT_BYTES = 32
+const BROWSER_REVIEWABLE_MAX_SOURCE_BYTES = 16_777_216
+const BROWSER_REVIEWABLE_RETENTION_SECONDS = Math.min(
+  7 * 24 * 60 * 60,
+  MAX_PROTECTED_EVIDENCE_RETENTION_SECONDS
+)
+const BROWSER_REVIEWABLE_PLAN = Object.freeze({
+  protectionScheme: PROTECTED_EVIDENCE_PROTECTION_SCHEME,
+  accessPolicyId: PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+  accessPolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+  derivativePolicyId: PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+  derivativePolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+  retentionSeconds: BROWSER_REVIEWABLE_RETENTION_SECONDS,
+  maxScanPlaintextBytes: BROWSER_REVIEWABLE_MAX_SOURCE_BYTES,
+  maxWorkspacePlaintextBytes: BROWSER_REVIEWABLE_MAX_SOURCE_BYTES
+})
 
 type ExecutionSummarySource =
   | 'http-request-summary'
@@ -505,11 +529,22 @@ function createEvidenceCaptureDecisionSet(
     issuedIds.add(id)
     return id
   }
-  const decision = (
-    source: ExecutionSummarySource,
-    role: 'request-summary' | 'response-summary' | 'result-summary' | 'interruption-summary',
-    executionState: EvidenceCaptureExecutionState
-  ): EvidenceCaptureDecision =>
+  const decision = (input: {
+    readonly source:
+      | ExecutionSummarySource
+      | 'dom-snapshot'
+      | 'browser-screenshot'
+    readonly role:
+      | 'request-summary'
+      | 'response-summary'
+      | 'result-summary'
+      | 'interruption-summary'
+      | 'dom-snapshot'
+      | 'screenshot'
+    readonly executionState: EvidenceCaptureExecutionState
+    readonly action?: 'hash-only' | 'protected-original'
+    readonly maxSourceBytes?: number
+  }): EvidenceCaptureDecision =>
     EvidenceCaptureDecisionSchema.parse({
       id: issueId(),
       scanId: grant.scanId,
@@ -519,33 +554,70 @@ function createEvidenceCaptureDecisionSet(
       techniqueId: grant.techniqueId,
       techniqueVersion: grant.techniqueVersion,
       stepId: grant.stepId,
-      executionState,
-      source,
-      role,
-      action: 'hash-only',
+      executionState: input.executionState,
+      source: input.source,
+      role: input.role,
+      action: input.action ?? 'hash-only',
       validFrom: grant.validFrom,
       validUntil: grant.validUntil,
-      maxSourceBytes: EXECUTION_SUMMARY_MAX_SOURCE_BYTES,
+      maxSourceBytes: input.maxSourceBytes ?? EXECUTION_SUMMARY_MAX_SOURCE_BYTES,
       maxExcerptBytes: EXECUTION_SUMMARY_MAX_EXCERPT_BYTES,
       jsonPointers: [],
-      oobMetadataFields: []
+      oobMetadataFields: [],
+      ...(input.action === 'protected-original'
+        ? { protectedOriginalPlan: BROWSER_REVIEWABLE_PLAN }
+        : {})
     })
   const decisionsByState = (
     source: ExecutionSummarySource,
     role: 'request-summary' | 'response-summary' | 'result-summary'
   ): EvidenceCaptureDecisionsByState =>
     Object.freeze({
-      succeeded: decision(source, role, 'succeeded'),
-      failed: decision(source, role, 'failed'),
-      cancelled: decision(source, role, 'cancelled'),
-      'timed-out': decision(source, role, 'timed-out')
+      succeeded: decision({ source, role, executionState: 'succeeded' }),
+      failed: decision({ source, role, executionState: 'failed' }),
+      cancelled: decision({ source, role, executionState: 'cancelled' }),
+      'timed-out': decision({ source, role, executionState: 'timed-out' })
+    })
+  const reviewableByState = (
+    source: 'dom-snapshot' | 'browser-screenshot',
+    role: 'dom-snapshot' | 'screenshot'
+  ): EvidenceCaptureDecisionsByState =>
+    Object.freeze({
+      succeeded: decision({
+        source,
+        role,
+        executionState: 'succeeded',
+        action: 'protected-original',
+        maxSourceBytes: BROWSER_REVIEWABLE_MAX_SOURCE_BYTES
+      }),
+      failed: decision({
+        source,
+        role,
+        executionState: 'failed',
+        action: 'protected-original',
+        maxSourceBytes: BROWSER_REVIEWABLE_MAX_SOURCE_BYTES
+      }),
+      cancelled: decision({
+        source,
+        role,
+        executionState: 'cancelled',
+        action: 'protected-original',
+        maxSourceBytes: BROWSER_REVIEWABLE_MAX_SOURCE_BYTES
+      }),
+      'timed-out': decision({
+        source,
+        role,
+        executionState: 'timed-out',
+        action: 'protected-original',
+        maxSourceBytes: BROWSER_REVIEWABLE_MAX_SOURCE_BYTES
+      })
     })
   const interruptionDecision = Object.freeze({
-    interrupted: decision(
-      'execution-interruption-summary',
-      'interruption-summary',
-      'interrupted'
-    )
+    interrupted: decision({
+      source: 'execution-interruption-summary',
+      role: 'interruption-summary',
+      executionState: 'interrupted'
+    })
   })
 
 
@@ -572,7 +644,9 @@ function createEvidenceCaptureDecisionSet(
       'browser-result-summary': decisionsByState(
         'browser-result-summary',
         'result-summary'
-      )
+      ),
+      'dom-snapshot': reviewableByState('dom-snapshot', 'dom-snapshot'),
+      'browser-screenshot': reviewableByState('browser-screenshot', 'screenshot')
     })
   }
   throw new Error('Evidence capture decisions require a supported adapter.')
@@ -635,16 +709,19 @@ function assertModuleMatchesGrant(
 export class ExecutionAuthority {
   readonly #repository: AgentGoRepository
   readonly #keyProvider: EphemeralRequestHashKeyProvider
+  readonly #sessionAuthority?: SessionGenerationAuthority
   readonly #clock: () => number
 
   constructor(
     repository: AgentGoRepository,
     keyProvider: EphemeralRequestHashKeyProvider,
-    clock: () => number = Date.now
+    clock: () => number = Date.now,
+    sessionAuthority?: SessionGenerationAuthority
   ) {
     this.#repository = repository
     this.#keyProvider = keyProvider
     this.#clock = clock
+    this.#sessionAuthority = sessionAuthority
   }
 
   async issue(
@@ -717,7 +794,8 @@ export class ExecutionAuthority {
       adapterKind,
       budget,
       grantValidUntil,
-      now
+      now,
+      approvalBundleRef: input.approvalBundleRef
     })
     if (!loaded.scan.configJson.families.includes(familyId)) {
       throw new Error('Execution family is outside the frozen scan configuration.')
@@ -729,6 +807,13 @@ export class ExecutionAuthority {
       capabilityIds
     )
     await this.#validateOpaqueRefs(loaded, refs)
+    if (
+      refs.testObjectRef &&
+      (purpose === 'primary' || purpose === 'cleanup') &&
+      input.approvalBundleRef === undefined
+    ) {
+      throw new Error('L2 primary and cleanup grants require a bound approval record.')
+    }
     const plan = derivePlan(loaded.scan)
     const grant: ExecutionGrantDraft = {
       scanId,
@@ -756,6 +841,9 @@ export class ExecutionAuthority {
       adapterKind,
       retryClass,
       policyDecisionId,
+      ...(input.approvalBundleRef
+        ? { approvalBundleRef: SystemIssuedOpaqueIdSchema.parse(input.approvalBundleRef) }
+        : {}),
       redirectHop: 0,
       validFrom: new Date(now).toISOString(),
       validUntil: input.grantValidUntil
@@ -905,7 +993,8 @@ export class ExecutionAuthority {
       adapterKind: parentGrant.adapterKind,
       budget,
       grantValidUntil,
-      now
+      now,
+      approvalBundleRef: parentGrant.approvalBundleRef
     })
     const moduleSnapshot = loaded.snapshots.find(
       (snapshot) => snapshot.id === parentGrant.moduleSnapshotId
@@ -1032,6 +1121,7 @@ export class ExecutionAuthority {
     readonly budget: ExecutionGrantDraft['budget']
     readonly grantValidUntil: number
     readonly now: number
+    readonly approvalBundleRef?: string
   }): void {
     const { scan, decision } = input.loaded
     const decisionValidUntil = decision.decision.validUntil
@@ -1117,7 +1207,8 @@ export class ExecutionAuthority {
             : decision.proposal.action.method,
         scopeSnapshotId: decision.scope.id
       },
-      decision.scope
+      decision.scope,
+      input.approvalBundleRef ? { backendTrustedApproval: true } : undefined
     )
     if (!revalidation.allowed) {
       throw new Error(
@@ -1192,6 +1283,15 @@ export class ExecutionAuthority {
     }
     if (refs.sessionRef && refs.sessionRef.statusSummary !== 'active') {
       throw new Error('Execution session reference is not active.')
+    }
+    if (refs.sessionRef) {
+      if (!this.#sessionAuthority) {
+        throw new Error('Execution session references require an authoritative session service.')
+      }
+      await this.#sessionAuthority.assertActiveGeneration(
+        refs.sessionRef.id,
+        refs.sessionRef.generation
+      )
     }
     if (
       refs.testObjectRef &&

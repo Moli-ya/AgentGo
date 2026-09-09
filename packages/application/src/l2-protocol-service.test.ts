@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import {
   L2_CLEANUP_CAPABILITY_ID,
   ScanModuleSnapshotDraftSchema,
@@ -244,6 +244,10 @@ afterEach(() => {
   }
 })
 
+afterAll(() => {
+  vi.unstubAllGlobals()
+})
+
 describe('L2 protocol service', () => {
   it('issues AgentGo attestations and keeps unresolved session-binding bundles in draft', async () => {
     const harness = await createHarness()
@@ -357,6 +361,7 @@ describe('L2 protocol service', () => {
       identityContextVersion: { status: 'resolved', version: 'identity-1' },
       sessionGeneration: { status: 'resolved', version: 'session-1' },
       csrfBindingVersion: { status: 'resolved', version: 'csrf-1' },
+      authorizationMatrixVersion: { status: 'resolved', version: 'matrix-1' },
       steps: steps(object),
       createdAt: object.createdAt
     })

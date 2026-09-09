@@ -74,6 +74,7 @@ import {
   KnowledgeReviewerOutputSchema
 } from './agent-prompts'
 import { EvidenceCapturePolicy } from './evidence-capture-policy'
+import { FindingAssembler } from './finding-assembler'
 import { InventoryService } from './inventory-service'
 import {
   ReportService,
@@ -117,6 +118,36 @@ export * from './qualification-record'
 export * from './l2-protocol-service'
 export * from './legacy-v1-qualification-records'
 export * from './record-backed-activation-catalog'
+export * from './identity-context-service'
+export * from './session-vault'
+export * from './csrf-binding-service'
+export * from './authorization-matrix-service'
+export * from './l2-binding-service'
+export * from './approval-service'
+export * from './l2-http-compiler'
+export * from './l2-probe-orchestrator'
+export * from './import-service'
+export * from './discovery/static-discovery-service'
+export * from './asset-manifest-service'
+export * from './extraction-rule-service'
+export * from './inventory-merge-service'
+export * from './dependency-graph-service'
+export * from './browser-recon-session'
+export * from './browser-recon-service'
+export * from './mediated-read-compiler'
+export * from './validation-plan-compiler'
+export * from './validation-plan-executor'
+export * from './loopback-callback-collector'
+export * from './retrieval-service'
+export * from './legacy-validation-plans'
+export * from './legacy-parity-adapters'
+export * from './detector-service'
+export * from './candidate-compiler'
+export * from './finding-assembler'
+export * from './sqli-mutation-gate'
+export * from './sqli-response-normalizer'
+export * from './idor-response-normalizer'
+export * from './path-value-mutation'
 
 export interface ScanCoordinator {
   control(scanId: string, action: ScanControlAction): Promise<ScanRecord>
@@ -182,7 +213,11 @@ export class AgentGoApplicationService {
     this.reportService =
       dependencies.reportService ??
       (dependencies.evidenceStore
-        ? new ReportService(dependencies.repository, dependencies.evidenceStore)
+        ? new ReportService(dependencies.repository, dependencies.evidenceStore, {
+            familyDisplayNames: new FindingAssembler(
+              dependencies.vulnerabilityPlatform.definitionRegistry
+            ).familyDisplayNames()
+          })
         : undefined)
     this.evidenceCapturePolicy =
       dependencies.evidenceCapturePolicy ?? new EvidenceCapturePolicy()

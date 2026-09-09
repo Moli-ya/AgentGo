@@ -4,7 +4,7 @@
 
 KnowledgeAgent 负责把目标上下文转换为小而可信、可引用、带安全约束的 KnowledgePack。它不是随意生成 payload 的聊天 Agent，也不是未经治理的攻击脚本仓库。
 
-KnowledgeAgent 的价值应通过检索质量、策略适用性、误报减少和修复建议质量进行评估。
+KnowledgeAgent 的价值应通过检索质量、策略适用性、误报减少和修复建议质量进行评估。Knowledge / Agent / 模型输出不能把非 Confirmed 的确定性评估提升为 Confirmed；Coordinator 以 ValidationPlan 评估为上限。
 
 ## 2. 内容类型
 
@@ -19,7 +19,7 @@ KnowledgeAgent 的价值应通过检索质量、策略适用性、误报减少�
 - 经脱敏的已确认案例摘要；
 - 禁止动作和策略约束。
 
-V1 首先建设 SQL 注入、XSS、SSRF、越权/IDOR 四个知识包。
+V1 首先建设 SQL 注入、XSS、SSRF、越权/IDOR 四个知识包。Day 19 另增加 `security.headers` 被动基线知识，以及 SSRF 回显/loopback OOB 条目；远程生产 Collector 不得写成已运行。
 
 ## 3. 来源治理
 
@@ -126,7 +126,7 @@ ProbeTemplate 必须结构化并包含：
 
 ### 越权 / IDOR
 
-描述身份、角色、资源归属、读写动作和业务状态，提供双身份只读对照和服务端授权修复建议。
+描述身份、角色、资源归属、读写动作和业务状态，提供双身份只读对照、对象级授权和回归矩阵修复建议；不以不可猜 ID 作为根本修复。只读 BOLA 需要授权矩阵；BFLA/写越权保持 signal。
 
 ## 9. 修复建议生成
 

@@ -153,7 +153,7 @@ Confirmed。
 
 ### 越权 / IDOR
 
-至少准备两个授权测试身份和已知归属的测试资源。优先进行只读访问对照；不得修改或删除其他身份资源。发现可读取证据后立即停止扩大枚举。
+至少准备两个授权测试身份和已知归属的测试资源。优先进行只读访问对照；不得修改或删除其他身份资源。发现可读取证据后立即停止扩大枚举。只读 BOLA 必须结合 AuthorizationMatrix 排除公开、共享和管理员误报；两个相似 200 长度不能 Confirmed。Evidence 只记录身份 label/hash，不保存 Cookie/Token。写越权、BFLA、BOPLA 保持 signal 或专用 fixture L2，不以不可猜 ID 作为根本修复。
 
 ## 6. WAF 与阻断
 
@@ -189,11 +189,13 @@ generation、scope、capability、purpose、TestObject ref 和 stepId。
 可哈希的 TestObject / SideEffectEnvelope / L2ActionBundle /
 CleanupReceipt 状态机，并由 Application 签发创建证明；专用 cleanup
 capability 只允许目标声明的 POST/PUT/PATCH `delete|revoke|reset`，通用
-HTTP DELETE 仍由 SecurityPolicy 永久禁止。SessionVault 与可信
-ApprovalPort 尚未实现，因此没有解析后的 identity/session/CSRF
-绑定和可信批准时，任何路径都不能进入 `pending-approval`、`approved`
-或 `running-*`。产品环境 L2 继续禁用；不得把纯协议描述为已上线。
-loopback fixture 上的首次 L2 执行尚未开放。
+HTTP DELETE 仍由 SecurityPolicy 永久禁止。SessionVault、CSRF binding、
+AuthorizationMatrix 与 HMAC `ActorContext`/`ApprovalPort` 已落地：Bundle
+可绑定到 identity/session/CSRF/矩阵版本并进入 `pending-approval`；只有后端
+签发的 ActorContext 才能批准。`ProbeAction.userApproved` 被忽略，不能授权。
+产品 Composition Root 不注册 `FixtureApprovalAdapter` 或人类批准适配器，因此
+产品环境 L2 继续禁用。loopback fixture 上存在 `approvalMode=fixture-only`
+的闭环，不得把它描述为生产人工批准或真实目标安全结论。
 
 SecurityPolicy 返回 allow、deny 或 approval_required，并生成
 policyDecisionId；ExecutionAuthority 以该决定签发 Grant/Lease。Runner

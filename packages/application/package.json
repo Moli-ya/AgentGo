@@ -21,10 +21,10 @@
     "@agentgo/model-gateway": "workspace:*",
     "@agentgo/reporting": "workspace:*",
     "@agentgo/security-policy": "workspace:*",
+    "@babel/parser": "7.29.7",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@babel/parser": "7.29.7",
     "@types/node": "26.1.1"
   }
 }

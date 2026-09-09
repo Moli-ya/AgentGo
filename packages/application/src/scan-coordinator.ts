@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto'
 import {
   registerActionResult,
   transitionRuntime,
@@ -6,27 +5,30 @@ import {
 } from '@agentgo/agent-runtime'
 import {
   isLegacyV1VulnerabilityFamily,
-  type LegacyV1VulnerabilityFamily,
-  type VulnerabilityFamily,
   type AgentRole,
+  type Candidate,
+  type CandidateAttempt,
+  type CapabilityId,
   type Environment,
   type InventoryEndpoint,
   type InventoryValueType,
+  type LegacyV1VulnerabilityFamily,
   type ScanControlAction,
   type ScanEvent,
-  type CapabilityId,
   type ScanRecord,
   type SelectorRef,
-  type TargetScopeRecord
+  type TargetScopeRecord,
+  type VulnerabilityFamily
 } from '@agentgo/contracts'
-import { buildInertXssMarkerPayload } from '@agentgo/domain'
 import {
   AgentGoRepository,
   EvidenceStore,
+  ImportDiscoveryRepository,
   sha256Text,
-  type StoredSignalRecord
+  type CandidateAttemptRepository,
+  type StoredSignalRecord,
+  type ValidationPlanRepository
 } from '@agentgo/db'
-import { V1_KNOWLEDGE_ENTRIES } from '@agentgo/knowledge-base'
 import type { ModelGateway, StructuredSchema } from '@agentgo/model-gateway'
 import { evaluateProbe } from '@agentgo/security-policy'
 import {
@@ -36,18 +38,29 @@ import {
   PlannerOutputSchema,
   StrategyOutputSchema,
   VerifierOutputSchema,
-  type KnowledgeAgentOutput,
-  type PlannerOutput,
-  type StrategyOutput
+  type PlannerOutput
 } from './agent-prompts'
+import { CandidateCompiler } from './candidate-compiler'
+import { controlledCallbackInventoryUrl } from './controlled-callback-inventory'
+import {
+  DetectorService,
+  schemaHintsFromImportOperations,
+  type DetectorSchemaHint,
+  type DetectorSinkHint
+} from './detector-service'
+import type { AuthorizationMatrixService } from './authorization-matrix-service'
+import { resolveFrozenAssetHtml } from './asset-manifest-service'
+import type { SessionVault } from './session-vault'
 import type {
   BrowserFormView,
   BrowserOfflineExecutionStepInput,
   ExecutionPort,
-  HttpExecutionStepInput,
-  QueryValueMutation
+  HttpExecutionStepInput
 } from './execution-port'
+import { FindingAssembler } from './finding-assembler'
 import { InventoryService } from './inventory-service'
+import { compileLegacyParityPlan } from './legacy-parity-adapters'
+import { RetrievalService } from './retrieval-service'
 import { ReportService } from './report-service'
 import {
   ScanModuleSnapshotError,
@@ -56,23 +69,33 @@ import {
 } from './scan-module-snapshot'
 import type { VulnerabilityPlatform } from './vulnerability-platform'
 import {
-  V1_CONFIRMATION_RULES,
-  assessIdor,
-  assessSqli,
-  assessSsrf,
-  assessXss,
   type BrowserObservation,
   type HttpObservation,
   type ValidationAssessment
 } from './validation-engine'
+import {
+  ValidationPlanExecutor,
+  type CallbackCollectorPort
+} from './validation-plan-executor'
+import {
+  ensureAttestedFixtureCallbackListen,
+  LoopbackCallbackCollector,
+  type LoopbackCallbackHttpServer
+} from './loopback-callback-collector'
 
 interface CoordinatorRuntimeState extends ScanRuntimeState {
   plannerRunId?: string
   plannerPlan?: PlannerOutput
   strategyRunId?: string
-  candidates?: StrategyOutput['candidates']
+  candidates?: Candidate[]
   phaseOutputRefs?: Record<string, string[]>
   runStartedAt?: number
+}
+
+export interface PhaseOutcome {
+  readonly kind: 'completed' | 'awaiting-user' | 'paused' | 'failed'
+  readonly reason?: string
+  readonly patch?: Partial<CoordinatorRuntimeState>
 }
 
 export interface ScanCoordinatorDependencies {
@@ -84,6 +107,15 @@ export interface ScanCoordinatorDependencies {
   vulnerabilityPlatform: VulnerabilityPlatform
   vulnerabilityExecutionEnvironment: Environment
   inventoryService?: InventoryService
+  retrievalService?: RetrievalService
+  detectorService?: DetectorService
+  candidateCompiler?: CandidateCompiler
+  validationPlans?: ValidationPlanRepository
+  candidateAttempts?: CandidateAttemptRepository
+  authorizationMatrixService?: AuthorizationMatrixService
+  sessionVault?: SessionVault
+  importDiscoveryRepository?: ImportDiscoveryRepository
+  callbackCollector?: CallbackCollectorPort
   onEvent?: (event: ScanEvent) => void
 }
 
@@ -97,21 +129,32 @@ const phaseProgress: Record<ScanRecord['phase'], number> = {
   report: 100
 }
 
-const legacyFamilyLabels: Record<LegacyV1VulnerabilityFamily, string> = {
-  sqli: 'SQL 注入',
-  xss: 'XSS',
-  ssrf: 'SSRF',
-  idor: 'IDOR / 对象级越权'
-}
-
-function familyLabel(familyId: VulnerabilityFamily): string {
-  return isLegacyV1VulnerabilityFamily(familyId)
-    ? legacyFamilyLabels[familyId]
-    : familyId
-}
-
 function unique<T>(values: T[]): T[] {
   return [...new Set(values)]
+}
+
+function compactAttemptReason(value: string): string {
+  const compact = value
+    .replace(/[\u0000-\u001f\u007f]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  return compact.slice(0, 2_048) || 'Candidate attempt updated.'
+}
+
+function candidateEndpointId(candidate: Candidate): string | undefined {
+  return candidate.subjectRefs.find((ref) => ref.kind === 'endpoint')?.id
+}
+
+function candidateFingerprint(candidate: Candidate): string {
+  return `${candidate.techniqueId}:${candidateEndpointId(candidate) ?? 'none'}:${candidate.parameterId ?? 'none'}`
+}
+
+function attemptStatusForDecision(
+  decision: CandidateAttempt['decision']
+): CandidateAttempt['status'] {
+  if (decision === 'awaiting-user') return 'awaiting-input'
+  if (decision === 'executable') return 'planned'
+  return 'rejected'
 }
 
 function responseRef(observation: HttpObservation): string {
@@ -120,46 +163,6 @@ function responseRef(observation: HttpObservation): string {
     throw new Error('ExecutionPort omitted the terminal response Evidence reference.')
   }
   return reference
-}
-
-const CALLBACK_TOKEN_PARAMETER = 'agentgo_token'
-const CALLBACK_REVIEW_PLACEHOLDER = 'agentgo-callback-review-placeholder'
-
-function queryValueMutation(
-  urlValue: string,
-  name: string,
-  value: string
-): { desiredUrl: string; mutation: QueryValueMutation } {
-  const url = new URL(urlValue)
-  const entries = [...url.searchParams.entries()]
-  let mutated = false
-  url.search = ''
-  for (const [entryName, entryValue] of entries) {
-    if (!mutated && entryName === name) {
-      url.searchParams.append(entryName, value)
-      mutated = true
-      continue
-    }
-    url.searchParams.append(entryName, entryValue)
-  }
-  if (!mutated) {
-    throw new Error(`Reviewed query selector ${name} is absent from the endpoint URL.`)
-  }
-  return {
-    desiredUrl: url.toString(),
-    mutation: {
-      kind: 'query',
-      name,
-      occurrence: 0,
-      value
-    }
-  }
-}
-
-function controlledCallbackInventoryUrl(urlValue: string): string {
-  const url = new URL(urlValue)
-  url.searchParams.set(CALLBACK_TOKEN_PARAMETER, CALLBACK_REVIEW_PLACEHOLDER)
-  return url.toString()
 }
 
 function terminalTraceId(values: readonly string[], label: string): string {
@@ -186,16 +189,83 @@ function isHtml(observation: HttpObservation): boolean {
   return type.includes('text/html') || body.startsWith('<!doctype html') || body.startsWith('<html')
 }
 
-function marker(): string {
-  return `agx_${randomBytes(16).toString('hex')}`
-}
-
-function callbackToken(): string {
-  return randomBytes(12).toString('hex')
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown scan error.'
+}
+
+function deriveSinkHint(
+  parameter: { readonly name: string; readonly location: string },
+  contentType?: string,
+  extras: { readonly csp?: string; readonly encoding?: string } = {}
+): DetectorSinkHint {
+  const type = (contentType ?? '').toLowerCase()
+  const encoding = extras.encoding
+  const csp = extras.csp
+  if (parameter.location === 'json' || type.includes('application/json')) {
+    return {
+      context: 'json',
+      source: 'content-type',
+      ...(encoding ? { encoding } : {}),
+      ...(csp ? { csp } : {})
+    }
+  }
+  if (/hash|fragment|sink|dom/i.test(parameter.name)) {
+    return {
+      context: 'dom',
+      source: 'parameter-name',
+      ...(encoding ? { encoding } : {}),
+      ...(csp ? { csp } : {})
+    }
+  }
+  if (type.includes('text/plain')) {
+    return {
+      context: 'text',
+      encoding: encoding ?? 'plain',
+      source: 'content-type',
+      ...(csp ? { csp } : {})
+    }
+  }
+  if (parameter.location === 'form' || type.includes('text/html')) {
+    return {
+      context: 'html',
+      source: 'content-type',
+      ...(encoding ? { encoding } : {}),
+      ...(csp ? { csp } : {})
+    }
+  }
+  return {
+    context: 'html',
+    source: 'inventory',
+    ...(encoding ? { encoding } : {}),
+    ...(csp ? { csp } : {})
+  }
+}
+
+function cspFromHtml(html: string): string | undefined {
+  const equivContent = html.match(
+    /http-equiv=["']content-security-policy["'][^>]*content=["']([^"']+)/iu
+  )
+  if (equivContent?.[1]) return equivContent[1]
+  const contentEquiv = html.match(
+    /content=["']([^"']+)["'][^>]*http-equiv=["']content-security-policy["']/iu
+  )
+  return contentEquiv?.[1]
+}
+
+function dataTypeSchemaHints(
+  endpoint: InventoryEndpoint
+): Readonly<Record<string, DetectorSchemaHint>> {
+  return Object.fromEntries(
+    endpoint.parameters
+      .filter((parameter) => parameter.dataType)
+      .map((parameter) => [
+        parameter.id,
+        {
+          format: parameter.dataType,
+          operation: 'read' as const
+        }
+      ])
+  )
 }
 
 export class DefaultScanCoordinator {
@@ -207,6 +277,18 @@ export class DefaultScanCoordinator {
   private readonly vulnerabilityPlatform: VulnerabilityPlatform
   private readonly vulnerabilityExecutionEnvironment: Environment
   private readonly inventoryService: InventoryService
+  private readonly retrievalService: RetrievalService
+  private readonly detectorService: DetectorService
+  private readonly candidateCompiler: CandidateCompiler
+  private readonly findingAssembler: FindingAssembler
+  private readonly validationPlans: ValidationPlanRepository
+  private readonly candidateAttempts: CandidateAttemptRepository
+  private readonly authorizationMatrixService?: AuthorizationMatrixService
+  private readonly sessionVault?: SessionVault
+  private readonly importDiscoveryRepository?: ImportDiscoveryRepository
+  private readonly callbackCollector?: CallbackCollectorPort
+  private callbackCollectorListen?: LoopbackCallbackHttpServer
+  private readonly inventoryHttpByEndpoint = new Map<string, HttpObservation>()
   private readonly onEvent?: (event: ScanEvent) => void
   private readonly controllers = new Map<string, AbortController>()
   private readonly tasks = new Map<string, Promise<void>>()
@@ -226,6 +308,27 @@ export class DefaultScanCoordinator {
         dependencies.repository,
         dependencies.vulnerabilityPlatform.capabilityCatalog
       )
+    this.retrievalService =
+      dependencies.retrievalService ?? new RetrievalService(dependencies.repository)
+    this.detectorService = dependencies.detectorService ?? new DetectorService()
+    this.candidateCompiler = dependencies.candidateCompiler ?? new CandidateCompiler()
+    this.findingAssembler = new FindingAssembler(
+      dependencies.vulnerabilityPlatform.definitionRegistry
+    )
+    this.validationPlans =
+      dependencies.validationPlans ??
+      dependencies.repository.createValidationPlanRepository()
+    this.candidateAttempts =
+      dependencies.candidateAttempts ??
+      dependencies.repository.createCandidateAttemptRepository()
+    this.authorizationMatrixService = dependencies.authorizationMatrixService
+    this.sessionVault = dependencies.sessionVault
+    this.importDiscoveryRepository = dependencies.importDiscoveryRepository
+    this.callbackCollector =
+      dependencies.callbackCollector ??
+      (dependencies.vulnerabilityExecutionEnvironment === 'attested-fixture'
+        ? new LoopbackCallbackCollector()
+        : undefined)
     this.onEvent = dependencies.onEvent
   }
 
@@ -310,6 +413,14 @@ export class DefaultScanCoordinator {
       if (latestCheckpoint?.reason === 'execution-interrupted-unknown') {
         throw new Error(
           'The latest execution may already have been sent and has an unknown terminal state; automatic resume is forbidden.'
+        )
+      }
+      const cleanupPending = (await this.candidateAttempts.listByScan(scanId)).filter(
+        (attempt) => attempt.status === 'cleanup-pending'
+      )
+      if (cleanupPending.length > 0) {
+        throw new Error(
+          'Cleanup is still pending for a previous candidate; automatic resume is forbidden.'
         )
       }
       const incompatible = await this.awaitOnIncompatibleModuleSnapshot(
@@ -446,8 +557,14 @@ export class DefaultScanCoordinator {
         )
         if (awaitingReview) return
       }
-      const patch = await this.runPhase(scanId, row.phase as ScanRecord['phase'], runtime, signal)
+      const outcome = await this.runPhase(
+        scanId,
+        row.phase as ScanRecord['phase'],
+        runtime,
+        signal
+      )
       this.assertNotAborted(signal)
+      const patch = outcome.patch ?? {}
       const stateAfterPhase = {
         ...runtime,
         ...patch,
@@ -456,55 +573,70 @@ export class DefaultScanCoordinator {
           ...(patch.phaseOutputRefs ?? {})
         }
       }
-      let next = transitionRuntime(stateAfterPhase, {
+      if (outcome.kind === 'awaiting-user') {
+        const next = transitionRuntime(stateAfterPhase, {
+          type: 'await-user'
+        }) as CoordinatorRuntimeState
+        const checkpointId = await this.repository.addCheckpoint({
+          scanId,
+          phase: row.phase as ScanRecord['phase'],
+          state: next as unknown as Record<string, unknown>,
+          reason: outcome.reason ?? 'awaiting-user'
+        })
+        await this.repository.updateScan(scanId, {
+          status: 'awaiting-user',
+          phase: row.phase as ScanRecord['phase'],
+          progress: phaseProgress[row.phase as ScanRecord['phase']],
+          runtimeJson: next as unknown as Record<string, unknown>
+        })
+        await this.emit({
+          scanId,
+          type: 'status',
+          level: 'warning',
+          message: outcome.reason ?? '扫描等待用户确认后才能继续。',
+          detail: {
+            phase: row.phase,
+            checkpointId
+          }
+        })
+        return
+      }
+      if (outcome.kind === 'failed') {
+        const next = transitionRuntime(stateAfterPhase, { type: 'fail' }) as CoordinatorRuntimeState
+        await this.repository.updateScan(scanId, {
+          status: 'failed',
+          completedAt: Date.now(),
+          lastError: outcome.reason ?? '阶段失败。',
+          runtimeJson: next as unknown as Record<string, unknown>
+        })
+        return
+      }
+      if (outcome.kind === 'paused') {
+        const next = transitionRuntime(stateAfterPhase, { type: 'pause' }) as CoordinatorRuntimeState
+        await this.repository.updateScan(scanId, {
+          status: 'paused',
+          runtimeJson: next as unknown as Record<string, unknown>
+        })
+        return
+      }
+      const next = transitionRuntime(stateAfterPhase, {
         type: 'phase-completed',
         checkpointRef: `${row.phase}:${Date.now()}`
       }) as CoordinatorRuntimeState
-      const pendingReviewVariantIds =
-        row.phase === 'active-enum'
-          ? await this.repository.listPendingActiveL1ReviewVariantIds(scanId)
-          : []
-      if (pendingReviewVariantIds.length > 0) {
-        next = transitionRuntime(next, {
-          type: 'await-user'
-        }) as CoordinatorRuntimeState
-      }
       const checkpointId = await this.repository.addCheckpoint({
         scanId,
         phase: row.phase as ScanRecord['phase'],
         state: next as unknown as Record<string, unknown>,
-        reason:
-          pendingReviewVariantIds.length > 0
-            ? 'inventory-review-required'
-            : `phase-completed:${row.phase}`
+        reason: `phase-completed:${row.phase}`
       })
       const completed = next.status === 'completed'
       await this.repository.updateScan(scanId, {
-        status: completed
-          ? 'completed'
-          : pendingReviewVariantIds.length > 0
-            ? 'awaiting-user'
-            : 'running',
+        status: completed ? 'completed' : 'running',
         phase: next.phase,
         progress: phaseProgress[row.phase as ScanRecord['phase']],
         completedAt: completed ? Date.now() : null,
         runtimeJson: next as unknown as Record<string, unknown>
       })
-      if (pendingReviewVariantIds.length > 0) {
-        await this.emit({
-          scanId,
-          type: 'status',
-          level: 'warning',
-          message: `枚举已完成；${pendingReviewVariantIds.length} 个 L1 请求变体等待人工 review。`,
-          detail: {
-            completedPhase: row.phase,
-            nextPhase: next.phase,
-            checkpointId,
-            reviewRequiredCount: pendingReviewVariantIds.length
-          }
-        })
-        return
-      }
       await this.emit({
         scanId,
         type: 'phase',
@@ -523,25 +655,24 @@ export class DefaultScanCoordinator {
     phase: ScanRecord['phase'],
     runtime: CoordinatorRuntimeState,
     signal: AbortSignal
-  ): Promise<Partial<CoordinatorRuntimeState>> {
+  ): Promise<PhaseOutcome> {
     switch (phase) {
       case 'intake':
-        return this.runIntake(scanId, signal)
+        return { kind: 'completed', patch: await this.runIntake(scanId, signal) }
       case 'passive-recon':
-        return this.runPassiveRecon(scanId)
+        return { kind: 'completed', patch: await this.runPassiveRecon(scanId) }
       case 'active-enum':
-        await this.runEnumeration(scanId, runtime, signal)
-        return {}
+        return this.runEnumeration(scanId, runtime, signal)
       case 'hypothesis':
         return this.runHypothesis(scanId, runtime, signal)
       case 'validation':
         return this.runValidation(scanId, runtime, signal)
       case 'verification':
         await this.runVerificationAudit(scanId)
-        return {}
+        return { kind: 'completed' }
       case 'report':
         await this.runReport(scanId)
-        return {}
+        return { kind: 'completed' }
     }
   }
 
@@ -632,6 +763,29 @@ export class DefaultScanCoordinator {
     scanId: string,
     runtime: CoordinatorRuntimeState,
     signal: AbortSignal
+  ): Promise<PhaseOutcome> {
+    const existingPages = await this.repository.listPages(scanId)
+    const seedFetched = existingPages.some(
+      (page) => page.depth === 0 && (page.status === 'fetched' || page.status === 'inspected')
+    )
+    if (!seedFetched) {
+      await this.runEnumerationFetch(scanId, runtime, signal)
+    }
+    const pendingReviewVariantIds =
+      await this.repository.listPendingActiveL1ReviewVariantIds(scanId)
+    if (pendingReviewVariantIds.length > 0) {
+      return {
+        kind: 'awaiting-user',
+        reason: 'inventory-review-required'
+      }
+    }
+    return { kind: 'completed' }
+  }
+
+  private async runEnumerationFetch(
+    scanId: string,
+    runtime: CoordinatorRuntimeState,
+    signal: AbortSignal
   ): Promise<void> {
     const context = await this.loadContext(scanId)
     const agentRunId =
@@ -694,6 +848,7 @@ export class DefaultScanCoordinator {
         expectedEvidence: '页面响应摘要、响应体和内容哈希',
         signal
       })
+      this.inventoryHttpByEndpoint.set(endpointId, http)
       if (http.result.status !== 'succeeded' || !isHtml(http)) continue
       const page = await this.repository.upsertPage({
         scanId,
@@ -761,7 +916,7 @@ export class DefaultScanCoordinator {
     scanId: string,
     runtime: CoordinatorRuntimeState,
     signal: AbortSignal
-  ): Promise<Partial<CoordinatorRuntimeState>> {
+  ): Promise<PhaseOutcome> {
     const context = await this.loadContext(scanId)
     const endpoints = await this.repository.listLegacyV1ExecutionEndpoints(scanId)
     const endpointParameterNames = unique(
@@ -778,10 +933,12 @@ export class DefaultScanCoordinator {
           .filter((term) => term.length >= 2)
       )
     )
-    const knowledgeOutput = await this.buildKnowledgeOutput(
-      context.scan.families,
-      unique([...endpointParameterNames, ...endpointPathTerms])
-    )
+    const knowledgeOutput = (
+      await this.retrievalService.retrieveForScan({
+        families: context.scan.families,
+        signalTerms: unique([...endpointParameterNames, ...endpointPathTerms])
+      })
+    ).coordinatorOutput
     const knowledge = await this.runAgent({
       scanId,
       role: 'knowledge',
@@ -829,86 +986,208 @@ export class DefaultScanCoordinator {
         }
       }
     })
-    const parameterIdsByEndpoint = new Map(
-      endpoints.map((endpoint) => [
-        endpoint.id,
-        new Set(endpoint.parameters.map((parameter) => parameter.id))
-      ])
+    const surfaces = await Promise.all(
+      endpoints.map(async (endpoint) => {
+        const binding = await this.repository.getLegacyV1ExecutionBinding(scanId, endpoint.id)
+        return {
+          endpoint,
+          variantIds: binding ? [binding.requestVariant.id] : [],
+          method: endpoint.method,
+          reviewStatus: binding?.requestVariant.reviewStatus,
+          executionClass: binding?.requestVariant.executionClass,
+          codec: binding?.requestVariant.codec,
+          contentType: endpoint.contentType
+        }
+      })
     )
-    const candidates = strategy.value.candidates.filter(
-      (candidate) =>
-        context.scan.families.includes(candidate.family) &&
-        parameterIdsByEndpoint
-          .get(candidate.endpointId)
-          ?.has(candidate.parameterId) === true
-    )
+    const matrix = await this.resolveAuthorizationMatrix(context)
+    const importOperations = this.importDiscoveryRepository
+      ? (
+          await this.importDiscoveryRepository.listCommittedImportPreviews(scanId)
+        ).flatMap((preview) => preview.operations)
+      : []
+    const frozenManifests = this.importDiscoveryRepository
+      ? await this.importDiscoveryRepository.listFrozenAssetManifests(scanId)
+      : []
+    const seeds = this.detectorService.detect({
+      families: context.scan.families,
+      surfaces: await Promise.all(
+        surfaces.map(async (surface) => {
+          const frozenHtml =
+            frozenManifests.length > 0
+              ? await resolveFrozenAssetHtml({
+                  manifests: frozenManifests,
+                  url: surface.endpoint.url,
+                  readArtifact: async (artifactRef) => {
+                    const read = await this.evidenceStore.read(artifactRef)
+                    return { content: read.content }
+                  }
+                })
+              : undefined
+          const csp = frozenHtml ? cspFromHtml(frozenHtml) : undefined
+          return {
+            ...surface,
+            sinkHints: Object.fromEntries(
+              surface.endpoint.parameters.map((parameter) => [
+                parameter.id,
+                deriveSinkHint(parameter, surface.contentType, {
+                  ...(csp ? { csp } : {})
+                })
+              ])
+            ),
+            schemaHints: {
+              ...dataTypeSchemaHints(surface.endpoint),
+              ...schemaHintsFromImportOperations(surface.endpoint, importOperations)
+            }
+          }
+        })
+      ),
+      registry: this.vulnerabilityPlatform.definitionRegistry,
+      identities: context.identities.map((identity) => ({
+        id: identity.id,
+        role: identity.role,
+        isTestIdentity: identity.isTestIdentity,
+        ownedResourceIds: identity.ownedResourceIds
+      })),
+      ...(matrix ? { matrixId: matrix.matrixId } : {})
+    })
+    const compiled = this.candidateCompiler.compile({
+      seeds,
+      suggestions: strategy.value.candidates,
+      registry: this.vulnerabilityPlatform.definitionRegistry,
+      surfaces: surfaces.map((surface) => ({
+        endpointId: surface.endpoint.id,
+        method: surface.method,
+        ...(surface.variantIds[0] ? { variantId: surface.variantIds[0] } : {}),
+        variantIds: surface.variantIds,
+        ...(surface.reviewStatus ? { reviewStatus: surface.reviewStatus } : {}),
+        ...(surface.executionClass ? { executionClass: surface.executionClass } : {}),
+        ...(surface.codec ? { codec: surface.codec } : {}),
+        parameters: surface.endpoint.parameters.map((parameter) => ({
+          id: parameter.id,
+          location: parameter.location
+        }))
+      })),
+      environment: this.vulnerabilityExecutionEnvironment
+    })
+    const now = new Date().toISOString()
+    for (const record of compiled) {
+      await this.candidateAttempts.save({
+        attemptId: record.candidate.candidateId,
+        scanId,
+        candidateId: record.candidate.candidateId,
+        candidate: record.candidate,
+        status: attemptStatusForDecision(record.decision),
+        decision: record.decision,
+        grantRefs: [],
+        evidenceRefs: [],
+        reason: record.reason,
+        createdAt: now,
+        updatedAt: now
+      })
+    }
+    const executable = compiled
+      .filter((record) => record.decision === 'executable')
+      .map((record) => record.candidate)
+    const awaitingUser = compiled.filter((record) => record.decision === 'awaiting-user')
     await this.emit({
       scanId,
       type: 'agent',
       level: 'info',
-      message: `StrategyAgent 形成 ${candidates.length} 个低影响验证候选。`,
+      message: `Detector 与 Strategy 形成 ${executable.length} 个可执行验证候选。`,
       detail: {
-        candidateCount: candidates.length,
+        candidateCount: executable.length,
+        seedCount: seeds.length,
         skippedReasons: strategy.value.skippedReasons
       }
     })
-    return {
+    const patch: Partial<CoordinatorRuntimeState> = {
       strategyRunId: strategy.runId,
-      candidates,
+      candidates: executable,
       phaseOutputRefs: {
         hypothesis: [knowledge.outputRef, strategy.outputRef]
       }
     }
+    if (awaitingUser.length > 0 && executable.length === 0) {
+      return {
+        kind: 'awaiting-user',
+        reason: awaitingUser[0]?.reason ?? 'Candidate compilation is waiting for user input.',
+        patch
+      }
+    }
+    return { kind: 'completed', patch }
   }
 
   private async runValidation(
     scanId: string,
     runtime: CoordinatorRuntimeState,
     signal: AbortSignal
-  ): Promise<Partial<CoordinatorRuntimeState>> {
+  ): Promise<PhaseOutcome> {
     const candidates = runtime.candidates ?? []
     let nextRuntime = runtime
+    const attempts = await this.candidateAttempts.listByScan(scanId)
+    let agentRunId = runtime.strategyRunId
     for (const candidate of candidates) {
       this.assertNotAborted(signal)
       this.vulnerabilityPlatform.executionGate.requireExecutableFamily(
-        candidate.family,
+        candidate.familyId,
         this.vulnerabilityExecutionEnvironment
       )
-      const fingerprint = `${candidate.family}:${candidate.endpointId}:${candidate.parameterId}`
+      if (!agentRunId) {
+        agentRunId = (
+          await this.createControlAgentRun(
+            scanId,
+            'strategy',
+            'agentgo.strategy-recovery.v1',
+            '1.0.0'
+          )
+        ).id
+      }
+      const fingerprint = candidateFingerprint(candidate)
       if (nextRuntime.actionFingerprints.includes(fingerprint)) continue
-      const endpoint = (await this.repository.listLegacyV1ExecutionEndpoints(scanId))
-        .find((item) => item.id === candidate.endpointId)
-      const parameter = endpoint?.parameters.find((item) => item.id === candidate.parameterId)
-      if (!endpoint || !parameter || endpoint.method.toUpperCase() !== 'GET') continue
+      const endpointId = candidateEndpointId(candidate)
+      const endpoint = (await this.repository.listLegacyV1ExecutionEndpoints(scanId)).find(
+        (item) => item.id === endpointId
+      )
+      if (!endpoint || endpoint.method.toUpperCase() !== 'GET') {
+        nextRuntime = registerActionResult(nextRuntime, fingerprint, false)
+          .state as CoordinatorRuntimeState
+        continue
+      }
+      const attempt = attempts.find((item) => item.candidateId === candidate.candidateId)
       try {
-        const outcome = await this.validateCandidate({
+        const outcome = await this.executeCompiledCandidate({
           scanId,
-          agentRunId:
-            runtime.strategyRunId ??
-            (
-              await this.createControlAgentRun(
-                scanId,
-                'strategy',
-                'agentgo.strategy-recovery.v1',
-                '1.0.0'
-              )
-            ).id,
-          family: candidate.family,
+          agentRunId,
+          candidate,
           endpoint,
-          parameter,
+          attempt,
           signal
         })
-        nextRuntime = registerActionResult(nextRuntime, fingerprint, outcome).state as CoordinatorRuntimeState
+        if (outcome.kind === 'awaiting-user') {
+          return {
+            kind: 'awaiting-user',
+            reason: outcome.reason,
+            patch: nextRuntime
+          }
+        }
+        nextRuntime = registerActionResult(nextRuntime, fingerprint, outcome.executed)
+          .state as CoordinatorRuntimeState
       } catch (error) {
         if (signal.aborted) throw error
         await this.emit({
           scanId,
           type: 'error',
           level: 'error',
-          message: `${familyLabel(candidate.family)} 候选未完成：${errorMessage(error)}`,
+          message: `${this.findingAssembler.displayName(candidate.familyId)} 候选未完成：${errorMessage(error)}`,
           detail: { fingerprint }
         })
-        nextRuntime = registerActionResult(nextRuntime, fingerprint, false).state as CoordinatorRuntimeState
+        nextRuntime = registerActionResult(nextRuntime, fingerprint, false)
+          .state as CoordinatorRuntimeState
+        await this.markAttempt(attempt, {
+          status: 'failed',
+          reason: errorMessage(error)
+        })
       }
       await this.repository.addCheckpoint({
         scanId,
@@ -918,349 +1197,140 @@ export class DefaultScanCoordinator {
       })
       await this.assertBudget(scanId, nextRuntime)
     }
-    return nextRuntime
+    return { kind: 'completed', patch: nextRuntime }
   }
 
-  private async validateCandidate(input: {
+  private async executeCompiledCandidate(input: {
     scanId: string
     agentRunId: string
-    family: VulnerabilityFamily
+    candidate: Candidate
     endpoint: InventoryEndpoint
-    parameter: InventoryEndpoint['parameters'][number]
+    attempt: CandidateAttempt | undefined
     signal: AbortSignal
-  }): Promise<boolean> {
-    const executable = this.vulnerabilityPlatform.executionGate.requireExecutableFamily(
-      input.family,
-      this.vulnerabilityExecutionEnvironment
-    )
-    const family = executable.familyId
+  }): Promise<{
+    kind: 'completed' | 'awaiting-user'
+    executed: boolean
+    reason?: string
+  }> {
     const context = await this.loadContext(input.scanId)
-    let assessment: ValidationAssessment
-    let primary: HttpObservation
-    let baseline: HttpObservation
-    let negative: HttpObservation | undefined
-    let evidenceRefs: string[]
-    let affectedResource: string | undefined
-    const identity = context.identities[0]
-
-    if (family === 'sqli') {
-      const redactedValue =
-        new URL(input.endpoint.url).searchParams.get(input.parameter.name) ?? ''
-      const numeric =
-        input.parameter.dataType === 'number' ||
-        input.parameter.dataType === 'integer' ||
-        /^-?\d+(?:\.\d+)?$/u.test(redactedValue)
-      const original = numeric ? '1' : 'agentgo'
-      const trueValue = numeric ? `${original} AND 1=1` : `${original}' AND '1'='1`
-      const falseValue = numeric ? `${original} AND 1=2` : `${original}' AND '1'='2`
-      const trueMutation = queryValueMutation(
-        input.endpoint.url,
-        input.parameter.name,
-        trueValue
-      )
-      const falseMutation = queryValueMutation(
-        input.endpoint.url,
-        input.parameter.name,
-        falseValue
-      )
-      baseline = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'sqli.baseline',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: input.endpoint.url,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'SQLi 只读差异验证：获取基线响应。',
-        expectedEvidence: '基线响应摘要和内容哈希',
-        signal: input.signal
-      })
-      const trueFirst = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'sqli.true',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: trueMutation.desiredUrl,
-        mutation: trueMutation.mutation,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'SQLi 只读布尔真条件差异验证。',
-        payloadSummary: '非写入式布尔真条件；不读取业务数据。',
-        expectedEvidence: '测试响应摘要和内容哈希',
-        signal: input.signal
-      })
-      const falseControl = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'sqli.false',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: falseMutation.desiredUrl,
-        mutation: falseMutation.mutation,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'SQLi 只读布尔负对照。',
-        payloadSummary: '非写入式布尔假条件；不读取业务数据。',
-        expectedEvidence: '负对照响应摘要和内容哈希',
-        signal: input.signal
-      })
-      const trueRepeat = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'sqli.repeat',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: trueMutation.desiredUrl,
-        mutation: trueMutation.mutation,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'SQLi 只读布尔真条件重复验证。',
-        payloadSummary: '重复非写入式布尔真条件。',
-        expectedEvidence: '重复测试响应摘要和内容哈希',
-        signal: input.signal
-      })
-      assessment = assessSqli({ baseline, trueFirst, falseControl, trueRepeat })
-      primary = trueFirst
-      negative = falseControl
-      evidenceRefs = unique(
-        [baseline, trueFirst, falseControl, trueRepeat].flatMap((item) => item.evidenceRefs)
-      )
-    } else if (family === 'xss') {
-      const xssMarker = marker()
-      const payload = buildInertXssMarkerPayload(xssMarker)
-      const reflectionMutation = queryValueMutation(
-        input.endpoint.url,
-        input.parameter.name,
-        payload
-      )
-      baseline = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'xss.baseline',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: input.endpoint.url,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'XSS 验证：获取未注入标记的基线响应。',
-        expectedEvidence: '基线响应摘要和 DOM 输入',
-        signal: input.signal
-      })
-      primary = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'xss.reflection',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: reflectionMutation.desiredUrl,
-        mutation: reflectionMutation.mutation,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'XSS 随机惰性标记反射验证。',
-        payloadSummary: `无外传能力的隔离执行标记 ${xssMarker}。`,
-        expectedEvidence: 'HTTP 反射、DOM 快照和隔离浏览器截图',
-        signal: input.signal
-      })
-      let browser: BrowserObservation | undefined
-      if (primary.result.status === 'succeeded' && isHtml(primary)) {
-        browser = await this.executeBrowserProbe({
-          scanId: input.scanId,
-          agentRunId: input.agentRunId,
-          familyId: family,
-          stepId: 'xss.offline-verify',
-          purpose: 'read',
-          baseUrl: reflectionMutation.desiredUrl,
-          summary: '在断网隔离浏览器中验证随机惰性 XSS 标记。',
-          payloadSummary: `仅设置本地 DOM 属性的标记 ${xssMarker}。`,
-          expectedEvidence: '标记执行状态、DOM 快照和截图',
-          html: safeBodyText(primary),
-          action: 'verify-xss',
-          marker: xssMarker,
-          ...(primary.result.responseHeaders['content-security-policy']
-            ? { contentSecurityPolicy: primary.result.responseHeaders['content-security-policy'] }
-            : {}),
-          signal: input.signal
+    await this.markAttempt(input.attempt, { status: 'running' })
+    const matrix = await this.resolveAuthorizationMatrix(context)
+    const frozenAssetHtml = this.importDiscoveryRepository
+      ? await resolveFrozenAssetHtml({
+          manifests: await this.importDiscoveryRepository.listFrozenAssetManifests(
+            input.scanId
+          ),
+          url: input.endpoint.url,
+          readArtifact: async (artifactRef) => {
+            const read = await this.evidenceStore.read(artifactRef)
+            return { content: read.content }
+          }
         })
+      : undefined
+    const callbackCollectorListenUrl = await this.resolveCallbackCollectorListenUrl()
+    const compiled = await compileLegacyParityPlan({
+      scanId: input.scanId,
+      candidate: input.candidate,
+      endpoint: input.endpoint,
+      identities: context.identities,
+      allowedIdentityIds: context.scope.allowedIdentityIds,
+      environment: this.vulnerabilityExecutionEnvironment,
+      ...(context.row.configJson.callbackUrl
+        ? { callbackUrl: context.row.configJson.callbackUrl }
+        : {}),
+      ...(matrix ? { authorizationMatrix: matrix } : {}),
+      ...(frozenAssetHtml ? { frozenAssetHtml } : {}),
+      ...(this.inventoryHttpByEndpoint.get(input.endpoint.id)?.result.responseHeaders
+        ? {
+            existingResponseHeaders:
+              this.inventoryHttpByEndpoint.get(input.endpoint.id)!.result
+                .responseHeaders
+          }
+        : {}),
+      ...(this.callbackCollector ? { callbackCollectorAvailable: true } : {}),
+      ...(callbackCollectorListenUrl
+        ? { callbackCollectorListenUrl }
+        : {}),
+      upsertReadInventory: async (inventory) => {
+        const result = await this.upsertReadInventory({
+          scanId: input.scanId,
+          url: inventory.url,
+          sourceType: inventory.sourceType
+        })
+        return {
+          endpoint: {
+            id: result.endpoint.id,
+            method: result.endpoint.method,
+            url: inventory.url,
+            source: inventory.sourceType,
+            parameters: []
+          },
+          requestVariant: {
+            reviewStatus: result.requestVariant.reviewStatus
+          }
+        }
       }
-      assessment = assessXss({ marker: xssMarker, http: primary, ...(browser ? { browser } : {}) })
-      evidenceRefs = unique([
-        ...baseline.evidenceRefs,
-        ...primary.evidenceRefs,
-        ...(browser?.evidenceRefs ?? [])
-      ])
-    } else if (family === 'ssrf') {
-      const callbackUrl = context.row.configJson.callbackUrl
-      if (!callbackUrl) {
-        throw new Error('扫描未配置受控回调 URL，SSRF 只能标记为未具备验证条件。')
+    })
+    if (compiled.kind !== 'plan') {
+      const status =
+        compiled.kind === 'awaiting-user' ? 'awaiting-input' : 'rejected'
+      await this.markAttempt(input.attempt, {
+        status,
+        decision: compiled.kind === 'forbidden' ? 'forbidden' : compiled.kind,
+        reason: compiled.reason
+      })
+      if (compiled.kind === 'awaiting-user') {
+        return { kind: 'awaiting-user', executed: false, reason: compiled.reason }
       }
-      const callbackTemplateUrl = controlledCallbackInventoryUrl(callbackUrl)
-      const callbackInventory = await this.upsertReadInventory({
-        scanId: input.scanId,
-        url: callbackTemplateUrl,
-        sourceType: 'controlled-callback'
-      })
-      if (callbackInventory.requestVariant.reviewStatus !== 'reviewed') {
-        throw new Error(
-          'The controlled SSRF callback request variant must be inventoried and reviewed before execution.'
-        )
-      }
-      const callbackMutation = queryValueMutation(
-        callbackTemplateUrl,
-        CALLBACK_TOKEN_PARAMETER,
-        callbackToken()
-      )
-      const primaryMutation = queryValueMutation(
-        input.endpoint.url,
-        input.parameter.name,
-        callbackMutation.desiredUrl
-      )
-      const negativeMutation = queryValueMutation(
-        input.endpoint.url,
-        input.parameter.name,
-        'agentgo-invalid-url'
-      )
-      baseline = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'ssrf.callback-read',
-        purpose: 'read',
-        endpointId: callbackInventory.endpoint.id,
-        desiredUrl: callbackMutation.desiredUrl,
-        mutation: callbackMutation.mutation,
-        summary: '读取明确授权的受控 SSRF 回调证明。',
-        expectedEvidence: '唯一回调证明响应',
-        signal: input.signal
-      })
-      primary = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'ssrf.primary',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: primaryMutation.desiredUrl,
-        mutation: primaryMutation.mutation,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'SSRF 受控回调 URL 只读验证。',
-        payloadSummary: '仅访问已列入 Scope 的项目控制回调端点。',
-        expectedEvidence: '目标响应中的唯一受控证明',
-        signal: input.signal
-      })
-      negative = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'ssrf.negative',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: negativeMutation.desiredUrl,
-        mutation: negativeMutation.mutation,
-        ...(identity ? { identityId: identity.id } : {}),
-        summary: 'SSRF 非 URL 负对照。',
-        payloadSummary: '不触发网络访问的无效 URL 文本。',
-        expectedEvidence: '不包含受控证明的负对照响应',
-        signal: input.signal
-      })
-      assessment = assessSsrf({
-        callbackBaseline: baseline,
-        targetProbe: primary,
-        negativeControl: negative
-      })
-      evidenceRefs = unique(
-        [baseline, primary, negative].flatMap((item) => item.evidenceRefs)
-      )
-    } else if (family === 'idor') {
-      if (context.identities.length < 2) {
-        throw new Error('IDOR 只读对照至少需要两个授权测试身份。')
-      }
-      const owner = context.identities.find((item) => item.ownedResourceIds.length > 0)
-      const second = context.identities.find(
-        (item) => item.id !== owner?.id && item.ownedResourceIds.length > 0
-      )
-      if (!owner || !second) {
-        throw new Error('两个测试身份都必须配置已知归属资源 ID。')
-      }
-      const ownerResourceId = owner.ownedResourceIds[0]!
-      const secondResourceId = second.ownedResourceIds[0]!
-      const ownerMutation = queryValueMutation(
-        input.endpoint.url,
-        input.parameter.name,
-        ownerResourceId
-      )
-      const secondMutation = queryValueMutation(
-        input.endpoint.url,
-        input.parameter.name,
-        secondResourceId
-      )
-      affectedResource = ownerResourceId
-      baseline = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'idor.owner',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: ownerMutation.desiredUrl,
-        mutation: ownerMutation.mutation,
-        identityId: owner.id,
-        summary: 'IDOR 对照：资源所有者只读访问自己的测试资源。',
-        expectedEvidence: '所有者基线响应摘要',
-        signal: input.signal
-      })
-      const secondOwn = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'idor.second-own',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: secondMutation.desiredUrl,
-        mutation: secondMutation.mutation,
-        identityId: second.id,
-        summary: 'IDOR 负对照：第二身份只读访问自己的测试资源。',
-        expectedEvidence: '第二身份合法资源响应摘要',
-        signal: input.signal
-      })
-      primary = await this.executeHttpProbe({
-        scanId: input.scanId,
-        agentRunId: input.agentRunId,
-        familyId: family,
-        stepId: 'idor.cross-read',
-        purpose: 'read',
-        endpointId: input.endpoint.id,
-        desiredUrl: ownerMutation.desiredUrl,
-        mutation: ownerMutation.mutation,
-        identityId: second.id,
-        summary: 'IDOR 对照：第二身份只读访问第一身份的已知测试资源。',
-        expectedEvidence: '跨身份只读响应对照',
-        signal: input.signal
-      })
-      negative = secondOwn
-      assessment = assessIdor({
-        ownerResourceId,
-        secondIdentityResourceId: secondResourceId,
-        ownerRead: baseline,
-        secondIdentityOwnRead: secondOwn,
-        secondIdentityOwnerRead: primary,
-        identitiesAuthorized:
-          owner.isTestIdentity &&
-          second.isTestIdentity &&
-          context.scope.allowedIdentityIds.includes(owner.id) &&
-          context.scope.allowedIdentityIds.includes(second.id)
-      })
-      evidenceRefs = unique([baseline, secondOwn, primary].flatMap((item) => item.evidenceRefs))
-    } else {
-      throw new Error(`当前运行时没有漏洞族 ${family} 的候选执行器。`)
+      return { kind: 'completed', executed: false, reason: compiled.reason }
     }
-
+    const executor = new ValidationPlanExecutor({
+      plans: this.validationPlans,
+      execution: this.executionPort,
+      agentRunId: input.agentRunId,
+      ...(this.sessionVault ? { sessionVault: this.sessionVault } : {}),
+      ...(this.callbackCollector ? { callbackCollector: this.callbackCollector } : {}),
+      repository: this.repository
+    })
+    const execution = await executor.execute(compiled.draft, {
+      signal: input.signal,
+      ...(frozenAssetHtml
+        ? { htmlSeeds: { 'xss.dom.capture': frozenAssetHtml } }
+        : {})
+    })
+    const hasHttpSteps = compiled.draft.steps.some((step) => step.kind === 'http-request')
+    const inventoryHttp = this.inventoryHttpByEndpoint.get(input.endpoint.id)
+    const baseline =
+      execution.httpByStep.get(compiled.observations.baselineStepId) ??
+      (!hasHttpSteps ? inventoryHttp : undefined)
+    const primary =
+      execution.httpByStep.get(compiled.observations.primaryStepId) ??
+      (!hasHttpSteps ? inventoryHttp : undefined)
+    const negative = compiled.observations.negativeStepId
+      ? execution.httpByStep.get(compiled.observations.negativeStepId)
+      : undefined
+    if (!baseline || !primary || execution.run.status !== 'succeeded') {
+      await this.markAttempt(input.attempt, {
+        status: 'failed',
+        planId: execution.plan.planId,
+        planHash: execution.plan.planHash,
+        planRunId: execution.run.runId,
+        reason: execution.run.stopReason ?? 'Validation plan did not complete.'
+      })
+      return { kind: 'completed', executed: false }
+    }
+    const assessment = compiled.assess(execution)
+    const evidenceRefs = unique([
+      ...[...execution.httpByStep.values()].flatMap((item) => item.evidenceRefs),
+      ...[...execution.browserByStep.values()].flatMap((item) => item.evidenceRefs)
+    ])
     const analysisResult = await this.createSignalFromAssessment({
       scanId: input.scanId,
       parentRunId: input.agentRunId,
       endpoint: input.endpoint,
-      parameterId: input.parameter.id,
+      ...(input.candidate.parameterId
+        ? { parameterId: input.candidate.parameterId }
+        : {}),
       identityId: context.identities[0]?.id,
       primary,
       assessment,
@@ -1274,12 +1344,56 @@ export class DefaultScanCoordinator {
       assessment,
       evidenceRefs
     })
-    const rule = V1_CONFIRMATION_RULES[family]
-    await this.repository.ensureConfirmationRule(rule)
+    const familyRule = this.findingAssembler.confirmationRule(assessment.family)
+    if (
+      familyRule &&
+      (familyRule.id !== assessment.confirmationRuleId ||
+        familyRule.version !== assessment.confirmationRuleVersion)
+    ) {
+      await this.repository.ensureConfirmationRule({
+        id: familyRule.id,
+        version: familyRule.version,
+        family: familyRule.family,
+        rule: familyRule.rule,
+        requiredChecks: familyRule.requiredChecks,
+        sourceRefs: familyRule.sourceRefs
+      })
+    }
+    await this.repository.ensureConfirmationRule({
+      id: assessment.confirmationRuleId,
+      version: assessment.confirmationRuleVersion,
+      family: assessment.family,
+      rule: familyRule?.id === assessment.confirmationRuleId
+        ? familyRule.rule
+        : { techniqueId: input.candidate.techniqueId },
+      requiredChecks:
+        familyRule?.id === assessment.confirmationRuleId
+          ? familyRule.requiredChecks
+          : [
+              ...assessment.completedChecks,
+              ...assessment.failedChecks,
+              ...assessment.missingChecks
+            ],
+      sourceRefs:
+        familyRule?.id === assessment.confirmationRuleId
+          ? familyRule.sourceRefs
+          : ['registry']
+    })
+    const parameter = input.endpoint.parameters.find(
+      (item) => item.id === input.candidate.parameterId
+    )
+    const assembled = this.findingAssembler.assemble({
+      familyId: input.candidate.familyId,
+      techniqueId: input.candidate.techniqueId,
+      moduleVersion: input.candidate.moduleVersion,
+      pathname: new URL(input.endpoint.url).pathname,
+      ...(parameter ? { parameterName: parameter.name } : {}),
+      assessment
+    })
     await this.repository.createValidationRun({
       signalId: analysisResult.signal.id,
-      confirmationRuleId: rule.id,
-      confirmationRuleVersion: rule.version,
+      confirmationRuleId: assembled.confirmationRuleId,
+      confirmationRuleVersion: assembled.confirmationRuleVersion,
       probeProposalId: primary.proposalId,
       policyDecisionId: primary.policyDecisionId,
       toolCallId: primary.toolCallId,
@@ -1292,27 +1406,30 @@ export class DefaultScanCoordinator {
       cleanupStatus: 'not-needed',
       result: verdict.verdict
     })
-    const location = new URL(input.endpoint.url)
     const finding = await this.repository.createFinding({
       scanId: input.scanId,
-      family,
-      title: `${familyLabel(family)}：${location.pathname} 参数 ${input.parameter.name}`,
+      family: input.candidate.familyId,
+      title: assembled.title,
       verdict: verdict.verdict,
-      severity: verdict.verdict === 'confirmed' ? assessment.severity : 'info',
+      severity: verdict.verdict === 'confirmed' ? assembled.severity : 'info',
       confidence:
         verdict.verdict === assessment.verdict
           ? assessment.confidence
           : Math.min(assessment.confidence, 0.5),
       endpointId: input.endpoint.id,
-      parameterId: input.parameter.id,
+      ...(input.candidate.parameterId
+        ? { parameterId: input.candidate.parameterId }
+        : {}),
       ...(context.identities[0] ? { identityId: context.identities[0].id } : {}),
-      ...(affectedResource ? { affectedResource } : {}),
-      cwe: assessment.cwe,
-      owasp: assessment.owasp,
-      confirmationRuleId: rule.id,
-      confirmationRuleVersion: rule.version,
+      ...(compiled.affectedResource
+        ? { affectedResource: compiled.affectedResource }
+        : {}),
+      cwe: assembled.cwe,
+      owasp: assembled.owasp,
+      confirmationRuleId: assembled.confirmationRuleId,
+      confirmationRuleVersion: assembled.confirmationRuleVersion,
       reproducibility: verdict.explanation,
-      remediation: assessment.remediation,
+      remediation: assembled.remediation,
       evidenceRefs
     })
     await this.emit({
@@ -1323,18 +1440,60 @@ export class DefaultScanCoordinator {
       detail: {
         findingId: finding.id,
         signalId: analysisResult.signal.id,
-        rule: `${rule.id}@${rule.version}`,
+        rule: `${assembled.confirmationRuleId}@${assembled.confirmationRuleVersion}`,
         evidenceCount: evidenceRefs.length
       }
     })
-    return evidenceRefs.length > 0
+    await this.markAttempt(input.attempt, {
+      status: verdict.verdict === 'inconclusive' ? 'inconclusive' : 'completed',
+      planId: execution.plan.planId,
+      planHash: execution.plan.planHash,
+      planRunId: execution.run.runId,
+      evidenceRefs,
+      reason: verdict.explanation.slice(0, 2_048)
+    })
+    return { kind: 'completed', executed: evidenceRefs.length > 0 }
+  }
+
+  private async markAttempt(
+    attempt: CandidateAttempt | undefined,
+    patch: {
+      status: CandidateAttempt['status']
+      decision?: CandidateAttempt['decision']
+      planId?: string
+      planHash?: string
+      planRunId?: string
+      evidenceRefs?: readonly string[]
+      reason?: string
+    }
+  ): Promise<void> {
+    if (!attempt) return
+    const now = new Date().toISOString()
+    const terminal =
+      patch.status === 'completed' ||
+      patch.status === 'failed' ||
+      patch.status === 'inconclusive' ||
+      patch.status === 'rejected' ||
+      patch.status === 'cancelled'
+    await this.candidateAttempts.update({
+      ...attempt,
+      status: patch.status,
+      decision: patch.decision ?? attempt.decision,
+      ...(patch.planId ? { planId: patch.planId } : {}),
+      ...(patch.planHash ? { planHash: patch.planHash } : {}),
+      ...(patch.planRunId ? { planRunId: patch.planRunId } : {}),
+      evidenceRefs: patch.evidenceRefs ? [...patch.evidenceRefs] : attempt.evidenceRefs,
+      ...(patch.reason ? { reason: compactAttemptReason(patch.reason) } : {}),
+      updatedAt: now,
+      ...(terminal ? { completedAt: now } : {})
+    })
   }
 
   private async createSignalFromAssessment(input: {
     scanId: string
     parentRunId: string
     endpoint: InventoryEndpoint
-    parameterId: string
+    parameterId?: string
     identityId?: string
     primary: HttpObservation
     assessment: ValidationAssessment
@@ -1369,9 +1528,9 @@ export class DefaultScanCoordinator {
         : {}),
       family: input.assessment.family,
       endpointId: input.endpoint.id,
-      parameterId: input.parameterId,
+      ...(input.parameterId ? { parameterId: input.parameterId } : {}),
       ...(input.identityId ? { identityId: input.identityId } : {}),
-      hypothesis: `${familyLabel(input.assessment.family)} 候选需要按版本化规则验证。`,
+      hypothesis: `${this.findingAssembler.displayName(input.assessment.family)} 候选需要按版本化规则验证。`,
       observedDifference: analysis.value.summary,
       confidenceHint: analysis.value.confidenceHint,
       evidenceRefs: input.evidenceRefs,
@@ -1776,15 +1935,13 @@ export class DefaultScanCoordinator {
 
   private async upsertEntryInventory(scanId: string): Promise<void> {
     const context = await this.loadContext(scanId)
+    await this.resolveCallbackCollectorListenUrl()
     await this.upsertReadInventory({
       scanId,
       url: context.target.baseUrl,
       sourceType: 'target-base'
     })
-    if (
-      context.row.configJson.families.includes('ssrf') &&
-      context.row.configJson.callbackUrl
-    ) {
+    if (context.row.configJson.callbackUrl) {
       await this.upsertReadInventory({
         scanId,
         url: controlledCallbackInventoryUrl(context.row.configJson.callbackUrl),
@@ -1878,81 +2035,6 @@ export class DefaultScanCoordinator {
     })
   }
 
-  private async buildKnowledgeOutput(
-    families: VulnerabilityFamily[],
-    signalTerms: string[]
-  ): Promise<KnowledgeAgentOutput> {
-    const entryById = new Map(V1_KNOWLEDGE_ENTRIES.map((entry) => [entry.id, entry]))
-    // Every enabled V1 family receives its vetted built-in safety and
-    // confirmation baseline even when endpoint naming gives the search index
-    // no useful lexical match.  Search results can add reviewed imported
-    // intelligence, but cannot replace this policy baseline.
-    const baselineIds = families.flatMap((family) =>
-      V1_KNOWLEDGE_ENTRIES.filter((entry) => entry.family === family).map((entry) => entry.id)
-    )
-    const matchedIds = unique([
-      ...baselineIds,
-      ...families.flatMap((family) =>
-        this.repository.searchKnowledgeEntryIds({
-          query: signalTerms.join(' '),
-          families: [family],
-          limit: 5
-        })
-      )
-    ])
-    const entries = matchedIds
-      .map((entryId) => entryById.get(entryId))
-      .filter((entry): entry is (typeof V1_KNOWLEDGE_ENTRIES)[number] => Boolean(entry))
-    const importedEntries = (await this.repository.listPublishedKnowledgeEntries(matchedIds))
-      .filter((entry) => entry.candidate.family !== undefined)
-    return {
-      matchedEntryIds: [
-        ...entries.map((entry) => entry.id),
-        ...importedEntries.map((entry) => entry.chunkId)
-      ],
-      guidance: [
-        ...entries.map((entry) => ({
-          family: entry.family,
-          applicability: entry.applicability,
-          safeProbePrinciples: entry.safeProbePrinciples,
-          confirmationRules: entry.confirmationRules,
-          falsePositivePatterns: entry.falsePositivePatterns,
-          remediationHints: entry.remediationHints
-        })),
-        ...importedEntries.map((entry) => ({
-          family: entry.candidate.family!,
-          applicability: [
-            ...entry.candidate.affectedVersions,
-            ...entry.candidate.preconditions
-          ],
-          safeProbePrinciples: [
-            '导入请求模板仅用于形成假设，执行前必须重新经过 SecurityPolicy。',
-            '不得直接执行原始 PoC，必须使用低影响、带负对照的验证动作。'
-          ],
-          confirmationRules: entry.candidate.confirmationRules,
-          falsePositivePatterns: [],
-          remediationHints: entry.candidate.remediation
-        }))
-      ],
-      sourceRefs: unique([
-        ...entries.flatMap((entry) => entry.sourceRefs),
-        ...importedEntries.map((entry) => entry.chunkId)
-      ]),
-      policyConstraints: unique([
-        ...entries.flatMap((entry) => entry.forbiddenActions),
-        ...importedEntries.flatMap((entry) => entry.candidate.forbiddenActions)
-      ]),
-      ...(entries.length === 0 && importedEntries.length === 0
-        ? {
-            sourceRefs: [],
-            policyConstraints: [
-              '知识检索未命中时不得扩大测试范围或生成未经规则审查的动作。'
-            ]
-          }
-        : {})
-    }
-  }
-
   private urlAllowed(
     url: string,
     scope: TargetScopeRecord,
@@ -2013,6 +2095,47 @@ export class DefaultScanCoordinator {
       (identity) => selected.has(identity.id)
     )
     return { scan, row, target, scope, identities }
+  }
+
+  private async resolveAuthorizationMatrix(context: {
+    readonly target: { readonly id: string }
+    readonly scope: { readonly id: string }
+    readonly identities: readonly {
+      readonly id: string
+      readonly role: string
+      readonly isTestIdentity: boolean
+      readonly ownedResourceIds: readonly string[]
+    }[]
+  }) {
+    if (!this.authorizationMatrixService) return undefined
+    const current = await this.authorizationMatrixService.getCurrentMatrix(
+      context.target.id,
+      context.scope.id
+    )
+    if (current) return current
+    if (this.vulnerabilityExecutionEnvironment !== 'attested-fixture') {
+      return undefined
+    }
+    return this.authorizationMatrixService.ensureOwnedResourceReadMatrix({
+      targetId: context.target.id,
+      scopeSnapshotId: context.scope.id,
+      identities: context.identities
+    })
+  }
+
+  async ensureCallbackCollectorListenUrl(): Promise<string | undefined> {
+    return this.resolveCallbackCollectorListenUrl()
+  }
+
+  private async resolveCallbackCollectorListenUrl(): Promise<string | undefined> {
+    const server = await ensureAttestedFixtureCallbackListen({
+      environment: this.vulnerabilityExecutionEnvironment,
+      collector: this.callbackCollector,
+      ...(this.callbackCollectorListen ? { existing: this.callbackCollectorListen } : {})
+    })
+    if (!server) return undefined
+    this.callbackCollectorListen = server
+    return server.baseUrl
   }
 
   private async awaitOnIncompatibleModuleSnapshot(

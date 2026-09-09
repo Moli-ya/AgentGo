@@ -4,6 +4,7 @@
 
 - [user-guide.md](user-guide.md)：安装、Agent 模型、MCP Server、授权 Scope、身份、扫描控制、报告和数据安全
 - [../benchmarks/README.md](../benchmarks/README.md)：固定靶场与 40 Case 基准运行说明
+- [evaluation.md](evaluation.md)：评测命令、结果类与诚实边界
 
 ## 项目与架构
 

@@ -5,17 +5,20 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import {
   AgentGoApplicationService,
   AgentPromptCatalog,
+  AuthorizationMatrixService,
   DefaultScanCoordinator,
   EphemeralRequestHashKeyProvider,
   EvidenceCapturePolicy,
   ExecutionAuthority,
   ExecutionService,
+  FindingAssembler,
   InventoryService,
   LegacyV1RequestCompilerAdapter,
   PolicyBroker,
   PolicyExecutionGuard,
   ProtectedEvidenceRetentionScheduler,
   ReportService,
+  SessionVault,
   createVulnerabilityPlatform
 } from '@agentgo/application'
 import { createDefaultScanPlan } from '@agentgo/agent-runtime'
@@ -57,6 +60,8 @@ import {
   AgentGoRepository,
   EvidenceStore,
   FileCredentialStore,
+  IdentitySessionRepository,
+  ImportDiscoveryRepository,
   openAgentGoDatabase,
   type AgentGoDatabase,
   type SecretProtector
@@ -483,18 +488,31 @@ function createInfrastructure(): MainInfrastructure {
     }
   )
   const requestHashKeyProvider = new EphemeralRequestHashKeyProvider()
+  const identitySessions = new IdentitySessionRepository(database)
+  const sessionVault = new SessionVault({
+    identitySessionRepository: identitySessions,
+    repository,
+    credentialStore
+  })
+  sessionVault.markActiveSessionsVaultLost()
   const requestAdapter = new LegacyV1RequestCompilerAdapter({
     repository,
     credentialStore,
     hashKeyProvider: requestHashKeyProvider,
     hashKey: requestHashKeyProvider.reference
   })
-  const authority = new ExecutionAuthority(repository, requestHashKeyProvider)
+  const authority = new ExecutionAuthority(
+    repository,
+    requestHashKeyProvider,
+    Date.now,
+    sessionVault
+  )
   const policyBroker = new PolicyBroker(repository)
   const executionGuard = new PolicyExecutionGuard(
     repository,
     requestHashKeyProvider,
-    credentialStore
+    credentialStore,
+    sessionVault
   )
   const evidenceCapturePolicy = new EvidenceCapturePolicy()
   const executionService = new ExecutionService({
@@ -507,9 +525,14 @@ function createInfrastructure(): MainInfrastructure {
     policyBroker,
     executionGuard,
     evidenceCapturePolicy,
-    hashKeyProvider: requestHashKeyProvider
+    hashKeyProvider: requestHashKeyProvider,
+    sessionVault
   })
-  const reportService = new ReportService(repository, evidenceStore)
+  const reportService = new ReportService(repository, evidenceStore, {
+    familyDisplayNames: new FindingAssembler(
+      vulnerabilityPlatform.definitionRegistry
+    ).familyDisplayNames()
+  })
   const modelGateway = new DefaultModelGateway({
     profiles: repository,
     credentials: credentialStore,
@@ -531,6 +554,10 @@ function createInfrastructure(): MainInfrastructure {
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'authorized-real-target'
   })
+  const authorizationMatrixService = new AuthorizationMatrixService({
+    repository,
+    identitySessionRepository: identitySessions
+  })
   const scanCoordinator = new DefaultScanCoordinator({
     repository,
     evidenceStore,
@@ -540,6 +567,9 @@ function createInfrastructure(): MainInfrastructure {
     inventoryService,
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'authorized-real-target',
+    authorizationMatrixService,
+    sessionVault,
+    importDiscoveryRepository: new ImportDiscoveryRepository(database),
     onEvent: (event) => {
       const validatedEvent = DesktopOutputSchemas.scanEvent.parse(event)
       for (const window of BrowserWindow.getAllWindows()) {

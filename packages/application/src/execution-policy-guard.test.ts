@@ -378,7 +378,7 @@ function createFixture(options: {
       }
     : undefined
   const guard = new PolicyExecutionGuard(
-    repository, provider, credentialMetadataAuthority, ids.runner
+    repository, provider, credentialMetadataAuthority, undefined, ids.runner
   )
   const claimInput = {
     leaseId: ids.lease,

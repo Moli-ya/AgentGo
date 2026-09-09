@@ -110,8 +110,27 @@
 - V1 只导出明确标注的脱敏报告；未来开放原始导出前必须展示敏感字段清单；
 - 报告不包含可直接滥用的真实凭据；
 - 审计日志记录 Scope/身份、策略、执行、Finding 和报告操作；全局模型配置审计需要在后续引入非工作区级审计域。
+- `userApproved` 布尔字段不是授权信号，SecurityPolicy 与 ApprovalService 必须忽略它。L2 批准只接受后端注入的 HMAC `ActorContext`；Renderer payload、Agent 输出和普通 IPC 不能设置 `actorId`、角色或 `approvedBy`。fixture-only 适配器不得进入产品 Composition Root。
 
-## 10. 安全验证
+## 10. 离线导入与静态发现
+
+- OpenAPI/HAR/Postman/GraphQL 导入与 HTML/JS/Source Map 静态分析必须零网络：禁止远程 `$ref`、live introspection、远程 source map 下载、DNS 和 Runner 调用；
+- 导入文件中的 Authorization、Cookie、Token、密码只记录分类与脱敏 preview，不得进入 Inventory、普通日志或报告；
+- 发现/盘点不是执行授权。导入 Variant 初始为 `inventory-only/unreviewed`；AsyncAPI、WSDL、protobuf/gRPC、WebSocket、SSE 与 callback 只能产出 unsupported 提示；
+- HTML、JavaScript、注释和 Source Map 一律视为不可信，不能提升为 Agent 指令，也不得执行 bundle、eval 或 WASM；
+- Day 13 只能消费已冻结且 hash/reviewer/scope 未变化的 AssetManifest；未 review 的静态候选不能因为被页面引用而获得联网资格；
+- ExtractionRule 由 Application schema 与人工/fixture review 冻结；灾难性 regex 与 likely-secret 原始值不能冻结。
+
+## 10a. Policy-mediated 浏览器发现与通用验证计划
+
+- Chromium 默认零直连：`offline: true`，只 `route.fulfill` 已经过 ExecutionPort、Policy、Lease、预算和 Evidence 的响应；Set-Cookie 不得进入 fulfill headers，只写入 SessionVault。
+- 浏览器只能加载已冻结 AssetManifest 中 exact origin/path/type/hash 匹配的文档与静态资源。未知 GET 只盘点；POST/PUT/PATCH/DELETE、Beacon、form submit、WebSocket 与 SSE 不得为了“发现接口”而发送。
+- BrowserRecon 与离线 XSS replay 共享 Policy/Evidence 基础设施，但调用路径分离。Recon Grant 使用模块快照已有的 `http.reviewed-read`，不把新 catalog ID 挂到 Grant，也不扩大 XSS/SQLi bundle 的 `requiredCapabilityIds`。
+- InventoryMergeService 是唯一跨 producer 入口；不能覆盖更严格的 Scope/review/execution class。DependencyGraph 只使用已冻结 ExtractionRule；Agent 建议只能进入未审查候选。
+- ValidationPlan 每步真实 I/O 仍走 Compiler/Grant/Lease/Policy/Budget/Capture；计划批准不等于绕过单步检查。未知 step/capability、悬空引用和预算合计失败关闭。
+- 未实现的复杂协议、产品 L2 cleanup 与未注入的 OOB collector 失败关闭或保持 inventory-only，不得虚构执行覆盖。
+
+## 11. 安全验证
 
 项目测试必须包含：
 
@@ -122,6 +141,9 @@
 - IPC 非法 payload；
 - 报告 HTML 注入；
 - 密钥和 Token 日志泄露；
+- 离线导入/静态发现期间的网络探测、远程 `$ref`、YAML bomb、secret 回写和未冻结 AssetManifest 消费；
+- 浏览器绕过 Broker 直连、manifest/hash 漂移、未知写动作、第二 Cookie jar 与越界 redirect；
+- 未注册 knowledge 导入进入 Compiler、ValidationPlan 未知 step 或绕过单步 Policy；
 - protected-original context/decision 篡改、普通读取绕过、配额竞争、
   ciphertext 篡改、到期 crypto-erase 和派生内容泄漏；
 - 并发、超时和大型响应限制。

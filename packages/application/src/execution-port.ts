@@ -1,7 +1,8 @@
 import type {
   ExecutionAdapterKind,
   ExecutionPurpose,
-  LegacyV1VulnerabilityFamily
+  LegacyV1VulnerabilityFamily,
+  TestObjectRef
 } from '@agentgo/contracts'
 
 export interface ExecutionWireHeader {
@@ -82,6 +83,7 @@ export interface StoredExecutionResult<TResult> {
   readonly policyDecisionIds: readonly string[]
   readonly grantIds: readonly string[]
   readonly leaseIds: readonly string[]
+  readonly reviewableDomOrScreenshotEvidence?: boolean
 }
 
 export interface QueryValueMutation {
@@ -90,6 +92,15 @@ export interface QueryValueMutation {
   readonly occurrence: number
   readonly value: string
 }
+
+export interface PathValueMutation {
+  readonly kind: 'path'
+  readonly name: string
+  readonly segmentIndex: number
+  readonly value: string
+}
+
+export type RequestSelectorMutation = QueryValueMutation | PathValueMutation
 
 interface ExecutionStepInput {
   readonly scanId: string
@@ -108,7 +119,8 @@ export interface HttpExecutionStepInput extends ExecutionStepInput {
   readonly endpointId: string
   readonly desiredUrl: string
   readonly identityId?: string
-  readonly mutation?: QueryValueMutation
+  readonly sessionId?: string
+  readonly mutation?: RequestSelectorMutation
   readonly timeoutMs: number
   readonly maxResponseBytes: number
   readonly maxRedirects: number
@@ -132,6 +144,36 @@ export interface UnsupportedExecutionStepInput extends ExecutionStepInput {
   >
 }
 
+export interface L2HttpExecutionStepInput extends ExecutionStepInput {
+  readonly adapterKind: 'http'
+  readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH'
+  readonly desiredUrl: string
+  readonly identityId: string
+  readonly sessionId: string
+  readonly csrfBindingHash?: string
+  readonly jsonBody?: Readonly<Record<string, string | number | boolean | null>>
+  readonly testObjectRef: TestObjectRef
+  readonly approvalBundleRef?: string
+  readonly timeoutMs: number
+  readonly maxResponseBytes: number
+  readonly probeLevel: 'active-safe' | 'active-sensitive'
+  readonly sideEffect: 'none' | 'reversible'
+  readonly cleanupPlan?: string
+}
+
+export interface MediatedHttpExecutionStepInput extends ExecutionStepInput {
+  readonly adapterKind: 'http'
+  readonly method: 'GET' | 'HEAD'
+  readonly endpointId: string
+  readonly requestVariantId: string
+  readonly desiredUrl: string
+  readonly identityId?: string
+  readonly sessionId?: string
+  readonly expectedContentHash?: string
+  readonly timeoutMs: number
+  readonly maxResponseBytes: number
+}
+
 export type ExecutionPortInput =
   | HttpExecutionStepInput
   | BrowserOfflineExecutionStepInput
@@ -145,4 +187,10 @@ export interface ExecutionPort {
     input: BrowserOfflineExecutionStepInput
   ): Promise<StoredExecutionResult<BrowserExecutionResultView>>
   execute(input: UnsupportedExecutionStepInput): Promise<never>
+  executeL2Http(
+    input: L2HttpExecutionStepInput
+  ): Promise<StoredExecutionResult<HttpExecutionResultView>>
+  executeMediatedHttp(
+    input: MediatedHttpExecutionStepInput
+  ): Promise<StoredExecutionResult<HttpExecutionResultView>>
 }

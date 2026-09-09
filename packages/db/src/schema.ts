@@ -40,7 +40,25 @@ import type {
   L2ActionBundle,
   L2BundleState,
   L2ExecutionFreeze,
+  ApprovalProposal,
+  ApprovalRecord,
+  AuthorizationMatrix,
   CleanupReceipt,
+  CsrfBinding,
+  IdentityContext,
+  ImportPreview,
+  AssetManifest,
+  ExtractionRule,
+  StaticDiscoveryCandidateBatch,
+  InventoryMergeReport,
+  BrowserReconObservation,
+  DependencyGraph,
+  DependencyEdgeCandidate,
+  CandidateAttempt,
+  ValidationPlanRun,
+  ValidationStepRun,
+  ValidationObservation,
+  ValidationEvidenceBinding,
   McpAuthType,
   McpPromptSummary,
   McpResourceSummary,
@@ -1445,5 +1463,402 @@ export const l2ExecutionFreezes = sqliteTable(
       table.testObjectId
     ),
     index('l2_execution_freezes_object_idx').on(table.testObjectId, table.targetId)
+  ]
+)
+
+export const identityContexts = sqliteTable(
+  'identity_contexts',
+  {
+    identityContextId: text('identity_context_id').notNull(),
+    identityContextVersion: integer('identity_context_version').notNull(),
+    contextHash: text('context_hash').notNull(),
+    identityId: text('identity_id').notNull(),
+    targetId: text('target_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    status: text('status').$type<'active' | 'superseded' | 'revoked'>().notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<IdentityContext>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.identityContextId, table.identityContextVersion] }),
+    uniqueIndex('identity_contexts_hash_uq').on(table.contextHash),
+    index('identity_contexts_identity_idx').on(table.identityId, table.identityContextVersion)
+  ]
+)
+
+export const sessionVaultSessions = sqliteTable(
+  'session_vault_sessions',
+  {
+    sessionId: text('session_id').primaryKey(),
+    identityId: text('identity_id').notNull(),
+    targetId: text('target_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    generation: integer('generation').notNull(),
+    status: text('status')
+      .$type<'active' | 'expired' | 'revoked' | 'vault-lost'>()
+      .notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('session_vault_sessions_identity_scope_uq').on(
+      table.identityId,
+      table.scopeSnapshotId
+    )
+  ]
+)
+
+export const csrfBindings = sqliteTable(
+  'csrf_bindings',
+  {
+    csrfBindingId: text('csrf_binding_id').notNull(),
+    csrfBindingVersion: integer('csrf_binding_version').notNull(),
+    bindingHash: text('binding_hash').notNull(),
+    identityId: text('identity_id').notNull(),
+    sessionId: text('session_id').notNull(),
+    sessionGeneration: integer('session_generation').notNull(),
+    origin: text('origin').notNull(),
+    boundMethod: text('bound_method').$type<'POST' | 'PUT' | 'PATCH'>().notNull(),
+    boundPath: text('bound_path').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    useCount: integer('use_count').notNull(),
+    status: text('status')
+      .$type<'active' | 'exhausted' | 'expired' | 'revoked'>()
+      .notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<CsrfBinding>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.csrfBindingId, table.csrfBindingVersion] }),
+    uniqueIndex('csrf_bindings_hash_uq').on(table.bindingHash),
+    index('csrf_bindings_session_idx').on(table.sessionId, table.sessionGeneration, table.status)
+  ]
+)
+
+export const authorizationMatrices = sqliteTable(
+  'authorization_matrices',
+  {
+    matrixId: text('matrix_id').notNull(),
+    matrixVersion: integer('matrix_version').notNull(),
+    matrixHash: text('matrix_hash').notNull(),
+    targetId: text('target_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    status: text('status').$type<'active' | 'superseded' | 'revoked'>().notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<AuthorizationMatrix>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.matrixId, table.matrixVersion] }),
+    uniqueIndex('authorization_matrices_hash_uq').on(table.matrixHash),
+    index('authorization_matrices_target_idx').on(
+      table.targetId,
+      table.scopeSnapshotId,
+      table.matrixVersion
+    )
+  ]
+)
+
+export const approvalProposals = sqliteTable(
+  'approval_proposals',
+  {
+    proposalId: text('proposal_id').primaryKey(),
+    proposalHash: text('proposal_hash').notNull(),
+    bundleId: text('bundle_id').notNull(),
+    bundleVersion: integer('bundle_version').notNull(),
+    bundleHash: text('bundle_hash').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<ApprovalProposal>().notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('approval_proposals_hash_uq').on(table.proposalHash),
+    index('approval_proposals_bundle_idx').on(table.bundleId, table.bundleVersion)
+  ]
+)
+
+export const approvalRecords = sqliteTable(
+  'approval_records',
+  {
+    approvalId: text('approval_id').primaryKey(),
+    approvalHash: text('approval_hash').notNull(),
+    proposalHash: text('proposal_hash').notNull(),
+    bundleId: text('bundle_id').notNull(),
+    bundleVersion: integer('bundle_version').notNull(),
+    bundleHash: text('bundle_hash').notNull(),
+    decision: text('decision').$type<'approved' | 'rejected'>().notNull(),
+    approvalMode: text('approval_mode').$type<'fixture-only' | 'trusted-backend'>().notNull(),
+    actorId: text('actor_id').notNull(),
+    actorContextHash: text('actor_context_hash').notNull(),
+    status: text('status')
+      .$type<'active' | 'consumed' | 'rejected' | 'revoked' | 'expired'>()
+      .notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<ApprovalRecord>().notNull(),
+    issuedAt: integer('issued_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    consumedAt: integer('consumed_at'),
+    revokedAt: integer('revoked_at'),
+    revocationReason: text('revocation_reason')
+  },
+  (table) => [
+    uniqueIndex('approval_records_hash_uq').on(table.approvalHash),
+    index('approval_records_bundle_idx').on(table.bundleId, table.bundleVersion, table.status)
+  ]
+)
+
+export const importPreviews = sqliteTable(
+  'import_previews',
+  {
+    previewId: text('preview_id').primaryKey(),
+    previewHash: text('preview_hash').notNull(),
+    scanId: text('scan_id').notNull(),
+    workspaceId: text('workspace_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    sourceBytesHash: text('source_bytes_hash').notNull(),
+    parserName: text('parser_name').notNull(),
+    parserVersion: text('parser_version').notNull(),
+    status: text('status').$type<'active' | 'committed' | 'expired'>().notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<ImportPreview>().notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull()
+  },
+  (table) => [
+    index('import_previews_scan_idx').on(table.scanId, table.createdAt),
+    index('import_previews_hash_idx').on(table.previewHash)
+  ]
+)
+
+export const importCommits = sqliteTable(
+  'import_commits',
+  {
+    commitId: text('commit_id').primaryKey(),
+    previewId: text('preview_id').notNull(),
+    scanId: text('scan_id').notNull(),
+    sourceBytesHash: text('source_bytes_hash').notNull(),
+    parserVersion: text('parser_version').notNull(),
+    importActorRef: text('import_actor_ref').notNull(),
+    acceptedCount: integer('accepted_count').notNull(),
+    sourceIdsJson: text('source_ids_json', { mode: 'json' }).$type<string[]>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('import_commits_idempotency_uq').on(
+      table.scanId,
+      table.sourceBytesHash,
+      table.parserVersion
+    )
+  ]
+)
+
+export const staticDiscoveryBatches = sqliteTable(
+  'static_discovery_batches',
+  {
+    batchId: text('batch_id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    artifactRef: text('artifact_ref').notNull(),
+    artifactHash: text('artifact_hash').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<StaticDiscoveryCandidateBatch>()
+      .notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('static_discovery_artifact_uq').on(table.scanId, table.artifactHash),
+    index('static_discovery_scan_idx').on(table.scanId, table.createdAt)
+  ]
+)
+
+export const assetManifests = sqliteTable(
+  'asset_manifests',
+  {
+    manifestId: text('manifest_id').notNull(),
+    manifestVersion: integer('manifest_version').notNull(),
+    manifestHash: text('manifest_hash').notNull(),
+    scanId: text('scan_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    frozen: integer('frozen', { mode: 'boolean' }).notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<AssetManifest>().notNull(),
+    createdAt: integer('created_at').notNull(),
+    frozenAt: integer('frozen_at')
+  },
+  (table) => [
+    primaryKey({ columns: [table.manifestId, table.manifestVersion] }),
+    uniqueIndex('asset_manifests_hash_uq').on(table.manifestHash)
+  ]
+)
+
+export const extractionRules = sqliteTable(
+  'extraction_rules',
+  {
+    ruleId: text('rule_id').primaryKey(),
+    ruleHash: text('rule_hash').notNull(),
+    scanId: text('scan_id').notNull(),
+    reviewStatus: text('review_status')
+      .$type<'unreviewed' | 'reviewed' | 'rejected'>()
+      .notNull(),
+    frozen: integer('frozen', { mode: 'boolean' }).notNull(),
+    payloadJson: text('payload_json', { mode: 'json' }).$type<ExtractionRule>().notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('extraction_rules_hash_uq').on(table.ruleHash),
+    index('extraction_rules_scan_idx').on(table.scanId, table.createdAt)
+  ]
+)
+
+export const inventoryMergeReports = sqliteTable(
+  'inventory_merge_reports',
+  {
+    reportId: text('report_id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    scopeSnapshotId: text('scope_snapshot_id').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<InventoryMergeReport>()
+      .notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('inventory_merge_reports_scan_idx').on(table.scanId, table.createdAt)]
+)
+
+export const dependencyGraphs = sqliteTable('dependency_graphs', {
+  graphId: text('graph_id').primaryKey(),
+  graphHash: text('graph_hash').notNull(),
+  scanId: text('scan_id').notNull(),
+  scopeSnapshotId: text('scope_snapshot_id').notNull(),
+  frozen: integer('frozen', { mode: 'boolean' }).notNull(),
+  paused: integer('paused', { mode: 'boolean' }).notNull(),
+  payloadJson: text('payload_json', { mode: 'json' }).$type<DependencyGraph>().notNull(),
+  createdAt: integer('created_at').notNull()
+})
+
+export const dependencyEdgeCandidates = sqliteTable(
+  'dependency_edge_candidates',
+  {
+    candidateId: text('candidate_id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<DependencyEdgeCandidate>()
+      .notNull(),
+    reviewStatus: text('review_status')
+      .$type<'unreviewed' | 'reviewed' | 'rejected'>()
+      .notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('dependency_edge_candidates_scan_idx').on(table.scanId, table.createdAt)]
+)
+
+export const browserReconObservations = sqliteTable(
+  'browser_recon_observations',
+  {
+    observationId: text('observation_id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<BrowserReconObservation>()
+      .notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('browser_recon_observations_scan_idx').on(table.scanId, table.createdAt)]
+)
+
+export const validationPlanRuns = sqliteTable(
+  'validation_plan_runs',
+  {
+    runId: text('run_id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    planId: text('plan_id').notNull(),
+    planHash: text('plan_hash').notNull(),
+    status: text('status')
+      .$type<ValidationPlanRun['status']>()
+      .notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<ValidationPlanRun>()
+      .notNull(),
+    createdAt: integer('created_at').notNull(),
+    completedAt: integer('completed_at')
+  },
+  (table) => [index('validation_plan_runs_scan_idx').on(table.scanId, table.createdAt)]
+)
+
+export const validationStepRuns = sqliteTable(
+  'validation_step_runs',
+  {
+    stepRunId: text('step_run_id').primaryKey(),
+    runId: text('run_id').notNull(),
+    stepId: text('step_id').notNull(),
+    kind: text('kind').notNull(),
+    status: text('status')
+      .$type<ValidationStepRun['status']>()
+      .notNull(),
+    ordinal: integer('ordinal').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<ValidationStepRun>()
+      .notNull(),
+    createdAt: integer('created_at').notNull(),
+    completedAt: integer('completed_at')
+  },
+  (table) => [index('validation_step_runs_run_idx').on(table.runId, table.ordinal)]
+)
+
+export const validationObservations = sqliteTable(
+  'validation_observations',
+  {
+    observationId: text('observation_id').primaryKey(),
+    runId: text('run_id').notNull(),
+    stepId: text('step_id').notNull(),
+    kind: text('kind').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<ValidationObservation>()
+      .notNull(),
+    createdAt: integer('created_at').notNull()
+  },
+  (table) => [index('validation_observations_run_idx').on(table.runId, table.createdAt)]
+)
+
+export const validationEvidenceBindings = sqliteTable(
+  'validation_evidence_bindings',
+  {
+    bindingId: text('binding_id').primaryKey(),
+    runId: text('run_id').notNull(),
+    stepId: text('step_id').notNull(),
+    evidenceRef: text('evidence_ref').notNull(),
+    role: text('role').notNull(),
+    ordinal: integer('ordinal').notNull(),
+    profileId: text('profile_id').notNull(),
+    profileVersion: text('profile_version').notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<ValidationEvidenceBinding>()
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex('validation_evidence_bindings_role_uq').on(
+      table.runId,
+      table.stepId,
+      table.role,
+      table.ordinal
+    )
+  ]
+)
+
+export const candidateAttempts = sqliteTable(
+  'candidate_attempts',
+  {
+    attemptId: text('attempt_id').primaryKey(),
+    scanId: text('scan_id').notNull(),
+    candidateId: text('candidate_id').notNull(),
+    status: text('status')
+      .$type<CandidateAttempt['status']>()
+      .notNull(),
+    decision: text('decision')
+      .$type<CandidateAttempt['decision']>()
+      .notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<CandidateAttempt>()
+      .notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    completedAt: integer('completed_at')
+  },
+  (table) => [
+    index('candidate_attempts_scan_idx').on(table.scanId, table.createdAt),
+    index('candidate_attempts_scan_status_idx').on(table.scanId, table.status)
   ]
 )

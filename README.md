@@ -10,12 +10,12 @@ AgentGo 只允许用于教学靶场、自有系统和有明确书面授权的目
 
 V1 永久拒绝破坏性写入、生产数据增删改、真实账户接管、云元数据访问、持久化、横向移动、凭据喷洒和高强度 DoS。证据充分后立即停止验证，不扩大影响。
 
-`POST`、`PUT` 和 `PATCH` 默认不是 L1 自动动作。只有专用测试对象、可验证清理方案和可信逐次人工批准同时具备时，才可能作为 L2 动作执行。当前已落地 TestObject/Bundle/Cleanup 纯状态协议，但产品环境在缺少会话绑定与可信批准时保持 L2 禁用，不得对目标发送 L2 请求。
+`POST`、`PUT` 和 `PATCH` 默认不是 L1 自动动作。只有专用测试对象、可验证清理方案和可信逐次人工批准同时具备时，才可能作为 L2 动作执行。当前已落地 L2 基础（会话/身份/CSRF/矩阵绑定、ActorContext 批准端口）以及 loopback fixture-only 闭环；产品环境在缺少可认证人类批准适配器时仍保持 L2 禁用，不得对真实目标发送 L2 请求。
 
 ## 已实现功能
 
 - 五 Agent：Planner、Knowledge、Strategy、Analysis、Verifier；所有模型调用统一经过 `ModelGateway`。
-- 四类 legacy 路径：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 目标响应内的受控 proof（非真实 OOB Collector）、IDOR 双授权身份只读对照。当前 XSS 只有 hash-only 执行摘要，没有可审阅 DOM/截图 Evidence，因此 marker 执行只能形成 `Inconclusive`，不能 Confirmed。
+- 四类 legacy 路径：SQLi 布尔差异、XSS 隔离浏览器惰性标记、SSRF 目标响应内的受控 proof（非真实 OOB Collector）、IDOR 双授权身份只读对照。当前 XSS 只有 hash-only 执行摘要，没有可审阅 DOM/截图 Evidence，因此 marker 执行只能形成 `Inconclusive`，不能 Confirmed。同一 `sqli`/`idor`/`xss.legacy-v1` bundle 上另有 V2 technique；无 AuthorizationMatrix 的 BOLA 与产品 L2 禁用下的存储型 XSS 等待用户，不另建并行模块。
 - 漏洞扩展底座：开放 `familyId/techniqueId`、严格 Manifest/Bundle、不可变 Capability Catalog、Capability 风险下界校验、原子 DefinitionRegistry、Module Conformance testkit、canonical definition/snapshot hash 和 registered-only Activation 视图。
 - 执行资格门禁：CreateScan、start、resume、Candidate 同时核对冻结定义、精确运行时映射与 ActivationCatalog；四类 legacy technique 由 QualificationRecord 取得 `qualified`，未知 ID 和 registered-only 的 `security.headers` 失败关闭。
 - 确定性执行边界：三阶段请求证明、不可变 Grant、原子单次 Lease、exact-wire Runner Guard、HTTP DNS/重定向逐跳 fresh authority、浏览器断网渲染和 L3 永久拒绝。

@@ -7,11 +7,13 @@ import {
   AGENT_PROMPT_VERSIONS,
   AgentGoApplicationService,
   AgentPromptCatalog,
+  AuthorizationMatrixService,
   DefaultScanCoordinator,
   EphemeralRequestHashKeyProvider,
   EvidenceCapturePolicy,
   ExecutionAuthority,
   ExecutionService,
+  FindingAssembler,
   InventoryService,
   LEGACY_V1_EVIDENCE_ROLES,
   LEGACY_V1_TECHNIQUE_IDS,
@@ -27,6 +29,7 @@ import {
   AgentGoRepository,
   EvidenceStore,
   FileCredentialStore,
+  IdentitySessionRepository,
   openAgentGoDatabase,
   type AgentGoDatabase,
   type SecretProtector
@@ -271,7 +274,10 @@ async function run(): Promise<void> {
     join(dataDirectory, 'credentials.json'),
     createEphemeralProtector()
   )
-  const evidenceStore = new EvidenceStore(database, artifactRoot)
+  const evidenceProtector = createEphemeralProtector()
+  const evidenceStore = new EvidenceStore(database, artifactRoot, {
+    protector: evidenceProtector
+  })
   const requestHashKeyProvider = new EphemeralRequestHashKeyProvider()
   const requestAdapter = new LegacyV1RequestCompilerAdapter({
     repository,
@@ -299,14 +305,18 @@ async function run(): Promise<void> {
     evidenceCapturePolicy,
     hashKeyProvider: requestHashKeyProvider
   })
-  const reportService = new ReportService(repository, evidenceStore)
+  const vulnerabilityPlatform = createVulnerabilityPlatform()
+  const reportService = new ReportService(repository, evidenceStore, {
+    familyDisplayNames: new FindingAssembler(
+      vulnerabilityPlatform.definitionRegistry
+    ).familyDisplayNames()
+  })
   const modelGateway = new DefaultModelGateway({
     profiles: repository,
     credentials: credentialStore,
     prompts: new AgentPromptCatalog(),
     invocations: repository
   })
-  const vulnerabilityPlatform = createVulnerabilityPlatform()
   const inventoryService = new InventoryService(
     repository,
     vulnerabilityPlatform.capabilityCatalog
@@ -322,6 +332,7 @@ async function run(): Promise<void> {
     vulnerabilityPlatform,
     vulnerabilityExecutionEnvironment: 'attested-fixture'
   })
+  const identitySessions = new IdentitySessionRepository(database)
   const coordinator = new DefaultScanCoordinator({
     repository,
     evidenceStore,
@@ -330,7 +341,11 @@ async function run(): Promise<void> {
     reportService,
     inventoryService,
     vulnerabilityPlatform,
-    vulnerabilityExecutionEnvironment: 'attested-fixture'
+    vulnerabilityExecutionEnvironment: 'attested-fixture',
+    authorizationMatrixService: new AuthorizationMatrixService({
+      repository,
+      identitySessionRepository: identitySessions
+    })
   })
   application.setScanCoordinator(coordinator)
   const fixture = await startLocalBenchmarkFixture()
@@ -441,7 +456,9 @@ async function run(): Promise<void> {
       }
       if (completed.status !== 'completed') {
         throw new Error(
-          `Benchmark case ${item.caseId} ended with non-completed scan status ${completed.status}.`
+          `Benchmark case ${item.caseId} ended with non-completed scan status ${completed.status}${
+            completed.lastError ? `: ${completed.lastError}` : ''
+          }.`
         )
       }
       const finding = (await application.listFindings({ scanId: scan.id })).find(

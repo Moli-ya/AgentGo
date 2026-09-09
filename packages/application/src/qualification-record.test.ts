@@ -19,11 +19,16 @@ describe('Record-backed activation', () => {
     const qualified = platform.activationCatalog
       .list()
       .filter((view) => view.activationStatus === 'qualified')
-    expect(qualified).toHaveLength(4)
+    expect(qualified).toHaveLength(5)
     expect(
       platform.activationCatalog
         .list()
-        .find((view) => view.familyId === 'security.headers')
+        .find((view) => view.techniqueId === 'security.headers.baseline')
+    ).toMatchObject({ activationStatus: 'qualified' })
+    expect(
+      platform.activationCatalog
+        .list()
+        .find((view) => view.techniqueId === 'security.headers.existing-response-audit')
     ).toMatchObject({ activationStatus: 'registered' })
     expect(
       platform.executionGate.requireExecutableFamily('sqli', 'attested-fixture')
@@ -86,6 +91,6 @@ describe('Record-backed activation', () => {
         techniqueVersion: record!.techniqueVersion
       })
     ).toMatchObject({ activationStatus: 'registered' })
-    expect(new RegisteredOnlyActivationCatalog(registry).list()).toHaveLength(5)
+    expect(new RegisteredOnlyActivationCatalog(registry).list()).toHaveLength(17)
   })
 })

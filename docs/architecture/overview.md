@@ -70,12 +70,15 @@ Renderer 只展示数据和发起用户意图；Main 负责生命周期、双向
   ExecutionAuthority、Runner Guard 编排、Evidence capture/audit、crash
   recovery 与 `L2ProtocolService`；Coordinator 不能直接持有 Runner，
   L2 协议模块不得 import Runner。
-- packages/browser-runner：Playwright 断网渲染封装，只执行已 claim 的
-  offline lease，不包含业务策略判断。
+- packages/browser-runner：Playwright 封装。离线 XSS replay 只执行已 claim
+  的 offline lease；Day 13 另提供 `PlaywrightBrokeredBrowserRecon`，默认
+  `offline: true`，只把 Broker 批准且已写入 Evidence 的响应 `route.fulfill`
+  给页面。Application 的 BrowserRecon 不得直接 import 本包；Chromium
+  不能直连目标，也不能保留第二套 Cookie jar。
 - packages/http-runner：单跳 HTTP transport；claim 后解析 DNS，经 Guard
   授权并持久化 dispatch 后才发包，不自动跟随 redirect。
 - packages/reporting：Findings、证据和修复建议的模板化输出。
-- packages/evaluation：versioned technique suite、loopback fixture、指标与 QualificationService；只在评测进程使用。生产 Application 不 import 本包，只加载内容寻址 QualificationRecord。
+- packages/evaluation：versioned technique suite、loopback fixture、`complex-v1` / 密封 local holdout runner、指标与 QualificationService；只在评测进程使用。生产 Application 不 import 本包，只加载内容寻址 QualificationRecord。项目自建 holdout 结果类是 `self-built-fixture`；只有 `benchmarks/external-rest-openapi/` 的真实第三方 target 预留可使用 `external-local-holdout`，不得把任一自建结果写成第三方产品准确率。
 - packages/mcp-hub：官方 MCP SDK 封装，负责 STDIO / Streamable HTTP 连接测试和能力发现。
 
 ## 6. 依赖方向
@@ -163,5 +166,29 @@ capture authority：当前实际在线路径仍固定保存 hash-only 请求/结
 - 在线路径仍只持久化 capture-decision-bound hash-only 摘要。真实
   DOM/截图采集、与 Lease 的完整 provenance 绑定及其确认规则接线尚未接入；
   在此之前需要这类证据的 XSS 必须保持 Inconclusive。
+- Day 13 固定 SPA fixture 上的 BrowserRecon 把 navigation/subresource/fetch
+  候选交给 `executeMediatedHttp`：Grant 仍使用扫描模块已有的
+  `http.reviewed-read`，不新增 catalog 成员，也不把 `browser.mediated-read`
+  挂到 Grant。未知 GET 与写动作只盘点；WebSocket/SSE 为 unsupported。
+- Day 14 通用 ValidationPlan 运行时与 RetrievalService 已落地。Coordinator
+  的 Knowledge 组装走 RetrievalService。Day 15 起验证阶段只经
+  Detector → CandidateCompiler → legacy-parity adapter →
+  ValidationPlanExecutor，Coordinator 不再按漏洞族分支发请求。SQLi
+  参考 bundle `sqli.legacy-v1@1.2.0` 现含三个独立 technique：
+  `sqli.boolean-differential`、`sqli.error-signal` 与
+  `sqli.bounded-time-differential`；联网执行仍只有同一 adapter 路径，
+  每个参数只选一个 technique。时间差异仅 `attested-fixture`。
+- Day 17 起 IDOR 参考 bundle `idor.legacy-v1@1.2.0` 在同一模块上增加
+  `idor.v2-bola-read-differential`（计划名 `authz.bola.read-differential`），
+  并预留 BFLA / BOPLA / cross-tenant / parent-child 为 signal-only。
+  合格 40-case 入口仍是 `idor.two-test-identities-readonly`。无
+  AuthorizationMatrix 的 BOLA 候选在 CandidateCompiler 保持 awaiting-user，
+  不阻断已资格化的双身份对照。两个相似 200 长度不能 Confirmed。
+- Day 18 起 XSS 参考 bundle `xss.legacy-v1@1.2.0` 在同一模块上增加
+  `xss.replay-dom-offline`（计划名 `xss.dom-offline-replay`）与 L2
+  `xss.stored-test-object`。合格入口仍是 `xss.reflected-inert-marker`
+  （计划名 `xss.reflected-marker`）。产品 L2 禁用时存储型 Compiler
+  awaiting-user。40-case 反射正例在 attested-fixture 上经离线 Browser
+  replay 确认；产品路径若缺少可审阅 DOM/截图 Evidence 仍须 Inconclusive。
 
 仍需在正式发布前完成代码签名、自定义图标、不同 Windows 版本的真实安装/升级/卸载矩阵和长期运行压测。

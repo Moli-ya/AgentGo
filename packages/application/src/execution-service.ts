@@ -15,7 +15,9 @@ import {
   type EvidenceCaptureDecision,
   type EvidenceCaptureExecutionState,
   type ExecutionPurpose,
-  type LegacyV1VulnerabilityFamily
+  type IdentityRef,
+  type LegacyV1VulnerabilityFamily,
+  type ProtectedOriginalEvidenceCaptureDecision
 } from '@agentgo/contracts'
 import {
   canonicalJson,
@@ -24,7 +26,10 @@ import {
   redactInventoryUrlPreview,
   sha256Text
 } from '@agentgo/domain'
-import { canonicalizeTargetUrl } from '@agentgo/security-policy'
+import {
+  canonicalizeTargetUrl,
+  DEFAULT_PROBE_CAPABILITY_CATALOG
+} from '@agentgo/security-policy'
 import type {
   HttpExecutionResult,
   HttpRunner
@@ -56,6 +61,8 @@ import type {
   HttpExecutionResultView,
   HttpExecutionStepInput,
   HttpRedirectObservation,
+  L2HttpExecutionStepInput,
+  MediatedHttpExecutionStepInput,
   StoredExecutionResult,
   UnsupportedExecutionStepInput
 } from './execution-port'
@@ -73,6 +80,12 @@ import {
   type MaterializedWireRequest,
   type WireRequestAuthorizationContext
 } from './request-compiler'
+import { compileL2HttpRequest, l2JsonBodyFields } from './l2-http-compiler'
+import { compileMediatedRead } from './mediated-read-compiler'
+import type { CsrfBindingService } from './csrf-binding-service'
+import { InventoryService } from './inventory-service'
+import { SessionVault } from './session-vault'
+import { ProtectedEvidenceCaptureService } from './protected-evidence-capture-service'
 
 const HTTP_TOOL_VERSION = '2.0.0'
 const BROWSER_TOOL_VERSION = '2.0.0'
@@ -104,7 +117,23 @@ export interface ExecutionServiceDependencies {
   readonly executionGuard: PolicyExecutionGuard
   readonly evidenceCapturePolicy: EvidenceCapturePolicy
   readonly hashKeyProvider: EphemeralRequestHashKeyProvider
+  /**
+   * Optional Day 9 vault. Only grants that carry an active sessionRef get a
+   * private Set-Cookie sink; ordinary L1 executions are untouched. L2 HTTP
+   * requires the full vault so cookie secret-refs can be compiled.
+   */
+  readonly sessionVault?: SessionVault
+  readonly csrfBindingService?: CsrfBindingService
   readonly clock?: () => number
+}
+
+/** Minimal vault capability used by the execution path. */
+export interface SessionCookieSink {
+  ingestSetCookie(
+    sessionId: string,
+    headerValue: string,
+    requestUrl: string
+  ): Promise<unknown>
 }
 
 interface ExecutionTrace {
@@ -137,9 +166,11 @@ interface PersistedCapture {
   readonly requestEvidenceId: string
   readonly resultEvidenceId: string
   readonly evidenceRefs: readonly string[]
+  readonly hashOnlyEvidenceRefs: readonly string[]
   readonly evidenceLinks: ExecutionInteractionAuditInput['evidenceLinks']
   readonly requestInteractionSummary: Readonly<Record<string, unknown>>
   readonly resultInteractionSummary: Readonly<Record<string, unknown>>
+  readonly reviewableDomOrScreenshotEvidence?: boolean
 }
 
 type EvidenceCleanupRecord = Pick<
@@ -166,7 +197,8 @@ function newTrace(): ExecutionTrace {
 
 function freezeStoredResult<TResult>(
   result: TResult,
-  trace: ExecutionTrace
+  trace: ExecutionTrace,
+  extras: { readonly reviewableDomOrScreenshotEvidence?: boolean } = {}
 ): StoredExecutionResult<TResult> {
   return Object.freeze({
     result,
@@ -180,7 +212,10 @@ function freezeStoredResult<TResult>(
     proposalIds: Object.freeze([...trace.proposalIds]),
     policyDecisionIds: Object.freeze([...trace.policyDecisionIds]),
     grantIds: Object.freeze([...trace.grantIds]),
-    leaseIds: Object.freeze([...trace.leaseIds])
+    leaseIds: Object.freeze([...trace.leaseIds]),
+    ...(extras.reviewableDomOrScreenshotEvidence
+      ? { reviewableDomOrScreenshotEvidence: true }
+      : {})
   })
 }
 
@@ -400,6 +435,65 @@ function browserServiceFailureResult(
   })
 }
 
+function mergeReviewableCapture(
+  capture: PersistedCapture,
+  reviewable: {
+    readonly evidenceRefs: readonly string[]
+    readonly reviewable: boolean
+  }
+): PersistedCapture {
+  if (reviewable.evidenceRefs.length === 0) return capture
+  return Object.freeze({
+    ...capture,
+    evidenceRefs: Object.freeze([
+      ...capture.evidenceRefs,
+      ...reviewable.evidenceRefs
+    ]),
+    hashOnlyEvidenceRefs: capture.hashOnlyEvidenceRefs,
+    reviewableDomOrScreenshotEvidence: reviewable.reviewable
+  })
+}
+
+function asProtectedOriginalDecision(
+  decision: EvidenceCaptureDecision,
+  source: 'dom-snapshot' | 'browser-screenshot'
+): ProtectedOriginalEvidenceCaptureDecision | undefined {
+  if (
+    decision.action !== 'protected-original' ||
+    decision.protectedOriginalPlan === undefined
+  ) {
+    return undefined
+  }
+  const {
+    oobCommitmentKeyRef: _oobCommitmentKeyRef,
+    oobCommitmentKeyVersion: _oobCommitmentKeyVersion,
+    ...rest
+  } = decision
+  return {
+    ...rest,
+    action: 'protected-original',
+    source,
+    protectedOriginalPlan: decision.protectedOriginalPlan
+  }
+}
+
+function reviewableDecisionFor(
+  decisions: ExecutionEvidenceCaptureDecisionSet,
+  source: 'dom-snapshot' | 'browser-screenshot',
+  executionState: EvidenceCaptureExecutionState
+): EvidenceCaptureDecision | undefined {
+  if (!(source in decisions)) return undefined
+  const byState = (
+    decisions as unknown as Readonly<
+      Record<
+        'dom-snapshot' | 'browser-screenshot',
+        Readonly<Record<EvidenceCaptureExecutionState, EvidenceCaptureDecision>>
+      >
+    >
+  )[source]
+  return byState?.[executionState]
+}
+
 function decisionFor(
   decisions: ExecutionEvidenceCaptureDecisionSet,
   source: SafeCaptureSummary['source'],
@@ -533,7 +627,10 @@ function ssrfTargetUrlForHttpStep(
   if (input.familyId !== 'ssrf') return undefined
   if (input.stepId === 'ssrf.callback-read') return wireUrl
   if (hop !== 0) return undefined
-  const mutationValue = input.mutation?.value
+  const mutationValue =
+    input.mutation && input.mutation.kind !== 'path'
+      ? input.mutation.value
+      : undefined
   if (
     typeof mutationValue === 'string' &&
     canonicalizeTargetUrl(mutationValue).ok
@@ -554,6 +651,9 @@ export class ExecutionService implements ExecutionPort {
   readonly #executionGuard: PolicyExecutionGuard
   readonly #evidenceCapturePolicy: EvidenceCapturePolicy
   readonly #hashKeyProvider: EphemeralRequestHashKeyProvider
+  readonly #sessionVault?: SessionVault
+  readonly #csrfBindingService?: CsrfBindingService
+  readonly #protectedEvidence: ProtectedEvidenceCaptureService
   readonly #clock: () => number
 
   constructor(dependencies: ExecutionServiceDependencies) {
@@ -567,6 +667,12 @@ export class ExecutionService implements ExecutionPort {
     this.#executionGuard = dependencies.executionGuard
     this.#evidenceCapturePolicy = dependencies.evidenceCapturePolicy
     this.#hashKeyProvider = dependencies.hashKeyProvider
+    this.#sessionVault = dependencies.sessionVault
+    this.#csrfBindingService = dependencies.csrfBindingService
+    this.#protectedEvidence = new ProtectedEvidenceCaptureService(
+      dependencies.evidenceCapturePolicy,
+      dependencies.evidenceStore
+    )
     this.#clock = dependencies.clock ?? Date.now
   }
 
@@ -588,6 +694,638 @@ export class ExecutionService implements ExecutionPort {
       return this.#executeBrowserOffline(input)
     }
     return this.#rejectUnsupported(input)
+  }
+
+  async executeL2Http(
+    input: L2HttpExecutionStepInput
+  ): Promise<StoredExecutionResult<HttpExecutionResultView>> {
+    const familyId = this.#prepareCommonInput(input)
+    if (!this.#sessionVault) {
+      throw new Error('L2 HTTP execution requires an active SessionVault.')
+    }
+    const mutating = input.method !== 'GET'
+    if (mutating && input.approvalBundleRef === undefined) {
+      throw new Error('L2 mutating HTTP requires a bound approval record.')
+    }
+    if (mutating && !this.#csrfBindingService) {
+      throw new Error('L2 mutating HTTP requires a CSRF binding service.')
+    }
+    const timeoutMs = assertPositiveInteger(input.timeoutMs, 'HTTP timeout', 120_000)
+    const maxResponseBytes = assertPositiveInteger(
+      input.maxResponseBytes,
+      'HTTP response budget',
+      16_777_216
+    )
+    const desiredUrl = assertCanonicalHttpUrl(input.desiredUrl, 'HTTP desired URL')
+    const identity = await this.#repository.getIdentity(input.identityId)
+    if (!identity || !identity.isTestIdentity) {
+      throw new Error('L2 HTTP identity is missing or is not a test identity.')
+    }
+    const identityRef: IdentityRef = {
+      id: identity.id,
+      version: Date.parse(identity.updatedAt),
+      ownerRef: identity.targetId,
+      scopeSnapshotId: input.testObjectRef.scopeSnapshotId,
+      statusSummary: 'active'
+    }
+    const sessionRef = await this.#sessionVault.sessionGenerationRef(input.sessionId)
+    const compiled = await compileL2HttpRequest({
+      scanId: input.scanId,
+      method: input.method,
+      url: desiredUrl,
+      identityRef,
+      sessionRef,
+      testObjectRef: input.testObjectRef,
+      ownerRef: identity.targetId,
+      scopeSnapshotId: input.testObjectRef.scopeSnapshotId,
+      sessionId: input.sessionId,
+      ...(input.csrfBindingHash ? { csrfBindingHash: input.csrfBindingHash } : {}),
+      ...(input.jsonBody ? { jsonBody: input.jsonBody } : {}),
+      hashKey: this.#hashKeyProvider.reference,
+      hashKeyProvider: this.#hashKeyProvider,
+      sessionVault: this.#sessionVault,
+      ...(this.#csrfBindingService
+        ? { csrfBindingService: this.#csrfBindingService }
+        : {}),
+      executionBinding: {
+        stepId: input.stepId,
+        purpose: input.purpose,
+        adapterKind: 'http'
+      }
+    })
+    const ownerRef = compiled.authorizationContext.ownerRef
+    if (!ownerRef) {
+      throw new Error('Compiled L2 request lacks owner binding.')
+    }
+    const endpointId = await this.#ensureL2InventoryEndpoint(input, desiredUrl)
+    const wire = materializedWire(compiled)
+    const policy = await this.#policyBroker.evaluate({
+      scanId: input.scanId,
+      agentRunId: input.agentRunId,
+      action: {
+        kind: 'http-request',
+        targetUrl: wire.url,
+        method: wire.method,
+        identityId: identity.id,
+        probeLevel: input.probeLevel,
+        sideEffect: input.sideEffect,
+        summary: safeText(input.summary),
+        ...(input.payloadSummary
+          ? { payloadSummary: safeText(input.payloadSummary) }
+          : {}),
+        expectedEvidence: safeText(input.expectedEvidence),
+        maxRequests: 1,
+        timeoutMs,
+        maxResponseBytes,
+        maxRedirects: 0,
+        maxRepeats: 0,
+        userApproved: false,
+        ...(input.cleanupPlan ? { cleanupPlan: safeText(input.cleanupPlan) } : {})
+      },
+      stopConditions: ['Stop after this single reviewed L2 execution step.'],
+      authorizedWireRequestHmac: compiled.wireRequestHmac,
+      ...(input.approvalBundleRef ? { backendTrustedApproval: true } : {})
+    })
+    const trace = newTrace()
+    trace.proposalIds.push(policy.proposal.id)
+    trace.policyDecisionIds.push(policy.decision.id)
+    if (!policy.decision.allowed || policy.decision.requiresApproval) {
+      throw new Error('Security policy rejected the compiled L2 HTTP request.')
+    }
+    const decidedTimeoutMs = policy.executionLimits?.timeoutMs ?? timeoutMs
+    const decidedMaxResponseBytes =
+      policy.executionLimits?.maxResponseBytes ?? maxResponseBytes
+    const context = await this.#requireDecisionContext(input.scanId, policy.decision.id)
+    const window = this.#issuanceWindow(
+      policy.decision.validUntil,
+      context.scope.validUntil,
+      decidedTimeoutMs,
+      0,
+      undefined
+    )
+    const issued = await this.#authority.issue({
+      scanId: input.scanId,
+      familyId,
+      policyDecisionId: policy.decision.id,
+      stepId: input.stepId,
+      compiled,
+      capabilityIds: compiled.enabledCapabilityIds,
+      ownerRef,
+      credentialRef: compiled.authorizationContext.credentialRef,
+      ...(compiled.authorizationContext.identityRef
+        ? { identityRef: compiled.authorizationContext.identityRef }
+        : {}),
+      ...(compiled.authorizationContext.sessionRef
+        ? { sessionRef: compiled.authorizationContext.sessionRef }
+        : {}),
+      testObjectRef: input.testObjectRef,
+      ...(input.approvalBundleRef
+        ? { approvalBundleRef: input.approvalBundleRef }
+        : {}),
+      purpose: input.purpose,
+      adapterKind: 'http',
+      retryClass: 'never',
+      limits: {
+        timeoutMs: decidedTimeoutMs,
+        maxResponseBytes: decidedMaxResponseBytes,
+        maxRedirects: 0
+      },
+      ...window
+    })
+    trace.grantIds.push(issued.grant.id)
+    trace.leaseIds.push(issued.lease.id)
+    const toolCallId = await this.#recordToolCall(issued, 'http-runner', HTTP_TOOL_VERSION)
+    trace.toolCallIds.push(toolCallId)
+
+    const requestId = randomUUID()
+    const abort = (): void => {
+      void this.#httpRunner.cancel(requestId)
+    }
+    input.signal?.addEventListener('abort', abort, { once: true })
+    let rawResult: unknown
+    const sessionRefIssued = issued.grant.sessionRef
+    const vault = this.#sessionVault
+    const pendingCookies: Array<{ readonly cookie: string; readonly url: string }> = []
+    try {
+      rawResult = await this.#httpRunner.execute({
+        requestId,
+        leaseId: issued.lease.id,
+        wire,
+        timeoutMs: decidedTimeoutMs,
+        maxResponseBytes: decidedMaxResponseBytes,
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(vault && sessionRefIssued
+          ? {
+              setCookieSink: (cookies: readonly string[], requestUrl: string) => {
+                for (const cookie of cookies) {
+                  pendingCookies.push({ cookie, url: requestUrl })
+                }
+              }
+            }
+          : {})
+      })
+    } finally {
+      input.signal?.removeEventListener('abort', abort)
+    }
+    if (vault && sessionRefIssued) {
+      for (const pending of pendingCookies) {
+        try {
+          await vault.ingestSetCookie(sessionRefIssued.id, pending.cookie, pending.url)
+        } catch {
+          // Vault-side rejection must not fail an already authorized request.
+        }
+      }
+    }
+    let result
+    try {
+      result = validateHttpRunnerOutput<ExecutionClaimToken>(rawResult, {
+        requestId,
+        wire,
+        timeoutMs: decidedTimeoutMs,
+        maxResponseBytes: decidedMaxResponseBytes
+      })
+    } catch (error) {
+      const claimToken = claimTokenFromRunnerOutputError<ExecutionClaimToken>(error)
+      try {
+        await this.#executionGuard.rejectInvalidRunnerOutput(issued.lease.id, claimToken)
+      } catch {
+        // Recovered as interrupted.
+      }
+      throw new Error('HTTP runner output failed closed validation.')
+    }
+    const redirects: HttpRedirectObservation[] = []
+    const claimToken = result.claimToken
+    if (!claimToken) {
+      await this.#executionGuard.revoke(issued.lease.id, 'guard-rejected')
+      return freezeStoredResult(httpResultView(result, redirects), trace)
+    }
+    const redirectRejected = Boolean(result.status === 'succeeded' && result.redirectLocation)
+    const executionState = redirectRejected ? 'failed' : executionStateForHttp(result)
+    const interactionId = randomUUID()
+    const summaries = this.#httpCaptureSummaries(
+      issued,
+      wire,
+      result,
+      redirectRejected ? 'redirect-rejected' : undefined
+    )
+    let capture: PersistedCapture
+    const unboundEvidence: EvidenceCleanupRecord[] = []
+    let auditStage: 'evidence' | 'interaction' = 'evidence'
+    try {
+      capture = await this.#persistCaptures(
+        {
+          issued,
+          workspaceId: context.workspaceId,
+          executionState,
+          summaries
+        },
+        unboundEvidence
+      )
+      auditStage = 'interaction'
+      const persistedInteractionId = await this.#executionGuard.recordInteractionAudit(
+        claimToken,
+        {
+          interaction: {
+            id: interactionId,
+            scanId: input.scanId,
+            endpointId,
+            identityId: identity.id,
+            policyDecisionId: policy.decision.id,
+            requestRef: capture.requestEvidenceId,
+            responseRef: capture.resultEvidenceId,
+            requestSummary: capture.requestInteractionSummary,
+            responseSummary: capture.resultInteractionSummary,
+            ...(result.statusCode !== undefined ? { statusCode: result.statusCode } : {}),
+            durationMs: result.durationMs
+          },
+          evidenceLinks: capture.evidenceLinks
+        }
+      )
+      if (persistedInteractionId !== interactionId) {
+        throw new Error('Execution interaction identity changed during audit persistence.')
+      }
+      trace.interactionIds.push(interactionId)
+      trace.evidenceRefs.push(...capture.evidenceRefs)
+    } catch (error) {
+      const retainedEvidenceRefs = await this.#discardUnboundCaptures(unboundEvidence)
+      await this.#finalizeAuditFailure(claimToken, result.responseBytes, retainedEvidenceRefs)
+      throw new Error(`HTTP execution ${auditStage} persistence failed.`, {
+        cause: error
+      })
+    }
+
+    if (redirectRejected) {
+      await this.#executionGuard.finalizeFailed(claimToken, {
+        code: 'redirect-rejected',
+        responseBytes: result.responseBytes,
+        evidenceRefs: capture.evidenceRefs
+      })
+      return freezeStoredResult(
+        Object.freeze({
+          ...httpResultView(result, redirects),
+          status: 'failed' as const,
+          errorCode: 'redirect-rejected',
+          errorMessage: 'The HTTP redirect target was rejected.'
+        }),
+        trace
+      )
+    }
+    if (result.status === 'succeeded') {
+      await this.#executionGuard.finalizeSucceeded(claimToken, {
+        responseBytes: result.responseBytes,
+        evidenceRefs: capture.evidenceRefs
+      })
+    } else {
+      await this.#executionGuard.finalizeFailed(claimToken, {
+        code: failureCodeForHttp(result),
+        responseBytes: result.responseBytes,
+        evidenceRefs: capture.evidenceRefs
+      })
+    }
+    return freezeStoredResult(httpResultView(result, redirects), trace)
+  }
+
+  async executeMediatedHttp(
+    input: MediatedHttpExecutionStepInput
+  ): Promise<StoredExecutionResult<HttpExecutionResultView>> {
+    const familyId = this.#prepareCommonInput(input)
+    if (input.method !== 'GET' && input.method !== 'HEAD') {
+      throw new Error('Mediated HTTP only allows GET or HEAD.')
+    }
+    const timeoutMs = assertPositiveInteger(input.timeoutMs, 'HTTP timeout', 120_000)
+    const maxResponseBytes = assertPositiveInteger(
+      input.maxResponseBytes,
+      'HTTP response budget',
+      16_777_216
+    )
+    const desiredUrl = assertCanonicalHttpUrl(input.desiredUrl, 'HTTP desired URL')
+    const scan = await this.#repository.getScan(input.scanId)
+    if (!scan) throw new Error('Scan does not exist.')
+    const target = await this.#repository.getTarget(scan.targetId)
+    if (!target) throw new Error('Scan target does not exist.')
+    let identityRef: IdentityRef | undefined
+    if (input.identityId) {
+      const identity = await this.#repository.getIdentity(input.identityId)
+      if (!identity) throw new Error('Mediated HTTP identity is missing.')
+      identityRef = {
+        id: identity.id,
+        version: Date.parse(identity.updatedAt),
+        ownerRef: identity.targetId,
+        scopeSnapshotId: scan.scopeSnapshotId,
+        statusSummary: 'active'
+      }
+    }
+    const sessionRef =
+      input.sessionId && this.#sessionVault
+        ? await this.#sessionVault.sessionGenerationRef(input.sessionId)
+        : undefined
+    const compiled = await compileMediatedRead(this.#repository, {
+      scanId: input.scanId,
+      endpointId: input.endpointId,
+      requestVariantId: input.requestVariantId,
+      desiredUrl,
+      method: input.method,
+      ownerRef: target.id,
+      scopeSnapshotId: scan.scopeSnapshotId,
+      hashKey: this.#hashKeyProvider.reference,
+      hashKeyProvider: this.#hashKeyProvider,
+      executionBinding: {
+        stepId: input.stepId,
+        purpose: input.purpose,
+        adapterKind: 'http'
+      },
+      ...(identityRef ? { identityRef } : {}),
+      ...(sessionRef ? { sessionRef } : {}),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(this.#sessionVault ? { sessionVault: this.#sessionVault } : {})
+    })
+    const ownerRef = compiled.authorizationContext.ownerRef
+    if (!ownerRef) {
+      throw new Error('Compiled mediated request lacks owner binding.')
+    }
+    const wire = materializedWire(compiled)
+    const policy = await this.#policyBroker.evaluate({
+      scanId: input.scanId,
+      agentRunId: input.agentRunId,
+      action: {
+        kind: 'http-request',
+        targetUrl: wire.url,
+        method: wire.method,
+        ...(identityRef ? { identityId: identityRef.id } : {}),
+        probeLevel: 'active-safe',
+        sideEffect: 'none',
+        summary: safeText(input.summary),
+        ...(input.payloadSummary
+          ? { payloadSummary: safeText(input.payloadSummary) }
+          : {}),
+        expectedEvidence: safeText(input.expectedEvidence),
+        maxRequests: 1,
+        timeoutMs,
+        maxResponseBytes,
+        maxRedirects: 0,
+        maxRepeats: 0,
+        userApproved: false
+      },
+      stopConditions: ['Stop after this single reviewed mediated-read step.'],
+      authorizedWireRequestHmac: compiled.wireRequestHmac
+    })
+    const trace = newTrace()
+    trace.proposalIds.push(policy.proposal.id)
+    trace.policyDecisionIds.push(policy.decision.id)
+    if (!policy.decision.allowed || policy.decision.requiresApproval) {
+      throw new Error('Security policy rejected the compiled mediated HTTP request.')
+    }
+    const decidedTimeoutMs = policy.executionLimits?.timeoutMs ?? timeoutMs
+    const decidedMaxResponseBytes =
+      policy.executionLimits?.maxResponseBytes ?? maxResponseBytes
+    const context = await this.#requireDecisionContext(input.scanId, policy.decision.id)
+    const window = this.#issuanceWindow(
+      policy.decision.validUntil,
+      context.scope.validUntil,
+      decidedTimeoutMs,
+      0,
+      undefined
+    )
+    const issued = await this.#authority.issue({
+      scanId: input.scanId,
+      familyId,
+      policyDecisionId: policy.decision.id,
+      stepId: input.stepId,
+      compiled,
+      capabilityIds: compiled.enabledCapabilityIds,
+      ownerRef,
+      credentialRef: compiled.authorizationContext.credentialRef,
+      ...(compiled.authorizationContext.identityRef
+        ? { identityRef: compiled.authorizationContext.identityRef }
+        : {}),
+      ...(compiled.authorizationContext.sessionRef
+        ? { sessionRef: compiled.authorizationContext.sessionRef }
+        : {}),
+      purpose: input.purpose,
+      adapterKind: 'http',
+      retryClass: 'deterministic-readonly',
+      limits: {
+        timeoutMs: decidedTimeoutMs,
+        maxResponseBytes: decidedMaxResponseBytes,
+        maxRedirects: 0
+      },
+      ...window
+    })
+    trace.grantIds.push(issued.grant.id)
+    trace.leaseIds.push(issued.lease.id)
+    const toolCallId = await this.#recordToolCall(issued, 'http-runner', HTTP_TOOL_VERSION)
+    trace.toolCallIds.push(toolCallId)
+
+    const requestId = randomUUID()
+    const abort = (): void => {
+      void this.#httpRunner.cancel(requestId)
+    }
+    input.signal?.addEventListener('abort', abort, { once: true })
+    let rawResult: unknown
+    const sessionRefIssued = issued.grant.sessionRef
+    const vault = this.#sessionVault
+    const pendingCookies: Array<{ readonly cookie: string; readonly url: string }> = []
+    try {
+      rawResult = await this.#httpRunner.execute({
+        requestId,
+        leaseId: issued.lease.id,
+        wire,
+        timeoutMs: decidedTimeoutMs,
+        maxResponseBytes: decidedMaxResponseBytes,
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(vault && sessionRefIssued
+          ? {
+              setCookieSink: (cookies: readonly string[], requestUrl: string) => {
+                for (const cookie of cookies) {
+                  pendingCookies.push({ cookie, url: requestUrl })
+                }
+              }
+            }
+          : {})
+      })
+    } finally {
+      input.signal?.removeEventListener('abort', abort)
+    }
+    if (vault && sessionRefIssued) {
+      for (const pending of pendingCookies) {
+        try {
+          await vault.ingestSetCookie(sessionRefIssued.id, pending.cookie, pending.url)
+        } catch {
+          // Vault-side rejection must not fail an already authorized request.
+        }
+      }
+    }
+    let result
+    try {
+      result = validateHttpRunnerOutput<ExecutionClaimToken>(rawResult, {
+        requestId,
+        wire,
+        timeoutMs: decidedTimeoutMs,
+        maxResponseBytes: decidedMaxResponseBytes
+      })
+    } catch (error) {
+      const claimToken = claimTokenFromRunnerOutputError<ExecutionClaimToken>(error)
+      try {
+        await this.#executionGuard.rejectInvalidRunnerOutput(issued.lease.id, claimToken)
+      } catch {
+        // Recovered as interrupted.
+      }
+      throw new Error('HTTP runner output failed closed validation.')
+    }
+    const redirects: HttpRedirectObservation[] = []
+    const claimToken = result.claimToken
+    if (!claimToken) {
+      await this.#executionGuard.revoke(issued.lease.id, 'guard-rejected')
+      return freezeStoredResult(httpResultView(result, redirects), trace)
+    }
+    const hashRejected = Boolean(
+      input.expectedContentHash &&
+        result.status === 'succeeded' &&
+        result.responseBody !== undefined &&
+        sha256Bytes(result.responseBody) !== input.expectedContentHash
+    )
+    const redirectRejected = Boolean(result.status === 'succeeded' && result.redirectLocation)
+    const executionState =
+      redirectRejected || hashRejected ? 'failed' : executionStateForHttp(result)
+    const interactionId = randomUUID()
+    const summaries = this.#httpCaptureSummaries(
+      issued,
+      wire,
+      result,
+      redirectRejected ? 'redirect-rejected' : hashRejected ? 'runner-output-invalid' : undefined
+    )
+    let capture: PersistedCapture
+    const unboundEvidence: EvidenceCleanupRecord[] = []
+    let auditStage: 'evidence' | 'interaction' = 'evidence'
+    try {
+      capture = await this.#persistCaptures(
+        {
+          issued,
+          workspaceId: context.workspaceId,
+          executionState,
+          summaries
+        },
+        unboundEvidence
+      )
+      auditStage = 'interaction'
+      const persistedInteractionId = await this.#executionGuard.recordInteractionAudit(
+        claimToken,
+        {
+          interaction: {
+            id: interactionId,
+            scanId: input.scanId,
+            endpointId: input.endpointId,
+            ...(identityRef ? { identityId: identityRef.id } : {}),
+            policyDecisionId: policy.decision.id,
+            requestRef: capture.requestEvidenceId,
+            responseRef: capture.resultEvidenceId,
+            requestSummary: capture.requestInteractionSummary,
+            responseSummary: capture.resultInteractionSummary,
+            ...(result.statusCode !== undefined ? { statusCode: result.statusCode } : {}),
+            durationMs: result.durationMs
+          },
+          evidenceLinks: capture.evidenceLinks
+        }
+      )
+      if (persistedInteractionId !== interactionId) {
+        throw new Error('Execution interaction identity changed during audit persistence.')
+      }
+      trace.interactionIds.push(interactionId)
+      trace.evidenceRefs.push(...capture.evidenceRefs)
+    } catch (error) {
+      const retainedEvidenceRefs = await this.#discardUnboundCaptures(unboundEvidence)
+      await this.#finalizeAuditFailure(claimToken, result.responseBytes, retainedEvidenceRefs)
+      throw new Error(`HTTP execution ${auditStage} persistence failed.`, {
+        cause: error
+      })
+    }
+
+    if (redirectRejected || hashRejected) {
+      await this.#executionGuard.finalizeFailed(claimToken, {
+        code: redirectRejected ? 'redirect-rejected' : 'runner-output-invalid',
+        responseBytes: result.responseBytes,
+        evidenceRefs: capture.evidenceRefs
+      })
+      return freezeStoredResult(
+        Object.freeze({
+          ...httpResultView(result, redirects),
+          status: 'failed' as const,
+          errorCode: redirectRejected ? 'redirect-rejected' : 'runner-output-invalid',
+          errorMessage: redirectRejected
+            ? 'The HTTP redirect target was rejected.'
+            : 'The mediated response hash does not match the frozen AssetManifest.'
+        }),
+        trace
+      )
+    }
+    if (result.status === 'succeeded') {
+      await this.#executionGuard.finalizeSucceeded(claimToken, {
+        responseBytes: result.responseBytes,
+        evidenceRefs: capture.evidenceRefs
+      })
+    } else {
+      await this.#executionGuard.finalizeFailed(claimToken, {
+        code: failureCodeForHttp(result),
+        responseBytes: result.responseBytes,
+        evidenceRefs: capture.evidenceRefs
+      })
+    }
+    return freezeStoredResult(httpResultView(result, redirects), trace)
+  }
+
+  async #ensureL2InventoryEndpoint(
+    input: L2HttpExecutionStepInput,
+    desiredUrl: string
+  ): Promise<string> {
+    const mutating = input.method !== 'GET'
+    const inventory = new InventoryService(
+      this.#repository,
+      DEFAULT_PROBE_CAPABILITY_CATALOG
+    )
+    const persisted = await inventory.upsertInventory({
+      scanId: input.scanId,
+      method: input.method,
+      url: desiredUrl,
+      ...(mutating ? { contentType: 'application/json' } : {}),
+      bodyShape: mutating
+        ? { rootType: 'object', fields: l2JsonBodyFields(input.jsonBody) }
+        : { rootType: 'none', fields: [] },
+      codec: mutating ? 'json' : 'none',
+      transport: 'standard-http',
+      allowedHeaders: mutating
+        ? [{ name: 'x-csrf-token', valueType: 'string', required: true }]
+        : [],
+      selectors: [
+        { kind: 'cookie', name: 'sid', valueType: 'string', required: true },
+        ...(mutating
+          ? [
+              {
+                kind: 'header' as const,
+                name: 'x-csrf-token',
+                valueType: 'string' as const,
+                required: true
+              }
+            ]
+          : [])
+      ],
+      templateVersion: '1.0.0',
+      requiredCapabilityIds: mutating
+        ? ['http.reviewed-read', 'http.test-object-write']
+        : ['http.reviewed-read'],
+      preview: { url: desiredUrl },
+      source: {
+        type: 'l2.execution',
+        sourceHash: sha256Text(
+          canonicalJson({
+            scanId: input.scanId,
+            method: input.method,
+            url: desiredUrl
+          })
+        ),
+        confidence: 1
+      }
+    })
+    return persisted.endpoint.id
   }
 
   async #rejectUnsupported(
@@ -649,14 +1387,22 @@ export class ExecutionService implements ExecutionPort {
         ...(input.identityId ? { identityId: input.identityId } : {}),
         credentialMode,
         ...(hop === 0 && input.mutation
-          ? {
-              queryMutation: {
-                kind: 'query',
-                name: input.mutation.name,
-                occurrence: input.mutation.occurrence,
-                value: input.mutation.value
+          ? input.mutation.kind === 'path'
+            ? {
+                pathMutation: {
+                  selectorName: input.mutation.name,
+                  segmentIndex: input.mutation.segmentIndex,
+                  value: input.mutation.value
+                }
               }
-            }
+            : {
+                queryMutation: {
+                  kind: 'query' as const,
+                  name: input.mutation.name,
+                  occurrence: input.mutation.occurrence,
+                  value: input.mutation.value
+                }
+              }
           : {}),
         executionBinding: {
           stepId: input.stepId,
@@ -724,6 +1470,10 @@ export class ExecutionService implements ExecutionPort {
         decidedMaxRedirects,
         parent?.grant.validUntil
       )
+      const pinnedSessionRef =
+        !parent && input.sessionId && this.#sessionVault
+          ? await this.#sessionVault.sessionGenerationRef(input.sessionId)
+          : undefined
       const issued = parent
         ? await this.#authority.issueRedirectChild({
             parentGrantId: parent.grant.id,
@@ -751,6 +1501,7 @@ export class ExecutionService implements ExecutionPort {
             ...(compiled.identityRef
               ? { identityRef: compiled.identityRef }
               : {}),
+            ...(pinnedSessionRef ? { sessionRef: pinnedSessionRef } : {}),
             purpose: input.purpose,
             adapterKind: 'http',
             retryClass:
@@ -779,6 +1530,10 @@ export class ExecutionService implements ExecutionPort {
       }
       input.signal?.addEventListener('abort', abort, { once: true })
       let rawResult: unknown
+      const sessionRef = issued.grant.sessionRef
+      const vault = this.#sessionVault
+      const pendingCookies: Array<{ readonly cookie: string; readonly url: string }> =
+        []
       try {
         rawResult = await this.#httpRunner.execute({
           requestId,
@@ -786,10 +1541,28 @@ export class ExecutionService implements ExecutionPort {
           wire,
           timeoutMs: decidedTimeoutMs,
           maxResponseBytes: decidedMaxResponseBytes,
-          ...(input.signal ? { signal: input.signal } : {})
+          ...(input.signal ? { signal: input.signal } : {}),
+          ...(vault && sessionRef
+            ? {
+                setCookieSink: (cookies: readonly string[], requestUrl: string) => {
+                  for (const cookie of cookies) {
+                    pendingCookies.push({ cookie, url: requestUrl })
+                  }
+                }
+              }
+            : {})
         })
       } finally {
         input.signal?.removeEventListener('abort', abort)
+      }
+      if (vault && sessionRef) {
+        for (const pending of pendingCookies) {
+          try {
+            await vault.ingestSetCookie(sessionRef.id, pending.cookie, pending.url)
+          } catch {
+            // Vault-side rejection must not fail an already authorized request.
+          }
+        }
       }
       let result: HttpExecutionResult<ExecutionClaimToken>
       try {
@@ -1189,7 +1962,7 @@ export class ExecutionService implements ExecutionPort {
     const responseBytes = responseBytesForBrowser(result)
     const interactionId = randomUUID()
     const summaries = this.#browserCaptureSummaries(issued, input, result)
-    let capture: PersistedCapture
+    let capture: PersistedCapture | undefined
     const unboundEvidence: EvidenceCleanupRecord[] = []
     let auditStage: 'evidence' | 'interaction' = 'evidence'
     try {
@@ -1199,6 +1972,13 @@ export class ExecutionService implements ExecutionPort {
         executionState,
         summaries
       }, unboundEvidence)
+      const reviewable = await this.#persistReviewableBrowserEvidence({
+        issued,
+        executionState,
+        result,
+        unboundEvidence
+      })
+      capture = mergeReviewableCapture(capture, reviewable)
       auditStage = 'interaction'
       const persistedInteractionId =
         await this.#executionGuard.recordInteractionAudit(claimToken, {
@@ -1224,31 +2004,46 @@ export class ExecutionService implements ExecutionPort {
     } catch {
       const retainedEvidenceRefs =
         await this.#discardUnboundCaptures(unboundEvidence)
+      const hashOnlyRefs = capture?.hashOnlyEvidenceRefs
+      const finalizeRefs = hashOnlyRefs
+        ? retainedEvidenceRefs.filter((id) => hashOnlyRefs.includes(id))
+        : retainedEvidenceRefs
       await this.#finalizeAuditFailure(
         claimToken,
         responseBytes,
-        retainedEvidenceRefs
+        finalizeRefs
       )
       throw new Error(`Browser execution ${auditStage} persistence failed.`)
+    }
+    if (!capture) {
+      throw new Error('Browser execution capture is missing after audit.')
     }
 
     if (result.status === 'succeeded') {
       await this.#executionGuard.finalizeSucceeded(claimToken, {
         responseBytes,
-        evidenceRefs: capture.evidenceRefs
+        evidenceRefs: capture.hashOnlyEvidenceRefs
       })
     } else {
       await this.#executionGuard.finalizeFailed(claimToken, {
         code: failureCodeForBrowser(result),
         responseBytes,
-        evidenceRefs: capture.evidenceRefs
+        evidenceRefs: capture.hashOnlyEvidenceRefs
       })
     }
-    return freezeStoredResult(browserResultView(result), trace)
+    return freezeStoredResult(browserResultView(result), trace, {
+      ...(capture.reviewableDomOrScreenshotEvidence
+        ? { reviewableDomOrScreenshotEvidence: true }
+        : {})
+    })
   }
 
   #prepareCommonInput(
-    input: HttpExecutionStepInput | BrowserOfflineExecutionStepInput
+    input:
+      | HttpExecutionStepInput
+      | BrowserOfflineExecutionStepInput
+      | L2HttpExecutionStepInput
+      | MediatedHttpExecutionStepInput
   ): LegacyV1VulnerabilityFamily {
     if (!input || typeof input !== 'object') {
       throw new Error('Execution step input is invalid.')
@@ -1369,7 +2164,7 @@ export class ExecutionService implements ExecutionPort {
     issued: IssuedExecutionAuthority,
     wire: MaterializedWireRequest,
     result: HttpExecutionResult<ExecutionClaimToken>,
-    outcomeErrorCode?: 'redirect-rejected'
+    outcomeErrorCode?: 'redirect-rejected' | 'runner-output-invalid'
   ): readonly [SafeCaptureSummary, SafeCaptureSummary] {
     return Object.freeze([
       Object.freeze({
@@ -1565,13 +2360,15 @@ export class ExecutionService implements ExecutionPort {
           ordinal: 0
         })
       ])
+    const hashOnlyEvidenceRefs = Object.freeze([
+      requestCapture.evidenceId,
+      resultCapture.evidenceId
+    ])
     return Object.freeze({
       requestEvidenceId: requestCapture.evidenceId,
       resultEvidenceId: resultCapture.evidenceId,
-      evidenceRefs: Object.freeze([
-        requestCapture.evidenceId,
-        resultCapture.evidenceId
-      ]),
+      evidenceRefs: hashOnlyEvidenceRefs,
+      hashOnlyEvidenceRefs,
       evidenceLinks,
       requestInteractionSummary: interactionSummary(requestCapture),
       resultInteractionSummary: interactionSummary(resultCapture)
@@ -1594,6 +2391,98 @@ export class ExecutionService implements ExecutionPort {
       }
     }
     return Object.freeze(retainedEvidenceRefs)
+  }
+
+  async #persistReviewableBrowserEvidence(input: {
+    readonly issued: IssuedExecutionAuthority
+    readonly executionState: EvidenceCaptureExecutionState
+    readonly result: BrowserExecutionResult
+    readonly unboundEvidence: EvidenceCleanupRecord[]
+  }): Promise<{
+    readonly evidenceRefs: readonly string[]
+    readonly reviewable: boolean
+  }> {
+    const empty = {
+      evidenceRefs: Object.freeze([]) as readonly string[],
+      reviewable: false
+    }
+    const candidates: Array<{
+      readonly source: 'dom-snapshot' | 'browser-screenshot'
+      readonly role: 'dom-snapshot' | 'screenshot'
+      readonly mediaType: string
+      readonly content: Uint8Array
+    }> = []
+    if (input.result.domSnapshot && input.result.domSnapshot.length > 0) {
+      candidates.push({
+        source: 'dom-snapshot',
+        role: 'dom-snapshot',
+        mediaType: 'text/html',
+        content: Uint8Array.from(Buffer.from(input.result.domSnapshot, 'utf8'))
+      })
+    }
+    if (input.result.screenshot && input.result.screenshot.byteLength > 0) {
+      candidates.push({
+        source: 'browser-screenshot',
+        role: 'screenshot',
+        mediaType: 'image/png',
+        content: Uint8Array.from(input.result.screenshot)
+      })
+    }
+    if (candidates.length === 0) return empty
+    const occurredAt = new Date(canonicalNow(this.#clock)).toISOString()
+    const evidenceRefs: string[] = []
+    for (const candidate of candidates) {
+      const rawDecision = reviewableDecisionFor(
+        input.issued.evidenceCaptureDecisions,
+        candidate.source,
+        input.executionState
+      )
+      if (!rawDecision) continue
+      const decision = asProtectedOriginalDecision(
+        rawDecision,
+        candidate.source
+      )
+      if (!decision) continue
+      try {
+        const persisted = await this.#protectedEvidence.captureAndPersist({
+          context: {
+            scanId: input.issued.grant.scanId,
+            policyDecisionId: input.issued.grant.policyDecisionId,
+            techniqueId: input.issued.grant.techniqueId,
+            techniqueVersion: input.issued.grant.techniqueVersion,
+            stepId: input.issued.grant.stepId,
+            executionState: input.executionState,
+            source: candidate.source,
+            role: candidate.role,
+            occurredAt,
+            response: {
+              mediaType: candidate.mediaType,
+              charset: candidate.source === 'dom-snapshot' ? 'utf-8' : 'not-applicable',
+              contentEncoding: 'identity',
+              declaredSizeBytes: candidate.content.byteLength
+            }
+          },
+          decision,
+          content: candidate.content,
+          knownTotalBytes: candidate.content.byteLength
+        })
+        evidenceRefs.push(persisted.evidence.original.id)
+        if (persisted.evidence.derivative) {
+          evidenceRefs.push(persisted.evidence.derivative.id)
+        }
+        input.unboundEvidence.push({
+          id: persisted.evidence.original.id,
+          filePath: persisted.evidence.original.filePath,
+          sha256: persisted.evidence.original.sha256
+        })
+      } catch {
+        // Missing protector or quota fails closed to hash-only; XSS stays Inconclusive.
+      }
+    }
+    return Object.freeze({
+      evidenceRefs: Object.freeze(evidenceRefs),
+      reviewable: evidenceRefs.length > 0
+    })
   }
 
   async #finalizeAuditFailure(

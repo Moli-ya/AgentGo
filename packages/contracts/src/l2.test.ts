@@ -167,6 +167,7 @@ function bundleInput(
     identityContextVersion: { status: 'unresolved' },
     sessionGeneration: { status: 'unresolved' },
     csrfBindingVersion: { status: 'unresolved' },
+    authorizationMatrixVersion: { status: 'unresolved' },
     steps: bundleSteps(object.scopeSnapshotId),
     createdAt: NOW,
     ...overrides
@@ -283,6 +284,7 @@ describe('L2 contracts', () => {
     expect(parsed.identityContextVersion.status).toBe('unresolved')
     expect(parsed.sessionGeneration.status).toBe('unresolved')
     expect(parsed.csrfBindingVersion.status).toBe('unresolved')
+    expect(parsed.authorizationMatrixVersion.status).toBe('unresolved')
   })
 
   it('rejects not-needed receipts that omit required evidence hashes', () => {

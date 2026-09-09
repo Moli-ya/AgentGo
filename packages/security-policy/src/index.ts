@@ -38,6 +38,10 @@ const destructiveIndicators = [
   /\bdelete\s+from\b/i,
   /\bupdate\s+[\w.[\]"]+\s+set\b/i,
   /\binsert\s+into\b/i,
+  /\bunion\b[\s\S]*\bselect\b/i,
+  /;\s*(?:select|drop|truncate|alter|insert|update|delete|create|grant|exec|execute|waitfor|copy|load)\b/i,
+  /\b(?:load_file|into\s+(?:out|dump)file)\b/i,
+  /\bcopy\s+[\s\S]*\bfrom\b/i,
   /\bshutdown\b/i,
   /\bxp_cmdshell\b/i,
   /\brm\s+-rf\b/i,
@@ -93,6 +97,41 @@ function matchesOrigin(target: URL, pattern: string): boolean {
   }
 }
 
+export type UrlScopeVerdict =
+  | { readonly ok: true; readonly href: string }
+  | {
+      readonly ok: false
+      readonly reason: 'unresolved' | 'out-of-scope' | 'canonicalization-failed'
+    }
+
+/**
+ * Offline origin/path/port Scope check. Does not perform DNS or HTTP.
+ * Relative URLs require an absolute base; otherwise they stay unresolved.
+ */
+export function evaluateUrlScope(
+  url: string,
+  scope: TargetScope,
+  baseUrl?: string
+): UrlScopeVerdict {
+  let absolute = url.trim()
+  if (!/^[a-z][a-z0-9+.-]*:/iu.test(absolute)) {
+    if (!baseUrl) return { ok: false, reason: 'unresolved' }
+    try {
+      absolute = new URL(absolute, baseUrl).href
+    } catch {
+      return { ok: false, reason: 'unresolved' }
+    }
+  }
+  const canonical = canonicalizeTargetUrl(absolute)
+  if (!canonical.ok) {
+    return { ok: false, reason: 'canonicalization-failed' }
+  }
+  if (!isInScope(canonical.value.url, scope)) {
+    return { ok: false, reason: 'out-of-scope' }
+  }
+  return { ok: true, href: canonical.value.href }
+}
+
 function isInScope(target: URL, scope: TargetScope): boolean {
   const originAllowed = scope.allowedOrigins.some((origin) => matchesOrigin(target, origin))
   const pathAllowed = scope.allowedPathPrefixes.some((prefix) => {
@@ -129,9 +168,19 @@ function containsDestructiveContent(action: ProbeAction): boolean {
   return destructiveIndicators.some((indicator) => indicator.test(candidate))
 }
 
+/**
+ * Backend-only trust signal for L2. `ProbeAction.userApproved` is never an
+ * authorization input. Only Application composition (ApprovalService /
+ * integrity-bound Grant) may set this.
+ */
+export interface ProbeEvaluationTrust {
+  readonly backendTrustedApproval?: boolean
+}
+
 export function evaluateProbe(
   actionInput: unknown,
-  scopeInput: unknown
+  scopeInput: unknown,
+  trust?: ProbeEvaluationTrust
 ): PolicyDecision {
   const actionResult = ProbeActionSchema.safeParse(actionInput)
   if (!actionResult.success) {
@@ -262,10 +311,13 @@ export function evaluateProbe(
       )
     }
 
-    if (!action.userApproved) {
+    const ignoredUserApproved = action.userApproved === true
+    if (trust?.backendTrustedApproval !== true) {
       return deny(
         'approval-required',
-        'L2 敏感探测需要逐次人工批准。',
+        ignoredUserApproved
+          ? 'L2 敏感探测需要可信批准记录；userApproved 布尔字段已被忽略，不能授权执行。'
+          : 'L2 敏感探测需要逐次人工批准。',
         normalizedTarget,
         true
       )
@@ -285,7 +337,14 @@ export function evaluateProbe(
     allowed: true,
     requiresApproval: false,
     code: 'allowed',
-    reasons: ['动作位于授权范围内，且符合当前主动探测等级。'],
+    reasons: [
+      '动作位于授权范围内，且符合当前主动探测等级。',
+      ...(action.probeLevel === 'active-sensitive' && action.userApproved
+        ? [
+            'legacy userApproved boolean was ignored and is not an authorization signal.'
+          ]
+        : [])
+    ],
     normalizedTarget
   }
 }

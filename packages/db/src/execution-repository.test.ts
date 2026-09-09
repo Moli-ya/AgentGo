@@ -5,6 +5,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ExecutionCaptureDecisionSetSchema,
+  PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+  PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+  PROTECTED_EVIDENCE_POLICY_VERSION,
+  PROTECTED_EVIDENCE_PROTECTION_SCHEME,
   ScanModuleSnapshotDraftSchema,
   type ExecutionClaimBinding,
   type ExecutionCaptureDecisionSet,
@@ -218,12 +222,17 @@ async function createExecutionFixture(
     confirmationRuleRefs: [{ id: 'test.sqli.rule', version: '1.0.0' }],
     evidenceProfileRefs: [{ id: 'test.sqli.evidence', version: '1.0.0' }],
     remediationRefs: [{ id: 'test.sqli.remediation', version: '1.0.0' }],
-    requiredCapabilityIds: ['http.reviewed-read'],
+    requiredCapabilityIds: ['http.reviewed-read', 'browser.offline-replay'],
     capabilityDescriptors: [
       {
         id: 'http.reviewed-read',
         riskFloor: 'l1',
         descriptorHash: sha256('http.reviewed-read')
+      },
+      {
+        id: 'browser.offline-replay',
+        riskFloor: 'l1',
+        descriptorHash: sha256('browser.offline-replay')
       }
     ],
     capabilitySnapshotHash: sha256('execution-capability-snapshot'),
@@ -441,19 +450,36 @@ function captureDecisionSet(
       normalStates.map((executionState) => ({
         source,
         role,
-        executionState
+        executionState,
+        action: 'hash-only' as const
       }))
     ),
+    ...(draft.adapterKind === 'browser-offline'
+      ? (
+          [
+            ['dom-snapshot', 'dom-snapshot'],
+            ['browser-screenshot', 'screenshot']
+          ] as const
+        ).flatMap(([source, role]) =>
+          normalStates.map((executionState) => ({
+            source,
+            role,
+            executionState,
+            action: 'protected-original' as const
+          }))
+        )
+      : []),
     {
       source: 'execution-interruption-summary',
       role: 'interruption-summary',
-      executionState: 'interrupted'
-    } as const
+      executionState: 'interrupted',
+      action: 'hash-only' as const
+    }
   ]
   return ExecutionCaptureDecisionSetSchema.parse({
     schemaVersion: 'execution-capture-decision-set.v1',
     decisions: bindings
-      .map(({ source, role, executionState }) => ({
+      .map(({ source, role, executionState, action }) => ({
         id: randomUUID(),
         scanId: draft.scanId,
         policyDecisionId: draft.policyDecisionId,
@@ -465,13 +491,27 @@ function captureDecisionSet(
         executionState,
         source,
         role,
-        action: 'hash-only',
+        action,
         validFrom: draft.validFrom,
         validUntil: draft.validUntil,
-        maxSourceBytes: 65_536,
+        maxSourceBytes: action === 'protected-original' ? 16_777_216 : 65_536,
         maxExcerptBytes: 256,
         jsonPointers: [],
-        oobMetadataFields: []
+        oobMetadataFields: [],
+        ...(action === 'protected-original'
+          ? {
+              protectedOriginalPlan: {
+                protectionScheme: PROTECTED_EVIDENCE_PROTECTION_SCHEME,
+                accessPolicyId: PROTECTED_EVIDENCE_ACCESS_POLICY_ID,
+                accessPolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+                derivativePolicyId: PROTECTED_EVIDENCE_DERIVATIVE_POLICY_ID,
+                derivativePolicyVersion: PROTECTED_EVIDENCE_POLICY_VERSION,
+                retentionSeconds: 7 * 24 * 60 * 60,
+                maxScanPlaintextBytes: 16_777_216,
+                maxWorkspacePlaintextBytes: 16_777_216
+              }
+            }
+          : {})
       }))
       .sort((left, right) => {
         const leftKey = `${left.source}\u0000${left.executionState}`
@@ -2386,5 +2426,40 @@ describe('Execution grant and lease repository', () => {
         .prepare('DELETE FROM interactions WHERE id = ?')
         .run(firstAudit.interactionId)
     ).toThrow(/immutable/i)
+  })
+
+  it('persists seventeen offline-browser capture decisions including reviewable originals', async () => {
+    const fixture = await createExecutionFixture()
+    const issued = await issueGrant(fixture, {
+      overrides: {
+        adapterKind: 'browser-offline',
+        capabilityIds: ['browser.offline-replay'],
+        stepId: 'xss.verify'
+      }
+    })
+    const rows = fixture.database.native
+      .prepare(
+        `SELECT source, action, COUNT(*) AS n
+         FROM execution_capture_decisions
+         WHERE grant_id = ?
+         GROUP BY source, action
+         ORDER BY source, action`
+      )
+      .all(issued.grant.id) as Array<{
+      source: string
+      action: string
+      n: number
+    }>
+    expect(rows).toEqual([
+      { source: 'browser-request-summary', action: 'hash-only', n: 4 },
+      { source: 'browser-result-summary', action: 'hash-only', n: 4 },
+      { source: 'browser-screenshot', action: 'protected-original', n: 4 },
+      { source: 'dom-snapshot', action: 'protected-original', n: 4 },
+      {
+        source: 'execution-interruption-summary',
+        action: 'hash-only',
+        n: 1
+      }
+    ])
   })
 })

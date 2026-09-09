@@ -134,6 +134,7 @@ function bundlePayload(object: TestObjectPayload): L2ActionBundlePayload {
     identityContextVersion: { status: 'unresolved' },
     sessionGeneration: { status: 'unresolved' },
     csrfBindingVersion: { status: 'unresolved' },
+    authorizationMatrixVersion: { status: 'unresolved' },
     steps: [
       { kind: 'pre-read', binding: binding('read', object) },
       { kind: 'primary', binding: binding('primary', object) },
@@ -205,7 +206,8 @@ describe('L2 domain protocol', () => {
       testObjectHash: sealTestObject(object).objectHash,
       identityContextVersion: { status: 'resolved', version: 'identity-1' },
       sessionGeneration: { status: 'resolved', version: 'session-1' },
-      csrfBindingVersion: { status: 'resolved', version: 'csrf-1' }
+      csrfBindingVersion: { status: 'resolved', version: 'csrf-1' },
+      authorizationMatrixVersion: { status: 'resolved', version: 'matrix-1' }
     })
     const ctx = context(object, { bundle: resolved, testObject: sealTestObject(object) })
     expect(

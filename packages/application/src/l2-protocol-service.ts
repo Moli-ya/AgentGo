@@ -97,19 +97,46 @@ function isConcurrentConflict(error: unknown): boolean {
   return error instanceof Error && error.message.includes('L2 concurrent version conflict')
 }
 
+const BINDING_GATED_EVENTS = new Set<L2BundleEventType>([
+  'submit-for-approval',
+  'approve',
+  'start-pre-read',
+  'start-primary',
+  'start-post-read',
+  'start-cleanup',
+  'start-cleanup-verify',
+  'start-terminal-read'
+])
+
+export type L2BindingFreshnessVerifier = (
+  bundle: L2ActionBundle
+) => Promise<'ok' | L2ProtocolReasonCode>
+
 export class L2ProtocolService {
   private readonly l2: L2Repository
   private readonly scans: AgentGoRepository
   private readonly now: () => Date
+  private bindingFreshnessVerifier?: L2BindingFreshnessVerifier
 
   constructor(dependencies: {
     l2Repository: L2Repository
     scanRepository: AgentGoRepository
     now?: () => Date
+    bindingFreshnessVerifier?: L2BindingFreshnessVerifier
   }) {
     this.l2 = dependencies.l2Repository
     this.scans = dependencies.scanRepository
     this.now = dependencies.now ?? (() => new Date())
+    this.bindingFreshnessVerifier = dependencies.bindingFreshnessVerifier
+  }
+
+  /**
+   * Installed by the composition root once identity/session/CSRF/matrix
+   * services exist. Until then every binding-gated transition keeps failing
+   * closed on the unresolved slots.
+   */
+  setBindingFreshnessVerifier(verifier: L2BindingFreshnessVerifier): void {
+    this.bindingFreshnessVerifier = verifier
   }
 
   async createTestObject(input: L2CreateTestObjectInput): Promise<TestObject> {
@@ -195,6 +222,7 @@ export class L2ProtocolService {
       identityContextVersion: { status: 'unresolved' },
       sessionGeneration: { status: 'unresolved' },
       csrfBindingVersion: { status: 'unresolved' },
+      authorizationMatrixVersion: { status: 'unresolved' },
       steps: input.steps,
       createdAt
     })
@@ -214,6 +242,15 @@ export class L2ProtocolService {
 
   async applyEvent(input: L2ApplyEventInput): Promise<L2BundleView> {
     const view = await this.requireView(input.bundleId, input.bundleVersion)
+    if (
+      this.bindingFreshnessVerifier &&
+      BINDING_GATED_EVENTS.has(input.event)
+    ) {
+      const freshness = await this.bindingFreshnessVerifier(view.bundle)
+      if (freshness !== 'ok') {
+        throw new L2ProtocolError(freshness)
+      }
+    }
     const freeze = await this.l2.getActiveFreeze(
       view.testObject.targetId,
       view.testObject.testObjectId
@@ -296,9 +333,10 @@ export class L2ProtocolService {
     ) {
       throw new L2ProtocolError('bundle-hash-mismatch')
     }
-    if (payload.actorSlot && payload.actorSlot.status === 'resolved') {
-      throw new L2ProtocolError('trusted-approval-missing')
-    }
+    const actorSlot =
+      payload.actorSlot?.status === 'resolved'
+        ? payload.actorSlot
+        : { status: 'unresolved' as const }
     const candidate: CleanupReceiptPayload = {
       schemaVersion: 'agentgo-l2-protocol/1.0',
       receiptId: payload.receiptId,
@@ -309,7 +347,7 @@ export class L2ProtocolService {
       testObjectVersion: payload.testObjectVersion,
       testObjectHash: payload.testObjectHash,
       stepEvidenceHashes: payload.stepEvidenceHashes,
-      actorSlot: { status: 'unresolved' },
+      actorSlot,
       issuedAt: payload.issuedAt,
       terminalResourceState: payload.terminalResourceState,
       cleanupCapabilityId: payload.cleanupCapabilityId,

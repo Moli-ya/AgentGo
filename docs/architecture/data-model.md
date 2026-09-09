@@ -8,13 +8,15 @@
 - Identity：授权测试账号、角色和凭据引用。
 - Scan：一次扫描任务、预算快照与运行时原子账户（reserved bytes、concurrency、security counters、budget ledger）。
 - VulnerabilityModuleManifest / DefinitionRegistrySnapshot：进程内冻结的漏洞定义、六类交叉引用和内容哈希。
-- VulnerabilityTechniqueActivationView：与 Manifest 分离的只读激活视图；四类 legacy technique 由 QualificationRecord 驱动为 `qualified`，`security.headers` 仍为 registered-only。self-built-fixture 记录不是 supported 声明。
-- QualificationRecord / BenchmarkSuiteManifest：进程内密封的资格记录与 versioned technique suite 合同，绑定 definition/build/suite/fixture/policy hash、环境切片与 `resultClass`。生产只加载记录，不把 fixture 代码或评测包送入 Composition Root，也不写入 SQLite。
+- VulnerabilityTechniqueActivationView：与 Manifest 分离的只读激活视图；四类 legacy 合格 technique 与 `security.headers.baseline` 由 QualificationRecord 驱动为 `qualified`。`security.headers.existing-response-audit` 仍为 registered-only。self-built-fixture 记录不是 supported 声明。
+- QualificationRecord / BenchmarkSuiteManifest：进程内密封的资格记录与 versioned technique suite 合同，绑定 definition/build/suite/fixture/policy hash、环境切片与 `resultClass`。生产只加载记录，不把 fixture 代码或评测包送入 Composition Root，也不写入 SQLite。`complex-v1` 与 `agentgo-local-holdout/1.0.0` 都是 `self-built-fixture`；第三方结果必须来自固定且单独记录的 `external-local-holdout` target。
 - Page / Endpoint：按 Scan 隔离的目标表面目录；Endpoint 的身份为 `(scanId, method, canonicalRoute)`，canonical route 不含 query value 或 fragment。
 - RequestVariant / RequestVariantSelector / InventorySource：同一 Endpoint 的结构化请求变体、无值 selector 与幂等来源/provenance；人工 review 与确定性 execution class 分离。
 - ScanModuleSnapshot：每个 Scan 使用的 module、technique、rule、evidence profile、capability descriptor、Registry 与环境快照；集合创建后封存且不可增删改。
 - IdentityRef / SessionGenerationRef / TestObjectRef：不含凭据或对象内容的 opaque 引用合同；只保存稳定 ID、generation/version、owner/scope binding 与状态摘要。
-- TestObject / SideEffectEnvelope / L2ActionBundle / CleanupReceipt / L2ExecutionFreeze：L2 纯协议实体。TestObject 带 AgentGo 创建证明、disposable、精确 field/state 白名单和目标声明的 cleanup 协议；Bundle 绑定 intent hash、execution purpose、对象版本与未解析的会话/身份/CSRF 槽位；Receipt 与 `(targetId, testObjectId)` freeze 由 Application/Repository 写入。没有解析后的会话绑定与可信批准时不能进入批准或执行态。
+- IdentityContext / SessionVault metadata / CsrfBinding / AuthorizationMatrix：Day 9 绑定实体。IdentityContext 保存用户确认的 role、用途、operation 和凭据引用，不含明文 secret。SessionVault 的 Cookie/Token 明文只在进程内存；SQLite 仅保存 sessionId、generation、status 和 credential ref。CsrfBinding 持久化 token hash 与 binding 版本，明文 token 同样只在短期 vault。AuthorizationMatrix 是人工确认的 expected visibility/state，不能由 HTTP 200 或模型推断。
+- ActorContext / ApprovalProposal / ApprovalRecord：Day 10 批准实体。ActorContext 由后端 HMAC proof handle 封印，Renderer/Agent/普通 IPC 不能铸造。Proposal 只持久化脱敏摘要与 Bundle/绑定版本；ApprovalRecord 逐 Bundle、短期、单次使用，并记录 `approvalMode=fixture-only|trusted-backend`。
+- TestObject / SideEffectEnvelope / L2ActionBundle / CleanupReceipt / L2ExecutionFreeze：L2 协议实体。TestObject 带 AgentGo 创建证明、disposable、精确 field/state 白名单和目标声明的 cleanup 协议；Bundle 绑定 intent hash、execution purpose、对象版本与 identity/session/CSRF/矩阵槽位。解析后的槽位只把 `draft` 推进到 `pending-approval`。进入 `approved`/`running-*` 需要可信 ApprovalRecord。产品环境在缺少人类批准适配器时 L2 保持禁用；fixture-only 闭环不得写成生产批准。
 - Interaction：一次请求、响应和业务状态变化。
 - AgentRun / ModelInvocation / ModelProfileUsageEvent：Agent 调用、结构化模型记录和按 Profile 的 Token 用量。
 - McpServer：MCP Transport、非敏感配置、Agent 绑定、风险标签与能力发现结果；敏感值只保存凭据引用。
@@ -30,6 +32,11 @@
 - Finding：最终三态结论和修复建议。
 - KnowledgeDoc / KnowledgeChunk：知识来源和检索单元。
 - KnowledgeImport / KnowledgeIntelligence / KnowledgeAgentRun：公开情报或 PoC 的脱敏原文、固定结构候选和双 Agent 摄取审计。
+- ImportPreview / ImportCommit：Day 11 离线接口描述导入的两阶段审计。Preview 只保存脱敏 operation/warning/parser 版本与源 bytes hash；Commit 以 `(scanId, sourceBytesHash, parserVersion)` 幂等，Inventory 仍只经 `InventoryService` 写入，初始均为 `inventory-only/unreviewed`。
+- StaticDiscoveryCandidateBatch / AssetManifest / ExtractionRule：Day 12 离线静态发现产物。Batch 只做同一 artifact 内去重；AssetManifest 必须按 exact origin、normalized path、content hash、scope snapshot 与 reviewer 冻结后才可供 Day 13 浏览器消费；ExtractionRule 需 review 后才能冻结，likely-secret 与灾难性 regex 不能冻结。
+- InventoryMergeReport / DependencyGraph / BrowserReconObservation：Day 13 跨 producer 合并报告、冻结 ExtractionRule 图与策略中介的浏览器观察。Merge 只经 `InventoryService`；任何 producer 都不能放宽已有 Variant 的 execution class。
+- ValidationPlanRun / ValidationStepRun / ValidationObservation / ValidationEvidenceBinding：通用验证计划运行时。Evidence 按 role/ordinal/profile 绑定。Day 15 起 Coordinator 验证只经 ValidationPlanExecutor，不再按 family 分支发请求。Day 16 起 SQLi 同一 bundle 含 boolean / error-signal / bounded-time 三个 technique，每个参数只执行一个。
+- CandidateAttempt：通用验证候选的计划/等待/运行/清理/终态快照，关联 plan、grant 与 Evidence refs。
 - AuditLog：关键操作与安全事件。
 
 ## 2. 关键关系
@@ -43,6 +50,18 @@ Scan 1--n Endpoint
 Endpoint 1--n RequestVariant
 RequestVariant 1--n RequestVariantSelector
 RequestVariant 1--n InventorySource
+Scan 1--n ImportPreview
+ImportPreview 1--n ImportCommit
+Scan 1--n StaticDiscoveryCandidateBatch
+Scan 1--n AssetManifest
+Scan 1--n ExtractionRule
+Scan 1--n InventoryMergeReport
+Scan 1--n DependencyGraph
+Scan 1--n BrowserReconObservation
+Scan 1--n ValidationPlanRun
+ValidationPlanRun 1--n ValidationStepRun
+ValidationPlanRun 1--n ValidationObservation
+ValidationPlanRun 1--n ValidationEvidenceBinding
 Scan 1--n ScanModuleSnapshot
 Scan 1--n AgentRun
 Scan 1--n Interaction
@@ -102,6 +121,10 @@ capture artifact、source hash、保护计划、ciphertext hash/size、OS-wrappe
 拒绝覆盖不可变表。该协议不发送 HTTP/浏览器请求，也不开放产品 L2。
 
 Inventory 写入统一经过 Application `InventoryService`，repository 以 canonical identity、structure hash 和 provenance hash 原子幂等合并；跨 Scan/Endpoint/Variant/Page 引用由合同、事务和数据库触发器共同拒绝。人工 `reviewStatus` 不能修改按 method、codec、transport 与 capability 得出的 `executionClass`，非标准或尚未实现的 adapter 继续 fail closed。旧 `parameters` 表只作为兼容输入保留，不再是新发现链路的事实真源。
+
+只前进 migration `0014_import_and_static_discovery` 保存 import preview/commit 审计、静态发现 batch、AssetManifest 与 ExtractionRule。导入与静态发现全程零网络，不调用 RequestCompiler、ExecutionPort、HTTP/Browser Runner 或 ModelGateway。发现/盘点不等于执行支持：空 `requiredCapabilityIds` 的导入变体保持 `inventory-only`，未冻结的 manifest 不能被 Day 13 消费。
+
+只前进 migration `0015_browser_recon_merge_and_dependency_graph` 保存 InventoryMergeReport、DependencyGraph、未审查 dependency 候选与 BrowserRecon 观察。只前进 migration `0016_validation_plan_runtime` 保存 ValidationPlan 运行、步骤、观察与 Evidence role 绑定。两者都不改写旧表，也不把产品 L2 或 Renderer 接到这些运行时。
 
 ## 3. EvidenceItem
 
@@ -201,7 +224,12 @@ V1 Drizzle schema 至少覆盖：
 - signals、validation_runs、confirmation_rules；
 - evidence_items、protected_evidence_items、findings、finding_evidence；
 - knowledge_docs、knowledge_chunks、knowledge_imports、knowledge_intelligence、knowledge_agent_runs；
-- reports、audit_logs。
+- reports、audit_logs；
+- test_objects、l2_action_bundles、l2_bundle_runtime、l2_bundle_events、cleanup_receipts、l2_execution_freezes；
+- identity_contexts、session_vault_sessions、csrf_bindings、authorization_matrices、approval_proposals、approval_records；
+- import_previews、import_commits、static_discovery_batches、asset_manifests、extraction_rules；
+- inventory_merge_reports、dependency_graphs、dependency_edge_candidates、browser_recon_observations；
+- validation_plan_runs、validation_step_runs、validation_observations、validation_evidence_bindings。
 
 ## 6. 数据保护
 

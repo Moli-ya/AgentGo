@@ -26,6 +26,7 @@ import type {
 } from './execution-port'
 import {
   AgentGoApplicationService,
+  FindingAssembler,
   createVulnerabilityPlatform
 } from './index'
 import { PolicyBroker } from './execution-policy'
@@ -56,6 +57,7 @@ const expectedStepIds = new Set([
   'xss.baseline',
   'xss.reflection',
   'xss.offline-verify',
+  'xss.encoded-negative',
   'ssrf.callback-read',
   'ssrf.primary',
   'ssrf.negative',
@@ -113,6 +115,14 @@ class StrictExecutionPort implements ExecutionPort {
       return this.#stored(this.#browserResult(input), trace)
     }
     throw new Error(`StrictExecutionPort rejected unsupported adapter ${input.adapterKind}.`)
+  }
+
+  executeL2Http(): Promise<StoredExecutionResult<HttpExecutionResultView>> {
+    throw new Error('StrictExecutionPort does not execute L2 HTTP.')
+  }
+
+  executeMediatedHttp(): Promise<StoredExecutionResult<HttpExecutionResultView>> {
+    throw new Error('StrictExecutionPort does not execute mediated HTTP.')
   }
 
   #assertEnvelope(input: ExecutionPortInput): void {
@@ -208,7 +218,7 @@ class StrictExecutionPort implements ExecutionPort {
         contentType: 'text/html; charset=utf-8'
       }
     }
-    if (input.stepId === 'xss.reflection') {
+    if (input.stepId === 'xss.reflection' || input.stepId === 'xss.encoded-negative') {
       return {
         body: `<html><body>Search: ${input.mutation?.value ?? ''}</body></html>`,
         contentType: 'text/html; charset=utf-8'
@@ -450,8 +460,12 @@ async function createHarness(
     prompts: new AgentPromptCatalog(),
     invocations: repository
   })
-  const reportService = new ReportService(repository, evidenceStore)
   const vulnerabilityPlatform = createVulnerabilityPlatform()
+  const reportService = new ReportService(repository, evidenceStore, {
+    familyDisplayNames: new FindingAssembler(
+      vulnerabilityPlatform.definitionRegistry
+    ).familyDisplayNames()
+  })
   const executionPort = new StrictExecutionPort(
     baseUrl,
     repository,
@@ -604,6 +618,12 @@ describe('DefaultScanCoordinator ExecutionPort boundary', () => {
         reviewRounds += 1
         await harness.application.controlScan(harness.scan.id, 'resume')
         current = await harness.coordinator.waitForScan(harness.scan.id)
+        if (reviewRounds === 1) {
+          expect(current).toMatchObject({
+            status: 'awaiting-user',
+            phase: 'active-enum'
+          })
+        }
       }
 
       expect(current.status).toBe('completed')
@@ -756,6 +776,59 @@ describe('DefaultScanCoordinator ExecutionPort boundary', () => {
       expect(
         await harness.repository.listInventorySources(harness.scan.id)
       ).toHaveLength(0)
+    } finally {
+      await harness.coordinator.shutdown()
+      harness.database.close()
+    }
+  })
+
+  it('blocks resume when a candidate attempt is cleanup-pending', async () => {
+    const harness = await createHarness(['sqli'])
+    try {
+      const row = await harness.repository.getScanRow(harness.scan.id)
+      if (!row) throw new Error('Fixture scan disappeared.')
+      const pausedState = {
+        ...row.runtimeJson,
+        status: 'paused'
+      }
+      await harness.repository.updateScan(harness.scan.id, {
+        status: 'paused',
+        runtimeJson: pausedState
+      })
+      const now = new Date().toISOString()
+      const candidateId = randomUUID()
+      await harness.repository.createCandidateAttemptRepository().save({
+        attemptId: randomUUID(),
+        scanId: harness.scan.id,
+        candidateId,
+        candidate: {
+          candidateId,
+          familyId: 'sqli',
+          techniqueId: 'sqli.boolean-differential',
+          moduleVersion: '1.0.0',
+          subjectRefs: [{ kind: 'endpoint', id: randomUUID() }],
+          variantRefs: [],
+          dependencyRefs: [],
+          identityRefs: [],
+          testObjectRefs: [],
+          matrixRefs: [],
+          reason: 'Cleanup-pending recovery fixture.',
+          expectedSignal: 'boolean-differential',
+          suggestedStrategy: 'sqli.legacy.strategy'
+        },
+        status: 'cleanup-pending',
+        decision: 'executable',
+        grantRefs: [],
+        evidenceRefs: [],
+        reason: 'Primary delivery is unknown; cleanup is still pending.',
+        createdAt: now,
+        updatedAt: now
+      })
+
+      await expect(
+        harness.coordinator.control(harness.scan.id, 'resume')
+      ).rejects.toThrow('Cleanup is still pending')
+      expect(harness.executionPort.inputs).toHaveLength(0)
     } finally {
       await harness.coordinator.shutdown()
       harness.database.close()

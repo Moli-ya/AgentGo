@@ -84,6 +84,8 @@ MCP Token、环境变量和自定义请求头只进入 `safeStorage`，SQLite �
 
 保存后，在导入详情选择 Knowledge Profile 作为 Extractor、Verifier Profile 作为 Reviewer，再执行“提取并复核”。原文中的 Authorization、Cookie、Token、密码等模式会在入库前脱敏；模型只能生成固定结构候选，不能执行 PoC。检查厂商、产品、漏洞类型、影响版本、HTTP 请求模板、确认规则、修复建议和字段来源后，可以人工修订并发布。只有 `published` 记录会进入知识检索和扫描期 KnowledgeAgent，驳回或待审核记录不会参与扫描。
 
+当前版本也支持后端离线导入 OpenAPI / Swagger / HAR / Postman / GraphQL 描述，以及从已提供的 HTML、JavaScript、Source Map 证据做静态发现。这些能力没有桌面文件选择器或导入页面：文件 bytes 或 Evidence 引用只由后端测试入口提交，全程不访问网络。导入结果只表示“系统知道有哪些接口”，变体初始为 `inventory-only/unreviewed`，不能自我授予重放或主动验证。静态发现产出的资源必须经 AssetManifest 人工/fixture 冻结后，才允许后续浏览器按精确 hash 加载；页面脚本和 source map 都是不可信内容。固定 SPA fixture 上的动态发现同样没有桌面入口：浏览器只消费已冻结 manifest，实际 HTTP 必须经过 ExecutionPort；未知写动作只盘点不发送。通用 ValidationPlan 是产品扫描验证阶段的唯一联网真源；Coordinator 不再按漏洞族分支发请求。SQLi 参考模块在同一 `sqli.legacy-v1` bundle 上提供 boolean / error-signal / bounded-time 三个独立 technique，每个参数只执行其中一个；GET query `id` 保持 boolean-differential。form/JSON 需要已批准的 L2 TestObject，产品环境 L2 仍禁用。时间差异仅 attested fixture。SSRF 在同一 `ssrf.legacy-v1` 上增加回显与 loopback OOB；产品环境没有真实远程 Collector（协议状态 `not-run`）时 OOB 等待用户，不得用 mock 冒充生产回连。`security.headers.baseline` 是零新增请求的被动模块，可由资格记录激活，默认桌面扫描族仍是四类 V1，前端不提供独立 Header 页面。
+
 ## 9. 创建和控制扫描
 
 在“扫描与 Agent”中选择：
@@ -123,11 +125,10 @@ context/decision，由随机数据密钥执行 AES-256-GCM，再用操作系统�
 derivative。系统按 scan/workspace 检查配额，并在 retention 到期时先
 crypto-erase wrapped key、再清理 ciphertext，同时写入审计。
 
-这不表示当前在线扫描已保存 DOM 或截图。实际执行仍固定保存
-hash-only 摘要；真实 DOM/截图采集、与 Lease 的 provenance 绑定及确认规则
-尚未接入。因此当前 XSS 即使观察到 marker executed，只要缺少该证据
-链仍显示 `Inconclusive`。任何单次异常都只能形成 Signal，不能直接成为
-Confirmed。
+XSS 离线 browser grant 可以在配额与 protector 允许时保存 grant 绑定的
+DOM/截图受保护原件；缺 protector、配额或 hash-only 路径仍保持
+`Inconclusive`。产品存储型 L2 在没有可信人类 ApprovalPort 时保持等待用户。
+任何单次异常都只能形成 Signal，不能直接成为 Confirmed。
 
 ## 11. 生成和导出报告
 
@@ -150,6 +151,8 @@ Confirmed。
 
 删除 Target 会清理其数据库记录、未被其他扫描引用的证据文件和测试身份凭据；删除 Workspace 会清理整个工作区目录。运行中任务必须先暂停或取消。安装器配置为卸载时保留应用数据，升级、卸载或迁移前仍建议在应用退出后备份整个目录。不要把这些运行数据、`benchmark-results/`、`release/` 或原始计划书提交到代码仓库。
 
+本地评测命令（开发者，不是产品 UI）：`pnpm benchmark:run`（冻结 40-case）、`pnpm benchmark:complex`（研究选择器）、`pnpm benchmark:holdout`（密封本地 holdout pack）。holdout 与开发 fixture 分离，但不是第三方产品，不能当成真实环境准确率。
+
 ## 13. 常见问题
 
 ### XSS 验证提示 browser-unavailable
@@ -170,7 +173,19 @@ Confirmed。
 
 ### XSS 已观察到 marker executed，为什么仍是 Inconclusive
 
-受保护原件后端已经可以加密保存获准材料；当前在线执行仍只生成 hash-only
-Browser 摘要。真实 DOM/截图及其 Lease provenance 尚未接入当前确认链。
-在缺少可复核在线证据时，系统必须保持
-`Inconclusive`，不能因为后端能够加密保存原件就自动升级为 Confirmed。
+hash-only 摘要、缺 protector/配额、CSP 阻断或不稳定执行都不能确认。
+只有 grant 绑定的 DOM/截图受保护原件存在且确认规则通过时，反射/离线 DOM
+才可以 Confirmed。产品存储型写入仍等待可信批准。
+
+### 为什么只看到双身份 IDOR，BOLA 没有自动跑完
+
+已资格化的入口仍是两个测试身份的只读对照。只读 BOLA 需要 AuthorizationMatrix
+条目；没有矩阵时该候选等待用户，不会把矩阵缺失当成已确认，也不会因此把
+XSS 标成 Confirmed。写越权、BFLA、BOPLA 仍是 signal，不会冒充为已支持。
+
+### 为什么没有自动确认 SSRF OOB 或安全响应头
+
+OOB 只接受 loopback Collector 上的服务端可归因事件；远程生产 Collector
+尚未实现（`not-run`）。客户端、Broker、健康检查、过期或重放 token 不计。
+`security.headers` 只分析已经捕获的响应头，不为检测发新请求；默认扫描
+不自动勾选该族，桌面也没有独立 Header 页面。

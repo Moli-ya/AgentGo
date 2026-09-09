@@ -510,3 +510,12 @@ export class PlaywrightBrowserRunner {
 }
 
 export type BrowserRunner = Pick<PlaywrightBrowserRunner, 'execute' | 'cancel'>
+export { PlaywrightBrokeredBrowserRecon } from './brokered-browser-recon'
+export type {
+  BrokeredReconDecision,
+  BrokeredReconFulfillment,
+  BrokeredReconNetworkBroker,
+  BrokeredReconNetworkRequest,
+  BrokeredReconRequest,
+  BrokeredReconResult
+} from './brokered-browser-recon'

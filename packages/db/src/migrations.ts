@@ -10,6 +10,12 @@ import {
 import { PROTECTED_EVIDENCE_ENVELOPE_MIGRATION } from './protected-evidence-migration'
 import { ATOMIC_BUDGET_AND_NETWORK_GATES_MIGRATION } from './budget-migration'
 import { L2_PROTOCOL_MIGRATION } from './l2-migration'
+import { IDENTITY_SESSION_AND_APPROVAL_MIGRATION } from './identity-session-migration'
+import { IMPORT_AND_STATIC_DISCOVERY_MIGRATION } from './import-discovery-migration'
+import { BROWSER_RECON_AND_MERGE_MIGRATION } from './browser-recon-migration'
+import { VALIDATION_PLAN_MIGRATION } from './validation-plan-migration'
+import { CANDIDATE_ATTEMPT_MIGRATION } from './candidate-attempt-migration'
+import { BROWSER_REVIEWABLE_CAPTURE_MIGRATION } from './browser-reviewable-capture-migration'
 
 export interface DatabaseMigration {
   id: string
@@ -21,6 +27,12 @@ export interface DatabaseMigration {
   dataHook?: (database: DatabaseSync) => void
   /** SQL that depends on the data hook having resolved legacy collisions. */
   finalizeSql?: string
+  /**
+   * `off` disables foreign keys before this migration's transaction so a
+   * parent table can be rebuilt without dropping referencing children.
+   * SQLite ignores `PRAGMA foreign_keys` inside a transaction.
+   */
+  foreignKeys?: 'off'
 }
 
 interface LegacyEndpointRow {
@@ -2352,5 +2364,11 @@ END;
   EXECUTION_DISPATCH_HARDENING_MIGRATION,
   PROTECTED_EVIDENCE_ENVELOPE_MIGRATION,
   ATOMIC_BUDGET_AND_NETWORK_GATES_MIGRATION,
-  L2_PROTOCOL_MIGRATION
+  L2_PROTOCOL_MIGRATION,
+  IDENTITY_SESSION_AND_APPROVAL_MIGRATION,
+  IMPORT_AND_STATIC_DISCOVERY_MIGRATION,
+  BROWSER_RECON_AND_MERGE_MIGRATION,
+  VALIDATION_PLAN_MIGRATION,
+  CANDIDATE_ATTEMPT_MIGRATION,
+  BROWSER_REVIEWABLE_CAPTURE_MIGRATION
 ]

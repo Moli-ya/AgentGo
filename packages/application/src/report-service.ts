@@ -115,11 +115,20 @@ function assertReportContentBinding(
   }
 }
 
+export interface ReportServiceOptions {
+  readonly familyDisplayNames?: Readonly<Record<string, string>>
+}
+
 export class ReportService {
+  private readonly familyDisplayNames: Readonly<Record<string, string>>
+
   constructor(
     private readonly repository: AgentGoRepository,
-    private readonly evidenceStore: EvidenceStore
-  ) {}
+    private readonly evidenceStore: EvidenceStore,
+    options: ReportServiceOptions = {}
+  ) {
+    this.familyDisplayNames = options.familyDisplayNames ?? {}
+  }
 
   async generate(input: GenerateReportInput): Promise<ReportRecord> {
     if (input.redacted !== true) {
@@ -136,7 +145,14 @@ export class ReportService {
       await this.evidenceStore.list(input.scanId)
     )
     const rendered = renderReport(
-      { scan, target, scope, findings, evidence },
+      {
+        scan,
+        target,
+        scope,
+        findings,
+        evidence,
+        familyDisplayNames: this.familyDisplayNames
+      },
       input.format
     )
     const content = redactEvidenceText(rendered.content)

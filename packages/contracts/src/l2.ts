@@ -17,6 +17,10 @@ const IsoDateSchema = z.string().datetime()
 const ContentHashSchema = InventoryHashSchema
 const DescriptionSchema = z.string().trim().min(1).max(8_000)
 
+export const L2IsoDateSchema = IsoDateSchema
+export const L2ContentHashSchema = ContentHashSchema
+export const L2DescriptionSchema = DescriptionSchema
+
 function isWellFormedUnicode(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const unit = value.charCodeAt(index)
@@ -51,7 +55,7 @@ function addDuplicateStringIssues(
   }
 }
 
-const ExactTokenSchema = z
+export const ExactTokenSchema = z
   .string()
   .min(1)
   .max(200)
@@ -527,6 +531,7 @@ export const L2ActionBundlePayloadSchema = z
     identityContextVersion: L2BindingSlotSchema,
     sessionGeneration: L2BindingSlotSchema,
     csrfBindingVersion: L2BindingSlotSchema,
+    authorizationMatrixVersion: L2BindingSlotSchema,
     steps: z.array(L2BundleStepSchema).min(6).max(6).readonly(),
     createdAt: IsoDateSchema
   })
@@ -552,6 +557,7 @@ export const L2ActionBundleSchema = z
     identityContextVersion: L2BindingSlotSchema,
     sessionGeneration: L2BindingSlotSchema,
     csrfBindingVersion: L2BindingSlotSchema,
+    authorizationMatrixVersion: L2BindingSlotSchema,
     steps: z.array(L2BundleStepSchema).min(6).max(6).readonly(),
     createdAt: IsoDateSchema,
     bundleHash: ContentHashSchema

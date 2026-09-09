@@ -70,6 +70,15 @@ export interface HttpExecutionRequest {
   readonly maxCompressionRatio?: number
   readonly slowReadTimeoutMs?: number
   readonly signal?: AbortSignal
+  /**
+   * Private sink for raw Set-Cookie values. Values flow only to this
+   * callback; they are never added to the result, logs, or evidence. The
+   * runner does not interpret them — the owning session vault does.
+   */
+  readonly setCookieSink?: (
+    cookies: readonly string[],
+    requestUrl: string
+  ) => void
 }
 
 export interface HttpExecutionResult<ClaimToken extends object = object> {
@@ -398,6 +407,7 @@ function snapshotExecutionRequest(
       maxCompressionRatio?: number
       slowReadTimeoutMs?: number
       signal?: AbortSignal
+      setCookieSink?: (cookies: readonly string[], requestUrl: string) => void
     }>
   | undefined {
   const candidate = snapshotExactDataObject(
@@ -409,7 +419,8 @@ function snapshotExecutionRequest(
       'maxDecompressedBytes',
       'maxCompressionRatio',
       'slowReadTimeoutMs',
-      'signal'
+      'signal',
+      'setCookieSink'
     ]
   )
   if (
@@ -422,7 +433,9 @@ function snapshotExecutionRequest(
     typeof candidate.wire !== 'object' ||
     !Number.isSafeInteger(candidate.timeoutMs) ||
     (candidate.signal !== undefined &&
-      !(candidate.signal instanceof AbortSignal))
+      !(candidate.signal instanceof AbortSignal)) ||
+    (candidate.setCookieSink !== undefined &&
+      typeof candidate.setCookieSink !== 'function')
   ) {
     return undefined
   }
@@ -448,6 +461,14 @@ function snapshotExecutionRequest(
       : {}),
     ...(candidate.signal !== undefined
       ? { signal: candidate.signal as AbortSignal }
+      : {}),
+    ...(candidate.setCookieSink !== undefined
+      ? {
+          setCookieSink: candidate.setCookieSink as (
+            cookies: readonly string[],
+            requestUrl: string
+          ) => void
+        }
       : {})
   })
 }
@@ -830,6 +851,21 @@ export class UndiciHttpRunner<ClaimToken extends object = object> {
       })
       statusCode = response.statusCode
       responseHeaders = normalizeResponseHeaders(response.headers)
+      if (executionRequest.setCookieSink) {
+        const setCookieValues = response.headers['set-cookie']
+        const cookies = Array.isArray(setCookieValues)
+          ? setCookieValues.filter((value) => typeof value === 'string')
+          : typeof setCookieValues === 'string'
+            ? [setCookieValues]
+            : []
+        if (cookies.length > 0) {
+          try {
+            executionRequest.setCookieSink(Object.freeze([...cookies]), prepared!.wire.url)
+          } catch {
+            // A vault-side rejection must not fail the authorized request.
+          }
+        }
+      }
       const location = locationHeader(response.headers)
       if (response.statusCode >= 300 && response.statusCode < 400 && location) {
         redirectLocation = location

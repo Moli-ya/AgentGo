@@ -1,10 +1,8 @@
 import { createHash } from 'node:crypto'
-import { isLegacyV1VulnerabilityFamily } from '@agentgo/contracts'
 import type {
   AgentRole,
   EvidenceSummary,
   FindingRecord,
-  LegacyV1VulnerabilityFamily,
   ScanRecord,
   TargetRecord,
   TargetScopeRecord,
@@ -25,6 +23,7 @@ export interface ReportContext {
   scope: TargetScopeRecord
   findings: FindingRecord[]
   evidence: EvidenceSummary[]
+  familyDisplayNames?: Readonly<Record<string, string>>
   generatedAt?: string
 }
 
@@ -37,18 +36,11 @@ export interface RenderedReport {
   sha256: string
 }
 
-const legacyFamilyLabels: Record<LegacyV1VulnerabilityFamily, string> = {
-  sqli: 'SQL 注入',
-  xss: '跨站脚本（XSS）',
-  ssrf: '服务端请求伪造（SSRF）',
-  idor: '对象级越权（IDOR）'
-}
-
-function familyLabel(familyId: VulnerabilityFamily): string {
-  const label = isLegacyV1VulnerabilityFamily(familyId)
-    ? legacyFamilyLabels[familyId]
-    : undefined
-  return label ?? familyId
+function familyLabel(
+  familyId: VulnerabilityFamily,
+  displayNames?: Readonly<Record<string, string>>
+): string {
+  return displayNames?.[familyId] ?? familyId
 }
 
 const verdictLabels: Record<FindingRecord['verdict'], string> = {
@@ -172,7 +164,7 @@ function renderMarkdown(context: ReportContext, generatedAt: string): string {
       : '- 结合实际代码路径补充修复方案。'
     return `## ${index + 1}. ${markdownText(finding.title)}
 
-- 漏洞族：${familyLabel(finding.family)}
+- 漏洞族：${familyLabel(finding.family, context.familyDisplayNames)}
 - Verdict：${verdictLabels[finding.verdict]}
 - 严重度：${finding.severity}
 - 置信度：${Math.round(finding.confidence * 100)}%
@@ -220,7 +212,7 @@ ${reportAgentRoles.map((role) => `- ${agentRoleLabels[role]} Profile：${context
 ## 扫描摘要
 
 - 状态：${context.scan.status} / ${context.scan.phase}
-- 漏洞族：${context.scan.families.map((family) => familyLabel(family)).join('、')}
+- 漏洞族：${context.scan.families.map((family) => familyLabel(family, context.familyDisplayNames)).join('、')}
 - 请求数：${context.scan.requestCount}
 - 模型 Token：${context.scan.modelTokens}
 - Finding：Confirmed ${context.findings.filter((item) => item.verdict === 'confirmed').length}，Inconclusive ${context.findings.filter((item) => item.verdict === 'inconclusive').length}，Not Confirmed ${context.findings.filter((item) => item.verdict === 'not-confirmed').length}
@@ -236,7 +228,7 @@ function renderHtml(context: ReportContext, generatedAt: string): string {
       (finding) => `<section class="finding">
   <h2>${htmlText(finding.title)}</h2>
   <dl>
-    <dt>漏洞族</dt><dd>${htmlText(familyLabel(finding.family))}</dd>
+    <dt>漏洞族</dt><dd>${htmlText(familyLabel(finding.family, context.familyDisplayNames))}</dd>
     <dt>Verdict</dt><dd>${htmlText(verdictLabels[finding.verdict])}</dd>
     <dt>严重度</dt><dd>${htmlText(finding.severity)}</dd>
     <dt>位置</dt><dd>${htmlText([finding.endpointUrl, finding.parameterName, finding.identityLabel].filter(Boolean).join(' / ') || '未定位到单一参数')}</dd>
